@@ -129,8 +129,8 @@ if __name__ == '__main__':
     if not seg_shp.exists():
         run_cmd(
             f"otbcli_LargeScaleMeanShift -in {ras} -spatialr 15 -ranger 6 -minsize 50 "
-            f"-tilesizex 8192 -tilesizey 8192 -mode vector -mode.vector.out {seg_shp} "
-            f"-cleanup false -ram 100128", 1, 'Image segmentation'
+            f"-tilesizex 2048 -tilesizey 2048 -mode vector -mode.vector.out {seg_shp} "
+            f"-cleanup false -ram 4096", 1, 'Image segmentation'
         )
     else:
         print(f"[Stage 1/{TOTAL_STAGES}] Segmentation exists, skipping\n")

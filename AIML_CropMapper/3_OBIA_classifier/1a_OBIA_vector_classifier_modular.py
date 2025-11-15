@@ -14,8 +14,8 @@ from openpyxl.styles import Font
 # --- Configuration (Global) ---
 
 # Configuration paths
-base_dir = Path("F:/AIML_CropMapper/workingDir")
-aux_dir = Path("F:/AIML_CropMapper/auxiliary_files")
+base_dir = Path("D:/AIML_CropMapper/workingDir")
+aux_dir = Path("D:/AIML_CropMapper/auxiliary_files")
 track_regions = {
     'P1': 'AU', 'P1a': 'AU',
     'P2': 'IR', 'P3': 'NL',
@@ -70,7 +70,7 @@ class ProcessingPipeline:
         # --- 4. Define default parameters for configurable stages ---
         self.stage1_params = {
             'spatialr': 15, 'ranger': 6, 'minsize': 50,
-            'tilesizex': 8192, 'tilesizey': 8192, 'ram': 100128
+            'tilesizex': 2048, 'tilesizey': 2048, 'ram': 4096
         }
         self.stage2_params = {
             'learn_frac': 0.7, 'random_state': 42
