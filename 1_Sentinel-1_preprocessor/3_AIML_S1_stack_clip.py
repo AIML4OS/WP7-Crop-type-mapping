@@ -10,8 +10,8 @@ from osgeo import gdal, gdalconst, ogr, osr
 
 # ================= CONFIGURATION =================
 # Update these paths to match your system
-BASE_DIR = Path("D:/AIML_CropMapper_Cloud/workingDir")
-SHAPEFILES_DIR = Path("D:/AIML_CropMapper_Cloud/auxiliary_files/shapefiles_nuts")
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", "D:/AIML_CropMapper_Cloud/workingDir"))
+SHAPEFILES_DIR = Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files")) / "shapefiles_nuts"
 
 # Mapping for automatic sub-track selection
 GROUP_MAP = {"P1": "P1a", "P4": "P4a", "P2": "P2a"}

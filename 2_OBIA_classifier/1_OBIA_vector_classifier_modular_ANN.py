@@ -30,11 +30,11 @@ except ImportError:
 # python 1_OBIA_vector_classifier_modular_ANN.py --track P1a
 
 # Base Paths provided by user
-base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
-aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
+base_dir = Path(os.environ.get("AIML_WORKING_DIR", "D:/AIML_CropMapper_Cloud/workingDir"))
+aux_dir = Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files"))
 
 # OTB Installation Path (Still used for some auxiliary tasks if needed, but main flow is Python)
-otb_dir = Path("D:/AIML_CropMapper_Cloud/2_OBIA_classifier/OTB-6.2.0-Win64")
+otb_dir = Path(os.environ.get("OTB_DIR", "D:/AIML_CropMapper_Cloud/2_OBIA_classifier/OTB-6.2.0-Win64"))
 
 # Track to Country Mapping
 track_regions = {
@@ -573,6 +573,8 @@ class ProcessingPipeline:
             solver=params['sk_solver'],
             alpha=params['sk_alpha'],
             max_iter=params['sk_max_iter'],
+            early_stopping=True,
+            validation_fraction=0.1,
             random_state=42,
             verbose=True
         )
