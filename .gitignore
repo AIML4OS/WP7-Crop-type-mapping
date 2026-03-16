@@ -1,0 +1,7 @@
+auxiliary_files/
+workingDir/
+2_OBIA_classifier/OTB-6.2.0-Win64/
+venv/
+__pycache__/
+*.tif
+*.csv
