@@ -1,3 +1,4 @@
+import os
 import argparse
 from pathlib import Path
 import numpy as np
@@ -65,7 +66,7 @@ def main():
     args = parser.parse_args()
     prefix = args.track
 
-    base_dir = Path(r"D:\AIML\WP7-Crop-type-mapping\AIML_CropMapper\workingDir")
+    base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:\AIML\WP7-Crop-type-mapping\AIML_CropMapper\workingDir"))
     tracks   = discover_tracks(base_dir, prefix)
     if not tracks:
         raise FileNotFoundError(
@@ -102,63 +103,89 @@ def main():
 
     print(f"Global mosaic: {cols} cols × {rows} rows")
 
-    # --- warp and stack -----------------------------------------------------
-    class_stack = []
-    conf_stack  = []
+    # --- warp virtual datasets -----------------------------------------------------
+    mem_cls_dsets = []
+    mem_conf_dsets = []
+
     for tr, country, cls_fp, conf_fp in tracks:
         # classification
         mem_cls = gdal.Warp(
-            '', str(cls_fp), format='MEM',
+            '', str(cls_fp), format='VRT',
             width=cols, height=rows,
             outputBounds=(minX, minY, maxX, maxY),
             dstSRS=proj,
             resampleAlg=gdal.GRA_NearestNeighbour
         )
-        arr_cls = mem_cls.GetRasterBand(1).ReadAsArray()
-        nod     = mem_cls.GetRasterBand(1).GetNoDataValue()
+        mem_cls_dsets.append(mem_cls)
 
         # confidence
         mem_conf = gdal.Warp(
-            '', str(conf_fp), format='MEM',
+            '', str(conf_fp), format='VRT',
             width=cols, height=rows,
             outputBounds=(minX, minY, maxX, maxY),
             dstSRS=proj,
             resampleAlg=gdal.GRA_NearestNeighbour
         )
-        arr_conf = mem_conf.GetRasterBand(1).ReadAsArray().astype(np.float32)
+        mem_conf_dsets.append(mem_conf)
 
-        # mask out nodata
-        if nod is not None:
-            arr_conf[arr_cls == nod] = np.nan
-            arr_cls = np.where(arr_cls == nod, 0, arr_cls).astype(np.int32)
-
-        class_stack.append(arr_cls)
-        conf_stack.append(arr_conf)
-
-    class_stack = np.stack(class_stack, axis=0)  # (n_tracks, rows, cols)
-    conf_stack  = np.stack(conf_stack, axis=0)
-
-    # --- build highest-confidence mosaic -----------------------------------
-    conf_stack[np.isnan(conf_stack)] = -np.inf
-    idx   = np.argmax(conf_stack, axis=0)               # (rows, cols)
-    final = np.take_along_axis(class_stack, idx[None,:,:], axis=0)[0]
-    final[np.all(np.isneginf(conf_stack), axis=0)] = 0
-
-    # --- save mosaic --------------------------------------------------------
+    # --- prepare output dataset --------------------------------------------------------
     base_tr, base_country, _, _ = tracks[0]
     out_dir = base_dir / base_tr / 'classification_results'
+    out_dir.mkdir(parents=True, exist_ok=True)
     out_tif = out_dir / f"{base_country}_final_classification.tif"
     drv     = gdal.GetDriverByName('GTiff')
     ds_out  = drv.Create(str(out_tif), cols, rows, 1, gdal.GDT_Int32)
     ds_out.SetGeoTransform(gt_global)
     ds_out.SetProjection(proj)
-    band = ds_out.GetRasterBand(1)
-    band.WriteArray(final)
-    band.SetNoDataValue(0)
+    out_band = ds_out.GetRasterBand(1)
+    out_band.SetNoDataValue(0)
+
+    # --- block-by-block processing to save memory -----------------------------------
+    block_xsize = 1024
+    block_ysize = 1024
+
+    for y in range(0, rows, block_ysize):
+        ysize = min(block_ysize, rows - y)
+        for x in range(0, cols, block_xsize):
+            xsize = min(block_xsize, cols - x)
+
+            chunk_cls_stack = []
+            chunk_conf_stack = []
+
+            for mem_cls, mem_conf in zip(mem_cls_dsets, mem_conf_dsets):
+                cls_band = mem_cls.GetRasterBand(1)
+                nod = cls_band.GetNoDataValue()
+
+                arr_cls = cls_band.ReadAsArray(x, y, xsize, ysize)
+                conf_band = mem_conf.GetRasterBand(1)
+                arr_conf = conf_band.ReadAsArray(x, y, xsize, ysize).astype(np.float32)
+
+                # mask out nodata
+                if nod is not None:
+                    arr_conf[arr_cls == nod] = np.nan
+                    arr_cls = np.where(arr_cls == nod, 0, arr_cls).astype(np.int32)
+
+                chunk_cls_stack.append(arr_cls)
+                chunk_conf_stack.append(arr_conf)
+
+            chunk_cls_stack = np.stack(chunk_cls_stack, axis=0)
+            chunk_conf_stack = np.stack(chunk_conf_stack, axis=0)
+
+            chunk_conf_stack[np.isnan(chunk_conf_stack)] = -np.inf
+            idx = np.argmax(chunk_conf_stack, axis=0)
+            final_chunk = np.take_along_axis(chunk_cls_stack, idx[None,:,:], axis=0)[0]
+            final_chunk[np.all(np.isneginf(chunk_conf_stack), axis=0)] = 0
+
+            out_band.WriteArray(final_chunk, x, y)
+
     ds_out.FlushCache()
     print(f"Merged classification saved: {out_tif}")
 
     # --- compute metrics & areas --------------------------------------------
+    # Reload final raster for metrics calculation
+    ds_final = gdal.Open(str(out_tif))
+    final = ds_final.GetRasterBand(1).ReadAsArray()
+
     ctrl_shp = out_dir / 'samples' / 'control.shp'
     ctrl     = gpd.read_file(str(ctrl_shp))
     inv      = gdal.InvGeoTransform(gt_global)

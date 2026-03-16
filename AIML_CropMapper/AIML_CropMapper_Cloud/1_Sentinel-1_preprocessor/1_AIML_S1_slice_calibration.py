@@ -9,19 +9,21 @@ import shutil
 from collections import defaultdict
 from osgeo import ogr
 
+import os
+
 # ================= CONFIGURATION =================
 # python 1_AIML_S1_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -t P1
 
 # TODO: USER - VERIFY THIS PATH IS CORRECT
-GPT_EXE = r"D:/Program Files/esa-snap/bin/gpt.exe"
+GPT_EXE = os.environ.get("SNAP_GPT_EXE", r"D:/Program Files/esa-snap/bin/gpt.exe")
 
 # Path to SNAP AuxData
-AUXDATA_PATH = r"C:/Users/Administrator/.snap/auxdata"
+AUXDATA_PATH = os.environ.get("SNAP_AUXDATA_PATH", r"C:/Users/Administrator/.snap/auxdata")
 
 # Repository where raw .SAFE data is stored
-LOCAL_REPO_PATH = r"Y:\Sentinel-1\SAR\IW_GRDH_1S"
+LOCAL_REPO_PATH = os.environ.get("S1_REPO_PATH", r"Y:\Sentinel-1\SAR\IW_GRDH_1S")
 # Directory where processing results (calibrated/sliced) will be saved
-WORKING_DIR = r"D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/workingDir"
+WORKING_DIR = os.environ.get("AIML_WORKING_DIR", r"D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/workingDir")
 
 # Track Cycle Definitions (Reference dates for 6-day repeat cycle)
 BASE_DATES = {

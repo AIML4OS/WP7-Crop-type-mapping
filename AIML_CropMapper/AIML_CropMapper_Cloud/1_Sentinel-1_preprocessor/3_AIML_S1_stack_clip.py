@@ -10,8 +10,8 @@ from osgeo import gdal, gdalconst
 
 # ================= CONFIGURATION =================
 # Update these paths to match your system
-BASE_DIR = Path("D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/workingDir")
-SHAPEFILES_DIR = Path("D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/auxiliary_files/shapefiles_nuts")
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/workingDir"))
+SHAPEFILES_DIR = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/auxiliary_files")) / "shapefiles_nuts"
 
 # Mapping for automatic sub-track selection
 GROUP_MAP = {"P1": "P1a", "P4": "P4a"}
@@ -141,16 +141,27 @@ def stack_and_clip(track: str):
 
     band_idx = 1
 
+    # Block-by-block processing to save memory
+    block_xsize = 1024
+    block_ysize = 1024
+
     # Write VH
     print("    Writing VH bands...")
     for img in vh_imgs:
         ds = gdal.Open(str(img), gdalconst.GA_ReadOnly)
-        data = ds.GetRasterBand(1).ReadAsArray()
-        stack_ds.GetRasterBand(band_idx).WriteArray(data)
+        in_band = ds.GetRasterBand(1)
+        out_band = stack_ds.GetRasterBand(band_idx)
+
+        for y in range(0, rows, block_ysize):
+            ysize = min(block_ysize, rows - y)
+            for x in range(0, cols, block_xsize):
+                xsize = min(block_xsize, cols - x)
+                data = in_band.ReadAsArray(x, y, xsize, ysize)
+                out_band.WriteArray(data, x, y)
 
         # Clean description
         desc = STRIP_PATTERN.sub("_", img.stem)
-        stack_ds.GetRasterBand(band_idx).SetDescription(desc)
+        out_band.SetDescription(desc)
 
         band_idx += 1
         ds = None
@@ -159,11 +170,18 @@ def stack_and_clip(track: str):
     print("    Writing VV bands...")
     for img in vv_imgs:
         ds = gdal.Open(str(img), gdalconst.GA_ReadOnly)
-        data = ds.GetRasterBand(1).ReadAsArray()
-        stack_ds.GetRasterBand(band_idx).WriteArray(data)
+        in_band = ds.GetRasterBand(1)
+        out_band = stack_ds.GetRasterBand(band_idx)
+
+        for y in range(0, rows, block_ysize):
+            ysize = min(block_ysize, rows - y)
+            for x in range(0, cols, block_xsize):
+                xsize = min(block_xsize, cols - x)
+                data = in_band.ReadAsArray(x, y, xsize, ysize)
+                out_band.WriteArray(data, x, y)
 
         desc = STRIP_PATTERN.sub("_", img.stem)
-        stack_ds.GetRasterBand(band_idx).SetDescription(desc)
+        out_band.SetDescription(desc)
 
         band_idx += 1
         ds = None

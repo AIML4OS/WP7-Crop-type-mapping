@@ -16,11 +16,11 @@ from openpyxl.styles import Font
 # python 1_OBIA_vector_classifier_modular.py -track P1a
 
 # Base Paths provided by user
-base_dir = Path("D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/workingDir")
-aux_dir = Path("D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/auxiliary_files")
+base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/workingDir"))
+aux_dir = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/auxiliary_files"))
 
 # OTB Installation Path
-otb_dir = Path("D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/2_OBIA_classifier/OTB-6.2.0-Win64")
+otb_dir = Path(os.environ.get("OTB_DIR", r"D:/AIML/WP7-Crop-type-mapping/AIML_CropMapper/2_OBIA_classifier/OTB-6.2.0-Win64"))
 
 # Track to Country Mapping
 track_regions = {
