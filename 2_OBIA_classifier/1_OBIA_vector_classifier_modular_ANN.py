@@ -11,10 +11,10 @@ from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import resample
-from sklearn.model_selection import train_test_split
 import joblib
 import openpyxl
 from openpyxl.styles import Font
+import shutil
 
 # Try importing scikit-image
 try:
@@ -31,11 +31,11 @@ except ImportError:
 # python 1_OBIA_vector_classifier_modular_ANN.py --track P1a
 
 # Base Paths provided by user
-base_dir = Path(os.environ.get("AIML_WORKING_DIR", "D:/AIML_CropMapper_Cloud/workingDir"))
-aux_dir = Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files"))
+base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
+aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
 
 # OTB Installation Path (Still used for some auxiliary tasks if needed, but main flow is Python)
-otb_dir = Path(os.environ.get("OTB_DIR", "D:/AIML_CropMapper_Cloud/2_OBIA_classifier/OTB-6.2.0-Win64"))
+otb_dir = Path("D:/AIML_CropMapper_Cloud/2_OBIA_classifier/OTB-6.2.0-Win64")
 
 # Track to Country Mapping
 track_regions = {
@@ -44,7 +44,7 @@ track_regions = {
     'P3': 'NL',
     'P4': 'PT', 'P4a': 'PT'
 }
-TOTAL_STAGES = 9
+TOTAL_STAGES = 8
 
 
 # --- Main Pipeline Class ---
@@ -74,12 +74,10 @@ class ProcessingPipeline:
         self._ensure_directories()
 
         # --- 2. Resolve input raster ---
-        # UPDATED: Prioritize TIF files (BigTIFF stack)
         search_patterns = [
             f"{self.track}_*_VH_VV*.tif",
             f"*_{self.track}_*_VH_VV*.tif",
             f"*{self.track}*.tif",
-            # Fallback to HDR if TIF not found
             f"{self.track}_*_VH_VV*.hdr",
             f"*{self.track}*.hdr",
         ]
@@ -100,7 +98,6 @@ class ProcessingPipeline:
             raise FileNotFoundError(f"Processing directory does not exist: {self.proc_dir}")
 
         # --- 3. Define all output file paths ---
-        # CHANGED: Segmentation is now a TIF (OTB Raster Mode)
         self.seg_tif = self.seg_dir / f"{self.country}_{self.track}_segmentation.tif"
         self.seg_shp = self.seg_dir / f"{self.country}_{self.track}_segmentation.shp"
 
@@ -127,26 +124,24 @@ class ProcessingPipeline:
         # Output paths
         self.learn_shp = self.samples_dir / 'learn.shp'
         self.control_shp = self.samples_dir / 'control.shp'
-        # CHANGED: Selected samples is now a CSV (features) or SHP with features attached
         self.sel_csv = self.samples_dir / f"{self.country}_{self.track}_learn_features.csv"
         
         # Classification outputs
         self.class_tif = self.class_dir / f"{self.country}_{self.track}_classified.tif"
         self.conf_tif = self.class_dir / f"{self.country}_{self.track}_confidence_map.tif"
         
-        self.cutline_shp = self.proc_dir / f"{self.country}_{self.track}_valid_coverage.shp"
         self.masked_class = self.class_dir / f"{self.country}_{self.track}_classified_masked.tif"
         self.masked_conf = self.class_dir / f"{self.country}_{self.track}_confidence_masked.tif"
         self.metrics_fp = self.class_dir / f"{self.country}_{self.track}_metrics.xlsx"
 
-        # --- 4. Parameters (TUNED FOR POLAND/IRELAND SMALL FIELDS) ---
+        # --- 4. Parameters ---
         self.stage1_params = {
             'method': 'otb_meanshift', 
             'tile_size': 4096,
             'ram': 4096,
             
             # OTB Params
-            'spatialr': 20, 'ranger': 10, 'minsize': 200, 'tilesizex': 4096, 'tilesizey': 4096,
+            'spatialr': 15, 'ranger': 15, 'maxiter': 10, 'minsize': 100, 'tilesizex': 4096, 'tilesizey': 4096,
             
             # Python Params (Fallback)
             'n_segments': 20000, 'compactness': 5.0, 'slic_sigma': 1.0,
@@ -157,16 +152,15 @@ class ProcessingPipeline:
         }
         self.stage4_params = {
             'classifier': 'ann_sklearn',
-            # Architecture tuned for both mean and standard deviation (texture) features
-            'sk_hidden_sizes': '100,50',
+            'sk_hidden_sizes': '100', 
             'sk_activation': 'relu',
             'sk_solver': 'adam',
-            'sk_alpha': 0.001,
-            'sk_max_iter': 1000,
+            'sk_alpha': 0.0001,
+            'sk_max_iter': 500,
             'balance_threshold': 1000 
         }
 
-        self.feat_cols = [] # Will store feature names
+        self.feat_cols = [] 
 
     # --- Utility Methods ---
 
@@ -203,110 +197,98 @@ class ProcessingPipeline:
         if p_no_ext.exists() and p_no_ext.is_file(): return p_no_ext
         raise FileNotFoundError(f"No raster image (.img/.tif) found matching header {hdr.stem}")
 
-    def _raster_to_cutline(self, input_tif, cutline_shp, stage):
-        print(f"[Stage {stage}/{self.total_stages}] Generating Cutline...")
-        nuts_filename = f"NUTS2_{self.country}.shp"
-        nuts_path = self.aux_dir / 'shapefiles_nuts' / self.country / nuts_filename
+    def _apply_mask(self, input_tif, mask_tif, out_tif, stage):
+        print(f"[Stage {stage}/{self.total_stages}] Applying Arable & Data Footprint Mask...")
         
-        has_nuts = nuts_path.exists()
-        if not has_nuts:
-            print(f"WARNING: NUTS shapefile not found at {nuts_path}")
-
-        ds = gdal.Open(str(input_tif))
-        if not ds: raise RuntimeError(f"Could not open {input_tif}")
-
-        band = ds.GetRasterBand(1)
-        if band.GetOverviewCount() > 0:
-            band = band.GetOverview(band.GetOverviewCount() - 1)
+        # Open the original radar stack to check for data footprint (blank areas)
+        ds_stack = gdal.Open(str(self.ras))
+        if not ds_stack: raise RuntimeError(f"Could not open source raster {self.ras} for footprint masking.")
+        stack_band = ds_stack.GetRasterBand(1)
+        
+        if not mask_tif.exists():
+            print(f"    WARNING: Arable mask not found at {mask_tif}. Will only apply data footprint mask.")
+            has_arable_mask = False
+        else:
+            has_arable_mask = True
             
-        mask_arr = (band.ReadAsArray() != 0).astype(np.uint8)
+        ds_in = gdal.Open(str(input_tif))
+        gt = ds_in.GetGeoTransform()
+        proj = ds_in.GetProjection()
+        cols = ds_in.RasterXSize
+        rows = ds_in.RasterYSize
         
-        drv_mem = gdal.GetDriverByName('MEM')
-        mask_ds = drv_mem.Create('', band.XSize, band.YSize, 1, gdal.GDT_Byte)
-        mask_ds.SetGeoTransform(ds.GetGeoTransform()) 
+        minx = gt[0]
+        maxy = gt[3]
+        maxx = minx + gt[1] * cols
+        miny = maxy + gt[5] * rows
         
-        if has_nuts:
-            print("Using NUTS shapefile as cutline directly.")
-            gdf = gpd.read_file(str(nuts_path))
-            gdf.to_file(str(cutline_shp))
-            return
+        if has_arable_mask:
+            # Warp the mask to match the input raster exactly
+            temp_mask_vrt = str(out_tif).replace('.tif', '_mask_temp.vrt')
+            mask_opts = gdal.WarpOptions(
+                format='VRT',
+                outputBounds=(minx, miny, maxx, maxy),
+                width=cols,
+                height=rows,
+                dstSRS=proj,
+                resampleAlg=gdal.GRA_NearestNeighbour
+            )
+            ds_mask = gdal.Warp(temp_mask_vrt, str(mask_tif), options=mask_opts)
+            if not ds_mask: raise RuntimeError("Failed to warp the arable mask.")
+            m_band = ds_mask.GetRasterBand(1)
+        else:
+            ds_mask = None
 
-        print("WARNING: No NUTS shapefile. Skipping cutline generation.")
+        in_band = ds_in.GetRasterBand(1)
+        out_type = in_band.DataType
 
-    def _clip_and_mask(self, input_tif, mask_tif, cutline_shp, out_tif, stage):
-        print(f"[Stage {stage}/{self.total_stages}] Clipping and Masking...")
-
-        # Step 1: Warp input_tif using cutline_shp
-        tmp_clip = out_tif.with_name(out_tif.stem + "_temp_clip.tif")
-        warp_opts = gdal.WarpOptions(
-            format='GTiff',
-            cutlineDSName=str(cutline_shp),
-            cropToCutline=True,
-            dstNodata=0,
-            creationOptions=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
-        )
-        ds_clip = gdal.Warp(str(tmp_clip), str(input_tif), options=warp_opts)
-
-        if not ds_clip:
-            raise RuntimeError(f"Failed to clip {input_tif} with {cutline_shp}")
-
-        proj = ds_clip.GetProjection()
-        gt = ds_clip.GetGeoTransform()
-        cols = ds_clip.RasterXSize
-        rows = ds_clip.RasterYSize
-        nbands = ds_clip.RasterCount
-        dt = ds_clip.GetRasterBand(1).DataType
-
-        # Step 2: Warp binary mask_tif to match the exact extent/resolution of tmp_clip
-        tmp_mask = out_tif.with_name(out_tif.stem + "_temp_mask.tif")
-        mask_opts = gdal.WarpOptions(
-            format='GTiff',
-            width=cols, height=rows,
-            outputBounds=(gt[0], gt[3] + rows * gt[5], gt[0] + cols * gt[1], gt[3]),
-            dstSRS=proj,
-            resampleAlg=gdal.GRA_NearestNeighbour,
-            dstNodata=0
-        )
-        ds_mask = gdal.Warp(str(tmp_mask), str(mask_tif), options=mask_opts)
-
-        if not ds_mask:
-            ds_clip = None
-            if tmp_clip.exists(): tmp_clip.unlink()
-            raise RuntimeError(f"Failed to align binary mask {mask_tif}")
-
-        # Step 3: Multiply arrays block-by-block for all bands
         driver = gdal.GetDriverByName('GTiff')
-        ds_out = driver.Create(str(out_tif), cols, rows, nbands, dt, options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
-        ds_out.SetGeoTransform(gt)
-        ds_out.SetProjection(proj)
-
-        for b in range(1, nbands + 1):
-            ds_out.GetRasterBand(b).SetNoDataValue(0)
-
-        band_mask = ds_mask.GetRasterBand(1)
+        out_ds = driver.Create(str(out_tif), cols, rows, 1, out_type,
+                               options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+        out_ds.SetGeoTransform(gt)
+        out_ds.SetProjection(proj)
+        out_band = out_ds.GetRasterBand(1)
+        
+        nodata = in_band.GetNoDataValue()
+        if nodata is None: nodata = 0
+        out_band.SetNoDataValue(nodata)
 
         tile_size = 4096
+        
         for y in range(0, rows, tile_size):
             for x in range(0, cols, tile_size):
                 xsize = min(tile_size, cols - x)
                 ysize = min(tile_size, rows - y)
-
-                arr_mask = band_mask.ReadAsArray(x, y, xsize, ysize)
-
-                # Apply mask to each band independently
-                for b in range(1, nbands + 1):
-                    band_clip = ds_clip.GetRasterBand(b)
-                    arr_clip = band_clip.ReadAsArray(x, y, xsize, ysize)
-                    arr_masked = np.where(arr_mask > 0, arr_clip, 0)
-                    ds_out.GetRasterBand(b).WriteArray(arr_masked, x, y)
-
-        ds_out.FlushCache()
-
-        # Cleanup
-        ds_clip = ds_mask = ds_out = None
-        if tmp_clip.exists(): tmp_clip.unlink()
-        if tmp_mask.exists(): tmp_mask.unlink()
-
+                
+                # 1. Read the Classification/Confidence Data
+                arr = in_band.ReadAsArray(x, y, xsize, ysize)
+                
+                # 2. Read the Original Radar Stack (to find empty track halves)
+                # Ensure we handle potential out of bounds or missing stack bands gracefully
+                if stack_band:
+                    try:
+                        stack_arr = stack_band.ReadAsArray(x, y, xsize, ysize)
+                        # Apply Footprint Mask: If original radar data is exactly 0, force output to NoData
+                        if stack_arr is not None:
+                            arr[stack_arr == 0] = nodata
+                    except Exception as e:
+                        pass # Ignore if stack band reading fails for some reason
+                
+                # 3. Read and Apply the Arable Mask (if it exists)
+                if ds_mask:
+                    m_arr = m_band.ReadAsArray(x, y, xsize, ysize)
+                    arr[m_arr < 0.5] = nodata
+                    
+                out_band.WriteArray(arr, x, y)
+                
+        out_ds.FlushCache()
+        
+        ds_mask = None
+        out_ds = None
+        ds_in = None
+        ds_stack = None
+        if has_arable_mask and os.path.exists(temp_mask_vrt): os.remove(temp_mask_vrt)
+        
         print(f"Completed stage {stage}\n")
 
     # --- Stage 1: OTB Segmentation (Direct Raster Pipeline) ---
@@ -316,7 +298,6 @@ class ProcessingPipeline:
         params.update(kwargs)
         stage = 1
         
-        # Check if user had a crash from the old vector logic, but labelmap exists
         labelmap_file = self.seg_dir / f"{self.country}_{self.track}_segmentation.shp_labelmap.tif"
         
         if self.seg_tif.exists():
@@ -335,22 +316,20 @@ class ProcessingPipeline:
         if method == 'otb_meanshift':
             print(f"[Stage {stage}/{self.total_stages}] Running OTB Large-Scale Mean-Shift (Raster Steps Only)...")
             
-            # Temporary files for intermediate steps
             filtered_tif = self.seg_dir / f"{self.country}_{self.track}_filtered.tif"
             spatial_tif = self.seg_dir / f"{self.country}_{self.track}_spatial.tif"
             pre_merge_tif = self.seg_dir / f"{self.country}_{self.track}_pre_merge.tif"
             
             try:
-                # STEP 1: Smoothing
                 if not filtered_tif.exists():
+                    maxiter = params.get('maxiter', 10)
                     cmd1 = (
                         f"otbcli_MeanShiftSmoothing -in {self.ras} -fout {filtered_tif} -foutpos {spatial_tif} "
-                        f"-spatialr {params['spatialr']} -ranger {params['ranger']} "
+                        f"-spatialr {params['spatialr']} -ranger {params['ranger']} -maxiter {maxiter} "
                         f"-ram {params['ram']}"
                     )
                     self._run_cmd(cmd1, stage, 'OTB Step 1/3: MeanShift Smoothing', ram=params['ram'])
                 
-                # STEP 2: Segmentation
                 if not pre_merge_tif.exists():
                     cmd2 = (
                         f"otbcli_LSMSSegmentation -in {filtered_tif} -inpos {spatial_tif} -out {pre_merge_tif} uint32 "
@@ -360,7 +339,6 @@ class ProcessingPipeline:
                     )
                     self._run_cmd(cmd2, stage, 'OTB Step 2/3: LSMS Segmentation', ram=params['ram'])
                 
-                # STEP 3: Merging (Produces the final label map)
                 cmd3 = (
                     f"otbcli_LSMSSmallRegionsMerging -in {filtered_tif} -inseg {pre_merge_tif} -out {self.seg_tif} uint32 "
                     f"-minsize {params['minsize']} -tilesizex {params['tilesizex']} -tilesizey {params['tilesizey']} "
@@ -371,7 +349,6 @@ class ProcessingPipeline:
                 print(f"    Rasterized segmentation saved to {self.seg_tif}")
                 
             finally:
-                # Cleanup huge intermediate files
                 print("    Cleaning up intermediate OTB files...")
                 if filtered_tif.exists(): filtered_tif.unlink()
                 if spatial_tif.exists(): spatial_tif.unlink()
@@ -379,7 +356,6 @@ class ProcessingPipeline:
                 
             return
 
-        # Python Methods
         if method in ['python_felzenszwalb', 'python_slic']:
             if not HAS_SKIMAGE:
                 print("Error: scikit-image not installed.")
@@ -391,9 +367,6 @@ class ProcessingPipeline:
 
     def _run_python_segmentation_tiled(self, params, stage, method):
         print(f"[Stage {stage}/{self.total_stages}] Running Tiled Python Segmentation ({method})...")
-        print("WARNING: Python segmentation methods are processed in tiles without overlapping margins.")
-        print("This creates straight artificial edges at tile boundaries, which is not optimal for sharp object statistics.")
-        print("For true object boundaries, it is highly recommended to use the 'otb_meanshift' method.")
         
         try:
             ds = gdal.Open(str(self.ras))
@@ -473,26 +446,8 @@ class ProcessingPipeline:
             return
 
         gdf = gpd.read_file(str(self.sample_shp))
-
-        # Try to use stratify to guarantee all classes are proportionally represented.
-        # Fall back to random sampling if a class has only 1 sample, which throws a ValueError.
-        try:
-            train_idx, test_idx = train_test_split(
-                gdf.index,
-                train_size=params['learn_frac'],
-                random_state=params['random_state'],
-                stratify=gdf['crop_id']
-            )
-        except ValueError as e:
-            print(f"WARNING: Stratified sampling failed (likely due to a class with only 1 sample). Falling back to random sampling. Error: {e}")
-            train_idx, test_idx = train_test_split(
-                gdf.index,
-                train_size=params['learn_frac'],
-                random_state=params['random_state']
-            )
-
-        learn = gdf.loc[train_idx]
-        control = gdf.loc[test_idx]
+        learn = gdf.sample(frac=params['learn_frac'], random_state=params['random_state'])
+        control = gdf.drop(learn.index)
 
         learn.to_file(str(self.learn_shp))
         control.to_file(str(self.control_shp))
@@ -518,16 +473,28 @@ class ProcessingPipeline:
         ds = gdal.Open(str(self.ras))
         gt = ds.GetGeoTransform()
         inv_gt = gdal.InvGeoTransform(gt)
+        raster_proj = ds.GetProjection()
         nbands = ds.RasterCount
         cols = ds.RasterXSize
         rows = ds.RasterYSize
+        
+        # --- FIX: ALIGN CRS FOR TRAINING SAMPLES ---
+        raster_srs = osr.SpatialReference()
+        raster_srs.ImportFromWkt(raster_proj)
+        
+        if gdf.crs:
+            if gdf.crs.to_wkt() != raster_srs.ExportToWkt():
+                print(f"    Warning: Reprojecting samples from {gdf.crs.name} to Match Raster CRS...")
+                from pyproj import CRS
+                target_crs = CRS.from_wkt(raster_srs.ExportToWkt())
+                gdf = gdf.to_crs(target_crs)
         
         print(f"    Finding target segments for {len(gdf)} points...")
         
         seg_ds = gdal.Open(str(self.seg_tif))
         seg_band = seg_ds.GetRasterBand(1)
         
-        target_segments = {} # seg_id -> crop_id
+        target_segments = {} 
         
         for idx, row in gdf.iterrows():
             px = int(inv_gt[0] + inv_gt[1] * row.geometry.x + inv_gt[2] * row.geometry.y)
@@ -549,30 +516,24 @@ class ProcessingPipeline:
         
         target_ids_set = set(target_segments.keys())
         
-        # Accumulators for true mean and std calculation
         sums = {tid: np.zeros(nbands, dtype=np.float64) for tid in target_ids_set}
-        sq_sums = {tid: np.zeros(nbands, dtype=np.float64) for tid in target_ids_set}
         counts = {tid: 0 for tid in target_ids_set}
         
         tile_size = 2048
         
-        # We only read tiles that actually contain our target segments
         for y in range(0, rows, tile_size):
             for x in range(0, cols, tile_size):
                 xsize = min(tile_size, cols - x)
                 ysize = min(tile_size, rows - y)
                 
-                # 1. Read Segmentation Tile First
                 seg_arr = seg_band.ReadAsArray(x, y, xsize, ysize)
                 tile_ids = np.unique(seg_arr)
                 
-                # 2. Check if any target segment is in this tile
                 intersect_ids = target_ids_set.intersection(tile_ids)
                 
                 if not intersect_ids:
-                    continue # Skip!
+                    continue 
                 
-                # 3. Target segment found! Read the heavy data stack.
                 sys.stdout.write(f"\r      Reading required data from Tile: x={x}, y={y}    ")
                 sys.stdout.flush()
                 
@@ -582,39 +543,28 @@ class ProcessingPipeline:
                     arr = band.ReadAsArray(x, y, xsize, ysize)
                     arr = np.nan_to_num(arr) 
                     stack_tile.append(arr)
-                stack_tile = np.array(stack_tile) # Shape: (nbands, ysize, xsize)
+                stack_tile = np.array(stack_tile) 
                 
-                # 4. Accumulate pixel sums and squared sums
                 for tid in intersect_ids:
                     mask = (seg_arr == tid)
                     pixel_count = np.sum(mask)
                     counts[tid] += pixel_count
-                    
                     for b in range(nbands):
-                        band_vals = stack_tile[b][mask]
-                        sums[tid][b] += np.sum(band_vals)
-                        sq_sums[tid][b] += np.sum(band_vals ** 2)
+                        sums[tid][b] += np.sum(stack_tile[b][mask])
         
         print("\n    Aggregation complete. Formatting features...")
         
         feature_data = {'crop_id': [], 'seg_id': []}
         for b in range(nbands):
             feature_data[f'meanB{b}'] = []
-            feature_data[f'stdB{b}'] = []
             
         for tid in target_ids_set:
             if counts[tid] > 0:
                 feature_data['crop_id'].append(target_segments[tid])
                 feature_data['seg_id'].append(tid)
                 mean_vals = sums[tid] / counts[tid]
-                # Calculate standard deviation using E[X^2] - (E[X])^2
-                variance_vals = (sq_sums[tid] / counts[tid]) - (mean_vals ** 2)
-                # Ensure variance is non-negative before sqrt (can happen due to float precision)
-                std_vals = np.sqrt(np.maximum(0, variance_vals))
-
                 for b in range(nbands):
                     feature_data[f'meanB{b}'].append(mean_vals[b])
-                    feature_data[f'stdB{b}'].append(std_vals[b])
                     
         df_final = pd.DataFrame(feature_data)
         df_final.to_csv(self.sel_csv, index=False)
@@ -636,7 +586,7 @@ class ProcessingPipeline:
         print(f"[Stage {stage}/{self.total_stages}] Training ANN...")
         
         df = pd.read_csv(self.sel_csv)
-        feat_cols = [c for c in df.columns if c.startswith('meanB') or c.startswith('stdB')]
+        feat_cols = [c for c in df.columns if c.startswith('meanB')]
         self.feat_cols = feat_cols
         
         print("    Balancing classes (Capped Oversampling)...")
@@ -668,8 +618,6 @@ class ProcessingPipeline:
             solver=params['sk_solver'],
             alpha=params['sk_alpha'],
             max_iter=params['sk_max_iter'],
-            early_stopping=True,
-            validation_fraction=0.1,
             random_state=42,
             verbose=True
         )
@@ -687,7 +635,7 @@ class ProcessingPipeline:
         print("\n")
 
     # --- Stage 5: Tiled Inference (Object-Based) ---
-    def stage_5_classify_vector(self):
+    def stage_5_classify_vector(self, force_recompute=False):
         # Renamed logic, kept name for compatibility
         self._ensure_directories()
         stage = 5
@@ -697,7 +645,7 @@ class ProcessingPipeline:
             print("ERROR: Model not found.")
             return
             
-        if self.class_tif.exists():
+        if self.class_tif.exists() and not force_recompute:
             print(f"[Stage {stage}] Classification Raster exists, skipping.")
             return
             
@@ -720,11 +668,13 @@ class ProcessingPipeline:
                                options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
         ds_cls.SetGeoTransform(ds_stack.GetGeoTransform())
         ds_cls.SetProjection(ds_stack.GetProjection())
+        ds_cls.GetRasterBand(1).SetNoDataValue(0) 
         
         ds_conf = driver.Create(str(self.conf_tif), cols, rows, 1, gdal.GDT_Float32, 
                                 options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
         ds_conf.SetGeoTransform(ds_stack.GetGeoTransform())
         ds_conf.SetProjection(ds_stack.GetProjection())
+        ds_conf.GetRasterBand(1).SetNoDataValue(0)
         
         tile_size = 2048
         
@@ -746,51 +696,45 @@ class ProcessingPipeline:
                     img_list.append(arr)
                 img = np.dstack(img_list)
                 
-                # Optimized manual feature calculation to support both mean and std
-                flat_seg = seg_arr.ravel()
-                valid_mask = flat_seg > 0
-                valid_seg = flat_seg[valid_mask]
-
-                if len(valid_seg) == 0: continue
-
-                unique_ids = np.unique(valid_seg)
-                max_id = unique_ids.max()
+                props = regionprops_table(seg_arr, intensity_image=img, properties=('label', 'mean_intensity'))
+                df_props = pd.DataFrame(props)
                 
-                counts = np.bincount(valid_seg, minlength=max_id + 1)
-
-                prop_dict = {'label': unique_ids}
-                for b in range(nbands):
-                    flat_band = img_list[b].ravel()
-                    valid_band = flat_band[valid_mask]
-
-                    sums = np.bincount(valid_seg, weights=valid_band, minlength=max_id + 1)
-                    # Convert to float64 before squaring to prevent integer overflow on large scaled int values
-                    sq_sums = np.bincount(valid_seg, weights=valid_band.astype(np.float64) ** 2, minlength=max_id + 1)
-
-                    mean_vals = sums[unique_ids] / counts[unique_ids]
-                    variance_vals = (sq_sums[unique_ids] / counts[unique_ids]) - (mean_vals ** 2)
-                    std_vals = np.sqrt(np.maximum(0, variance_vals))
-
-                    prop_dict[f'meanB{b}'] = mean_vals
-                    prop_dict[f'stdB{b}'] = std_vals
-
-                df_props = pd.DataFrame(prop_dict)
-
-                # Filter features based on what the model was trained on
-                present_cols = [c for c in feat_cols if c in df_props.columns]
-                X_tile = df_props[present_cols].values
+                if df_props.empty: continue
+                
+                rename_map = {f'mean_intensity-{i}': f'meanB{i}' for i in range(nbands)}
+                if nbands == 1 and 'mean_intensity' in df_props.columns:
+                    rename_map = {'mean_intensity': 'meanB0'}
+                df_props.rename(columns=rename_map, inplace=True)
+                
+                X_tile = df_props[feat_cols].values
                 X_scaled = scaler.transform(X_tile)
                 preds = clf.predict(X_scaled)
                 probs = np.max(clf.predict_proba(X_scaled), axis=1)
                 
-                # unique_ids and valid_seg are already calculated above
-                idx_map = np.searchsorted(unique_ids, valid_seg)
+                # SAFE MAPPING to avoid mixing IDs
+                unique_ids = df_props['label'].values
+                sort_idx = np.argsort(unique_ids)
+                sorted_ids = unique_ids[sort_idx]
+                sorted_preds = preds[sort_idx]
+                sorted_probs = probs[sort_idx]
+                
+                flat_seg = seg_arr.ravel()
+                mask = flat_seg > 0 
+                valid_seg = flat_seg[mask]
+                
+                idx_map = np.searchsorted(sorted_ids, valid_seg)
+                idx_map = np.clip(idx_map, 0, len(sorted_ids) - 1)
+                
+                valid_match = sorted_ids[idx_map] == valid_seg
                 
                 flat_cls = np.zeros_like(flat_seg, dtype=np.int32)
                 flat_conf = np.zeros_like(flat_seg, dtype=np.float32)
                 
-                flat_cls[valid_mask] = preds[idx_map]
-                flat_conf[valid_mask] = probs[idx_map]
+                global_mask = np.zeros(len(flat_seg), dtype=bool)
+                global_mask[mask] = valid_match
+                
+                flat_cls[global_mask] = sorted_preds[idx_map[valid_match]]
+                flat_conf[global_mask] = sorted_probs[idx_map[valid_match]]
                 
                 cls_tile = flat_cls.reshape(ysize, xsize)
                 conf_tile = flat_conf.reshape(ysize, xsize)
@@ -802,55 +746,38 @@ class ProcessingPipeline:
         ds_conf.FlushCache()
         print(f"    Classification saved to {self.class_tif}\n")
 
-    # --- Stage 6: Cutline ---
-    def stage_6_create_cutline(self):
-        stage = 6
-        if not self.cutline_shp.exists():
-            self._raster_to_cutline(self.ras, self.cutline_shp, stage)
-        else:
-            print(f"[Stage {stage}/{self.total_stages}] Cutline exists, skipping\n")
-
-    # --- Stage 7: Mask Class ---
-    def stage_7_mask_class(self):
+    # --- Stage 6: Mask Class ---
+    def stage_6_mask_class(self, force_recompute=False):
         self._ensure_directories()
-        stage = 7
+        stage = 6
         mask_file = self.aux_dir / 'raster_files' / 'EU_arable_areas_mask_3857.tif'
         if not self.class_tif.exists():
             print(f"ERROR: Classified TIF not found.")
             return
-        if not self.cutline_shp.exists():
-            print(f"ERROR: Cutline not found.")
-            return
-        if not mask_file.exists():
-            print(f"ERROR: Arable mask {mask_file} not found.")
-            return
 
-        if not self.masked_class.exists():
-            self._clip_and_mask(self.class_tif, mask_file, self.cutline_shp, self.masked_class, stage)
+        if not self.masked_class.exists() or force_recompute:
+            self._apply_mask(self.class_tif, mask_file, self.masked_class, stage)
         else:
             print(f"[Stage {stage}/{self.total_stages}] Masked classification exists, skipping\n")
 
-    # --- Stage 8: Mask Confidence ---
-    def stage_8_mask_confidence(self):
+    # --- Stage 7: Mask Confidence ---
+    def stage_7_mask_confidence(self, force_recompute=False):
         self._ensure_directories()
-        stage = 8
+        stage = 7
         mask_file = self.aux_dir / 'raster_files' / 'EU_arable_areas_mask_3857.tif'
         if not self.conf_tif.exists():
             print(f"ERROR: Confidence TIF not found.")
             return
-        if not self.cutline_shp.exists():
-            print(f"ERROR: Cutline not found.")
-            return
 
-        if not self.masked_conf.exists():
-            self._clip_and_mask(self.conf_tif, mask_file, self.cutline_shp, self.masked_conf, stage)
+        if not self.masked_conf.exists() or force_recompute:
+            self._apply_mask(self.conf_tif, mask_file, self.masked_conf, stage)
         else:
             print(f"[Stage {stage}/{self.total_stages}] Masked confidence exists, skipping\n")
 
-    # --- Stage 9: Metrics ---
-    def stage_9_calculate_metrics(self):
+    # --- Stage 8: Metrics ---
+    def stage_8_calculate_metrics(self):
         self._ensure_directories()
-        stage = 9
+        stage = 8
         if not self.metrics_fp.exists():
             print(f"[Stage {stage}/{self.total_stages}] Computing metrics...")
 
@@ -862,8 +789,23 @@ class ProcessingPipeline:
                 return
 
             ctrl = gpd.read_file(str(self.control_shp))
+            
             ds = gdal.Open(str(self.masked_class))
-            arr = ds.GetRasterBand(1).ReadAsArray()
+            raster_proj = ds.GetProjection()
+            raster_srs = osr.SpatialReference()
+            raster_srs.ImportFromWkt(raster_proj)
+            
+            if ctrl.crs:
+                if ctrl.crs.to_wkt() != raster_srs.ExportToWkt():
+                    print("    Aligning control points CRS to match raster...")
+                    try:
+                        from pyproj import CRS
+                        target_crs = CRS.from_wkt(raster_srs.ExportToWkt())
+                        ctrl = ctrl.to_crs(target_crs)
+                    except Exception as e:
+                        print(f"    Could not auto-align CRS: {e}")
+
+            band = ds.GetRasterBand(1)
             gt = ds.GetGeoTransform()
             inv = gdal.InvGeoTransform(gt)
             true_vals, pred_vals = [], []
@@ -872,24 +814,23 @@ class ProcessingPipeline:
                 try:
                     px = int(inv[0] + inv[1] * row.geometry.x + inv[2] * row.geometry.y)
                     py = int(inv[3] + inv[4] * row.geometry.x + inv[5] * row.geometry.y)
-                    if 0 <= px < arr.shape[1] and 0 <= py < arr.shape[0]:
+                    if 0 <= px < ds.RasterXSize and 0 <= py < ds.RasterYSize:
                         t = int(row['crop_id'])
-                        p = int(arr[py, px])
-                        if t > 0 and p > 0:
-                            true_vals.append(t)
-                            pred_vals.append(p)
+                        val_arr = band.ReadAsArray(px, py, 1, 1) 
+                        if val_arr is not None:
+                            p = int(val_arr[0, 0])
+                            if t > 0 and p > 0 and p != -9999:
+                                true_vals.append(t)
+                                pred_vals.append(p)
                 except Exception as e:
                     pass
 
             if not true_vals or not pred_vals:
                 print("ERROR: No valid matching true/predicted values found.")
+                print("HINT: Ensure your test points intersect valid data areas in the masked raster.")
                 return
 
-            # Guarantee all classes from control set are represented in the matrix, even if completely missed
-            all_control_classes = set(ctrl['crop_id'].unique().astype(int))
-            all_control_classes.discard(0)
-            labels = sorted(list(all_control_classes.union(set(pred_vals))))
-
+            labels = sorted(list(set(true_vals + pred_vals)))
             cm = confusion_matrix(true_vals, pred_vals, labels=labels)
             precisions, recalls, f1s, _ = precision_recall_fscore_support(
                 true_vals, pred_vals, labels=labels, average=None, zero_division=0
@@ -903,9 +844,14 @@ class ProcessingPipeline:
 
             resx, resy = abs(gt[1]), abs(gt[5])
             area_ha = resx * resy / 10000
-            unique_classes, counts = np.unique(arr[arr > 0], return_counts=True)
-            class_areas = dict(zip(unique_classes, counts))
-            areas = [{'Class': c, 'Area_ha': round(class_areas.get(c, 0) * area_ha, 2)} for c in labels]
+            
+            arr = band.ReadAsArray()
+            if arr is not None:
+                unique_classes, counts = np.unique(arr[arr > 0], return_counts=True)
+                class_areas = dict(zip(unique_classes, counts))
+                areas = [{'Class': c, 'Area_ha': round(class_areas.get(c, 0) * area_ha, 2)} for c in labels]
+            else:
+                 areas = [{'Class': c, 'Area_ha': 0} for c in labels]
 
             wb = openpyxl.Workbook()
             sh = wb.active
@@ -948,7 +894,7 @@ class ProcessingPipeline:
             wb.save(str(self.metrics_fp))
             print(f"Metrics saved to {self.metrics_fp}\n")
         else:
-            print(f"[Stage 9] Metrics Excel exists, skipping")
+            print(f"[Stage 8] Metrics Excel exists, skipping")
 
 
 # --- Interactive Menu Helpers ---
@@ -1011,12 +957,11 @@ def main_menu(pipeline):
     [3] Stage 3: Extract Features (Object-based Training)
     [4] Stage 4: Train ANN Classifier
     [5] Stage 5: Tiled Object-Based Inference
-    [6] Stage 6: Create Valid-Pixel Cutline
-    [7] Stage 7: Mask Classification
-    [8] Stage 8: Mask Confidence
-    [9] Stage 9: Calculate Metrics
+    [6] Stage 6: Mask Classification
+    [7] Stage 7: Mask Confidence
+    [8] Stage 8: Calculate Metrics
 
-    [A] Run All Stages
+    [A] Run All Stages (Forces overwrite of Stages 5-8 to clear old bugs)
     [Q] Quit
 
     Enter your choice:
@@ -1043,23 +988,23 @@ def main_menu(pipeline):
             elif choice == '5':
                 pipeline.stage_5_classify_vector()
             elif choice == '6':
-                pipeline.stage_6_create_cutline()
+                pipeline.stage_6_mask_class(force_recompute=True)
             elif choice == '7':
-                pipeline.stage_7_mask_class()
+                pipeline.stage_7_mask_confidence(force_recompute=True)
             elif choice == '8':
-                pipeline.stage_8_mask_confidence()
-            elif choice == '9':
-                pipeline.stage_9_calculate_metrics()
+                pipeline.stage_8_calculate_metrics()
             elif choice == 'A':
+                print("\nNOTE: Running 'A' will automatically force recomputation of Stages 5-8 to clear any corrupted old files.")
                 pipeline.stage_1_segmentation(**pipeline.stage1_params)
                 pipeline.stage_2_split_samples(**pipeline.stage2_params)
                 pipeline.stage_3_selection()
                 pipeline.stage_4_train_classifier(**pipeline.stage4_params)
-                pipeline.stage_5_classify_vector()
-                pipeline.stage_6_create_cutline()
-                pipeline.stage_7_mask_class()
-                pipeline.stage_8_mask_confidence()
-                pipeline.stage_9_calculate_metrics()
+                # Force recompute inference and masking
+                pipeline.stage_5_classify_vector(force_recompute=True)
+                pipeline.stage_6_mask_class(force_recompute=True)
+                pipeline.stage_7_mask_confidence(force_recompute=True)
+                if pipeline.metrics_fp.exists(): pipeline.metrics_fp.unlink()
+                pipeline.stage_8_calculate_metrics()
             elif choice == 'Q':
                 break
         except Exception as e:
