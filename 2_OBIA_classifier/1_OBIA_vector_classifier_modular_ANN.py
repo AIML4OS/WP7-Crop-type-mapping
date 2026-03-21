@@ -137,11 +137,11 @@ class ProcessingPipeline:
         # --- 4. Parameters ---
         self.stage1_params = {
             'method': 'otb_meanshift', 
-            'tile_size': 4096,
+            'tile_size': 1024,
             'ram': 4096,
             
             # OTB Params
-            'spatialr': 15, 'ranger': 15, 'maxiter': 10, 'minsize': 100, 'tilesizex': 4096, 'tilesizey': 4096,
+            'spatialr': 15, 'ranger': 15, 'maxiter': 10, 'minsize': 100, 'tilesizex': 1024, 'tilesizey': 1024,
             
             # Python Params (Fallback)
             'n_segments': 20000, 'compactness': 5.0, 'slic_sigma': 1.0,
@@ -268,9 +268,13 @@ class ProcessingPipeline:
                 if stack_band:
                     try:
                         stack_arr = stack_band.ReadAsArray(x, y, xsize, ysize)
-                        # Apply Footprint Mask: If original radar data is exactly 0, force output to NoData
+                        # Apply Footprint Mask: If original radar data is exactly 0 or NaN, force output to NoData
                         if stack_arr is not None:
+                            stack_nodata = stack_band.GetNoDataValue()
+                            if stack_nodata is not None:
+                                arr[stack_arr == stack_nodata] = nodata
                             arr[stack_arr == 0] = nodata
+                            arr[np.isnan(stack_arr)] = nodata
                     except Exception as e:
                         pass # Ignore if stack band reading fails for some reason
                 
@@ -321,10 +325,14 @@ class ProcessingPipeline:
             pre_merge_tif = self.seg_dir / f"{self.country}_{self.track}_pre_merge.tif"
             
             try:
+                # Add extended filenames for OTB output to enable Deflate compression and Tiling
+                # This drastically reduces the 600GB+ size of intermediate multi-temporal rasters.
+                gdal_opts = "?&gdal:co:COMPRESS=DEFLATE&gdal:co:TILED=YES&gdal:co:BIGTIFF=YES"
+
                 if not filtered_tif.exists():
                     maxiter = params.get('maxiter', 10)
                     cmd1 = (
-                        f"otbcli_MeanShiftSmoothing -in {self.ras} -fout {filtered_tif} -foutpos {spatial_tif} "
+                        f"otbcli_MeanShiftSmoothing -in {self.ras} -fout \"{filtered_tif}{gdal_opts}\" -foutpos \"{spatial_tif}{gdal_opts}\" "
                         f"-spatialr {params['spatialr']} -ranger {params['ranger']} -maxiter {maxiter} "
                         f"-ram {params['ram']}"
                     )
@@ -332,7 +340,7 @@ class ProcessingPipeline:
                 
                 if not pre_merge_tif.exists():
                     cmd2 = (
-                        f"otbcli_LSMSSegmentation -in {filtered_tif} -inpos {spatial_tif} -out {pre_merge_tif} uint32 "
+                        f"otbcli_LSMSSegmentation -in {filtered_tif} -inpos {spatial_tif} -out \"{pre_merge_tif}{gdal_opts}\" uint32 "
                         f"-spatialr {params['spatialr']} -ranger {params['ranger']} -minsize 0 "
                         f"-tilesizex {params['tilesizex']} -tilesizey {params['tilesizey']} "
                         f"-ram {params['ram']}"
@@ -340,7 +348,7 @@ class ProcessingPipeline:
                     self._run_cmd(cmd2, stage, 'OTB Step 2/3: LSMS Segmentation', ram=params['ram'])
                 
                 cmd3 = (
-                    f"otbcli_LSMSSmallRegionsMerging -in {filtered_tif} -inseg {pre_merge_tif} -out {self.seg_tif} uint32 "
+                    f"otbcli_LSMSSmallRegionsMerging -in {filtered_tif} -inseg {pre_merge_tif} -out \"{self.seg_tif}{gdal_opts}\" uint32 "
                     f"-minsize {params['minsize']} -tilesizex {params['tilesizex']} -tilesizey {params['tilesizey']} "
                     f"-ram {params['ram']}"
                 )
@@ -517,6 +525,7 @@ class ProcessingPipeline:
         target_ids_set = set(target_segments.keys())
         
         sums = {tid: np.zeros(nbands, dtype=np.float64) for tid in target_ids_set}
+        sums_sq = {tid: np.zeros(nbands, dtype=np.float64) for tid in target_ids_set}
         counts = {tid: 0 for tid in target_ids_set}
         
         tile_size = 2048
@@ -550,21 +559,30 @@ class ProcessingPipeline:
                     pixel_count = np.sum(mask)
                     counts[tid] += pixel_count
                     for b in range(nbands):
-                        sums[tid][b] += np.sum(stack_tile[b][mask])
+                        vals = stack_tile[b][mask]
+                        sums[tid][b] += np.sum(vals)
+                        sums_sq[tid][b] += np.sum(vals ** 2)
         
         print("\n    Aggregation complete. Formatting features...")
         
         feature_data = {'crop_id': [], 'seg_id': []}
         for b in range(nbands):
             feature_data[f'meanB{b}'] = []
+            feature_data[f'stdB{b}'] = []
             
         for tid in target_ids_set:
             if counts[tid] > 0:
                 feature_data['crop_id'].append(target_segments[tid])
                 feature_data['seg_id'].append(tid)
-                mean_vals = sums[tid] / counts[tid]
+                n = counts[tid]
+                mean_vals = sums[tid] / n
+                var_vals = (sums_sq[tid] / n) - (mean_vals ** 2)
+                # handle numerical precision issues
+                var_vals = np.maximum(var_vals, 0)
+                std_vals = np.sqrt(var_vals)
                 for b in range(nbands):
                     feature_data[f'meanB{b}'].append(mean_vals[b])
+                    feature_data[f'stdB{b}'].append(std_vals[b])
                     
         df_final = pd.DataFrame(feature_data)
         df_final.to_csv(self.sel_csv, index=False)
@@ -586,7 +604,7 @@ class ProcessingPipeline:
         print(f"[Stage {stage}/{self.total_stages}] Training ANN...")
         
         df = pd.read_csv(self.sel_csv)
-        feat_cols = [c for c in df.columns if c.startswith('meanB')]
+        feat_cols = [c for c in df.columns if c.startswith('meanB') or c.startswith('stdB')]
         self.feat_cols = feat_cols
         
         print("    Balancing classes (Capped Oversampling)...")
@@ -696,15 +714,25 @@ class ProcessingPipeline:
                     img_list.append(arr)
                 img = np.dstack(img_list)
                 
-                props = regionprops_table(seg_arr, intensity_image=img, properties=('label', 'mean_intensity'))
-                df_props = pd.DataFrame(props)
+                flat_seg = seg_arr.ravel()
+                mask = flat_seg > 0
+                valid_seg = flat_seg[mask]
+
+                if len(valid_seg) == 0: continue
+
+                flat_img = img.reshape(-1, nbands)[mask]
+
+                df_img = pd.DataFrame(flat_img, columns=[f'B{i}' for i in range(nbands)])
+                df_img['label'] = valid_seg
                 
-                if df_props.empty: continue
+                grouped = df_img.groupby('label')
+                means = grouped.mean()
+                stds = grouped.std().fillna(0)
                 
-                rename_map = {f'mean_intensity-{i}': f'meanB{i}' for i in range(nbands)}
-                if nbands == 1 and 'mean_intensity' in df_props.columns:
-                    rename_map = {'mean_intensity': 'meanB0'}
-                df_props.rename(columns=rename_map, inplace=True)
+                df_props = pd.DataFrame({'label': means.index})
+                for i in range(nbands):
+                    df_props[f'meanB{i}'] = means[f'B{i}'].values
+                    df_props[f'stdB{i}'] = stds[f'B{i}'].values
                 
                 X_tile = df_props[feat_cols].values
                 X_scaled = scaler.transform(X_tile)
