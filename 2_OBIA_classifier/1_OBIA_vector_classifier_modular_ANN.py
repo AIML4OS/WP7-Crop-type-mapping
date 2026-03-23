@@ -138,10 +138,10 @@ class ProcessingPipeline:
         self.stage1_params = {
             'method': 'otb_meanshift', 
             'tile_size': 1024,
-            'ram': 4096,
+            'ram': 65536,
             
             # OTB Params
-            'spatialr': 15, 'ranger': 15, 'maxiter': 10, 'minsize': 100, 'tilesizex': 1024, 'tilesizey': 1024,
+            'spatialr': 15, 'ranger': 15, 'maxiter': 5, 'minsize': 100, 'tilesizex': 1024, 'tilesizey': 1024,
             
             # Python Params (Fallback)
             'n_segments': 20000, 'compactness': 5.0, 'slic_sigma': 1.0,
