@@ -337,22 +337,26 @@ class ProcessingPipeline:
                         f"-ram {params['ram']}"
                     )
                     self._run_cmd(cmd1, stage, 'OTB Step 1/3: MeanShift Smoothing', ram=params['ram'])
+                    if not filtered_tif.exists() or not spatial_tif.exists():
+                        raise RuntimeError(f"OTB Step 1/3 failed: Expected output files not found.")
                 
                 if not pre_merge_tif.exists():
                     cmd2 = (
                         f"otbcli_LSMSSegmentation -in {filtered_tif} -inpos {spatial_tif} -out \"{pre_merge_tif}{gdal_opts}\" uint32 "
                         f"-spatialr {params['spatialr']} -ranger {params['ranger']} -minsize 0 "
                         f"-tilesizex {params['tilesizex']} -tilesizey {params['tilesizey']} "
-                        f"-ram {params['ram']}"
                     )
                     self._run_cmd(cmd2, stage, 'OTB Step 2/3: LSMS Segmentation', ram=params['ram'])
+                    if not pre_merge_tif.exists():
+                        raise RuntimeError(f"OTB Step 2/3 failed: Expected output file not found.")
                 
                 cmd3 = (
                     f"otbcli_LSMSSmallRegionsMerging -in {filtered_tif} -inseg {pre_merge_tif} -out \"{self.seg_tif}{gdal_opts}\" uint32 "
                     f"-minsize {params['minsize']} -tilesizex {params['tilesizex']} -tilesizey {params['tilesizey']} "
-                    f"-ram {params['ram']}"
                 )
                 self._run_cmd(cmd3, stage, 'OTB Step 3/3: Small Regions Merging', ram=params['ram'])
+                if not self.seg_tif.exists():
+                    raise RuntimeError(f"OTB Step 3/3 failed: Expected output file not found.")
                 
                 print(f"    Rasterized segmentation saved to {self.seg_tif}")
                 
