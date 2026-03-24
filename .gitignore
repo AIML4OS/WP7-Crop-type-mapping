@@ -2,3 +2,8 @@
 myenv/
 venv/
 __pycache__/
+
+# OTB and processing directories (z poprawnymi ukośnikami!)
+AIML_CropMapper/3_OBIA_classifier/OTB-6.2.0-Win64/
+AIML_CropMapper/auxiliary_files/
+AIML_CropMapper/workingDir/
