@@ -14,11 +14,11 @@ from openpyxl.styles import Font
 # --- Configuration (Global) ---
 
 # Configuration paths
-base_dir = Path("D:/AIML_CropMapper/workingDir")
-aux_dir = Path("D:/AIML_CropMapper/auxiliary_files")
+base_dir = Path("D:/AIML_CropMapper/AIML_CropMapper/workingDir")
+aux_dir = Path("D:/AIML_CropMapper/AIML_CropMapper/auxiliary_files")
 track_regions = {
-    'P1': 'AU', 'P1a': 'AU',
-    'P2': 'IR', 'P3': 'NL',
+    'P1': 'AT', 'P1a': 'AT',
+    'P2': 'IE', 'P3': 'NL',
     'P4': 'PT', 'P4a': 'PT'
 }
 TOTAL_STAGES = 11

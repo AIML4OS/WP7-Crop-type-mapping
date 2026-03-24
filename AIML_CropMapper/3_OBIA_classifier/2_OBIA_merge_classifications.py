@@ -9,8 +9,8 @@ from openpyxl.styles import Font
 
 # Minimal mapping of track → country; extend as needed
 TRACK_REGIONS = {
-    'P1':  'AU', 'P1a': 'AU',
-    'P2':  'IR',
+    'P1':  'AT', 'P1a': 'AT',
+    'P2':  'IE',
     'P3':  'NL',
     'P4':  'PT', 'P4a': 'PT',
     'P5':  'XX', 'P5a': 'XX', 'P5b': 'XX',

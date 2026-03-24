@@ -9,7 +9,7 @@ from datetime import datetime
 
 # --- Configuration ---
 gpt_exe = r"D:\Program Files\esa-snap\bin\gpt.exe"
-base_dir = r"D:\AIML_CropMapper\workingDir"
+base_dir = r"D:\AIML_CropMapper\AIML_CropMapper\workingDir"
 auxdata_path = r"C:\Users\slesinskip\.snap\auxdata"
 
 # --- Correct EPSG:3857 WKT for SNAP ---

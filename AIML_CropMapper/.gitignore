@@ -1,9 +1,0 @@
-# Ignore Python environments and cache
-myenv/
-venv/
-__pycache__/*.tif
-*.tif
-AIML_CropMapper_Cloud/auxiliary_files/raster_files/
-*.tif
-AIML_CropMapper_Cloud/2_OBIA_classifier/OTB-6.2.0-Win64/
-AIML_CropMapper_Cloud/auxiliary_files/raster_files/

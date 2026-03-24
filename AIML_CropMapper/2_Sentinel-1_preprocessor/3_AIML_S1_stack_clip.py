@@ -6,7 +6,7 @@ from datetime import datetime
 from osgeo import gdal, gdalconst
 
 # Configuration
-base_dir = Path("D:/AIML_CropMapper/workingDir")
+base_dir = Path("D:/AIML_CropMapper/AIML_CropMapper/workingDir")
 shapefiles_dir = Path("D:/AIML_CropMapper/auxiliary_files/shapefiles_nuts")
 group_map = {"P1": "P1a", "P4": "P4a"}
 strip_pattern = re.compile(r"_(mst|slv\d+)_")

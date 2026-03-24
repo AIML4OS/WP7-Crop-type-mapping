@@ -1,7 +1,7 @@
 {
   "creodias_user_mail": "p.slesinski@gmail.com",
   "creodias_user_password": "382opix3lvi3wDCP2!",
-  "download_directory": "D:\\AIML_CropMapper\\workingDir",
+  "download_directory": "D:\\AIML_CropMapper\\AIML_CropMapper\\workingDir",
   "geometry_directory": "regions",
   "gpt_directory": "D:\\Program Files\\esa-snap\\bin\\gpt.exe"
 }

@@ -30,15 +30,15 @@ except ImportError:
 # python 1_OBIA_vector_classifier_modular_ANN.py -track P1a
 
 # Base Paths provided by user
-base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
-aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
+base_dir = Path("D:/AIML_CropMapper/AIML_CropMapper/workingDir")
+aux_dir = Path("D:/AIML_CropMapper/AIML_CropMapper/auxiliary_files")
 
 # OTB Installation Path (Still used for some auxiliary tasks if needed, but main flow is Python)
 otb_dir = Path("D:/AIML_CropMapper_Cloud/2_OBIA_classifier/OTB-6.2.0-Win64")
 
 # Track to Country Mapping
 track_regions = {
-    'P1': 'AU', 'P1a': 'AU',
+    'P1': 'AT', 'P1a': 'AT',
     'P2': 'IE', 'P2a': 'IE',
     'P3': 'NL',
     'P4': 'PT', 'P4a': 'PT'
