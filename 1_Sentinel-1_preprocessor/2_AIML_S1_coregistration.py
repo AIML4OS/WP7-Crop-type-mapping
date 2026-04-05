@@ -9,8 +9,8 @@ import shutil
 import sys
 from datetime import datetime
 
-# python 2_AIML_S1_coregistration.py -t P1 P1a P2 P2a P3 P4 P4a
-# python 2_AIML_S1_coregistration.py -t P2
+# python 2_AIML_S1_coregistration.py --t P1 P1a P2 P2a P3 P4 P4a
+# python 2_AIML_S1_coregistration.py --t P2
 
 
 # ================= CONFIGURATION =================
@@ -354,7 +354,7 @@ def run_full_processing(selected_tracks, overwrite=False):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-t', '--track', nargs='+', choices=['P1', 'P2', 'P3', 'P4', 'P1a', 'P4a'], required=True)
+    parser.add_argument('-t', '--track', nargs='+', choices=['P1', 'P2','P2a', 'P3', 'P4', 'P1a', 'P4a'], required=True)
     parser.add_argument('--overwrite', action='store_true', help="Force recreation of the wrapped stack file.")
     args = parser.parse_args()
 
