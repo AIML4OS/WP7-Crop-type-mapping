@@ -99,8 +99,9 @@ class ProcessingPipeline:
             raise FileNotFoundError(f"Processing directory does not exist: {self.proc_dir}")
 
         # --- 3. Define all output file paths ---
+        # Zmieniamy rozszerzenie wektora na .sqlite, aby ominąć 2GB limit dla Shapefile!
         self.seg_tif = self.seg_dir / f"{self.country}_{self.track}_segmentation.tif"
-        self.seg_shp = self.seg_dir / f"{self.country}_{self.track}_segmentation.shp"
+        self.seg_shp = self.seg_dir / f"{self.country}_{self.track}_segmentation.sqlite"
 
         # Samples
         samples_base = self.aux_dir / 'shapefiles_samples'
@@ -137,12 +138,13 @@ class ProcessingPipeline:
 
         # --- 4. Parameters ---
         self.stage1_params = {
-            'method': 'otb_meanshift_seasonal',
-            'tile_size': 4096,
-            'ram': 4096,
+            'method': 'otb_meanshift',
+            'tile_size': 1024,
+            'ram': 16384,
 
-            # OTB Params (ranger 2.0 is ideal for a 6-band dB composite, preserving sharp borders)
-            'spatialr': 25, 'ranger': 6.0, 'minsize': 200, 'tilesizex': 4096, 'tilesizey': 4096,
+            # OTB Params (User's original working params for LargeScaleMeanShift vector mode)
+            # Zastosowano ranger 2.0, optymalny dla stert dB radaru, oraz 1024 tiles do unikania obcietych map
+            'spatialr': 25, 'ranger': 6.0, 'minsize': 100, 'tilesizex': 1024, 'tilesizey': 1024,
 
             # Python Params (Fallback)
             'n_segments': 20000, 'compactness': 5.0, 'slic_sigma': 1.0,
@@ -414,7 +416,7 @@ class ProcessingPipeline:
             print(f"[Stage {stage}/{self.total_stages}] Segmentation Raster exists, skipping\n")
             return
 
-        method = params.get('method', 'otb_meanshift_seasonal')
+        method = params.get('method', 'otb_meanshift')
 
         if method in ['otb_meanshift', 'otb_meanshift_seasonal']:
             print(f"[Stage {stage}/{self.total_stages}] Running OTB Large-Scale Mean-Shift (Vector Mode) [{method}]...")
