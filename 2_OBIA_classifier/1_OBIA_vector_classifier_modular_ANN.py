@@ -142,7 +142,7 @@ class ProcessingPipeline:
             'ram': 4096,
 
             # OTB Params (ranger 2.0 is ideal for a 6-band dB composite, preserving sharp borders)
-            'spatialr': 20, 'ranger': 2.0, 'minsize': 200, 'tilesizex': 4096, 'tilesizey': 4096,
+            'spatialr': 20, 'ranger': 10.0, 'minsize': 200, 'tilesizex': 4096, 'tilesizey': 4096,
 
             # Python Params (Fallback)
             'n_segments': 20000, 'compactness': 5.0, 'slic_sigma': 1.0,
