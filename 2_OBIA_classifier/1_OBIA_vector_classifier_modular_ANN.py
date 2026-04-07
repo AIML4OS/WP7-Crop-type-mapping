@@ -16,6 +16,9 @@ import openpyxl
 from openpyxl.styles import Font
 import shutil
 
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
 # Try importing scikit-image
 try:
     from skimage.segmentation import felzenszwalb, slic
@@ -139,12 +142,12 @@ class ProcessingPipeline:
         # --- 4. Parameters ---
         self.stage1_params = {
             'method': 'otb_meanshift',
-            'tile_size': 1024,
-            'ram': 16384,
+            'tile_size': 4096,
+            'ram': 65536,
 
             # OTB Params (User's original working params for LargeScaleMeanShift vector mode)
             # Zastosowano ranger 2.0, optymalny dla stert dB radaru, oraz 1024 tiles do unikania obcietych map
-            'spatialr': 25, 'ranger': 6.0, 'minsize': 100, 'tilesizex': 1024, 'tilesizey': 1024,
+            'spatialr': 25, 'ranger': 6.0, 'minsize': 100, 'tilesizex': 4096, 'tilesizey': 4096,
 
             # Python Params (Fallback)
             'n_segments': 20000, 'compactness': 5.0, 'slic_sigma': 1.0,
@@ -155,7 +158,7 @@ class ProcessingPipeline:
         }
         self.stage4_params = {
             'classifier': 'ann_sklearn',
-            'sk_hidden_sizes': '100',
+            'sk_hidden_sizes': '100,50',
             'sk_activation': 'relu',
             'sk_solver': 'adam',
             'sk_alpha': 0.0001,
@@ -804,44 +807,51 @@ class ProcessingPipeline:
             print(f"[Stage {stage}] Classification Raster exists, skipping.")
             return
 
-        print(f"[Stage {stage}/{self.total_stages}] Running Tiled Object-Based Inference...")
+        print(f"[Stage {stage}/{self.total_stages}] Running Tiled Object-Based Inference (Parallelized)...")
 
         data = joblib.load(model_file)
         clf = data['model']
         scaler = data['scaler']
         feat_cols = data['feats']
 
-        ds_stack = gdal.Open(str(self.ras))
-        ds_seg = gdal.Open(str(self.seg_tif))
-
-        cols = ds_stack.RasterXSize
-        rows = ds_stack.RasterYSize
-        nbands = ds_stack.RasterCount
+        ds_stack_info = gdal.Open(str(self.ras))
+        cols = ds_stack_info.RasterXSize
+        rows = ds_stack_info.RasterYSize
+        nbands = ds_stack_info.RasterCount
+        gt = ds_stack_info.GetGeoTransform()
+        proj = ds_stack_info.GetProjection()
+        ds_stack_info = None
 
         driver = gdal.GetDriverByName('GTiff')
         ds_cls = driver.Create(str(self.class_tif), cols, rows, 1, gdal.GDT_Int32,
                                options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
-        ds_cls.SetGeoTransform(ds_stack.GetGeoTransform())
-        ds_cls.SetProjection(ds_stack.GetProjection())
+        ds_cls.SetGeoTransform(gt)
+        ds_cls.SetProjection(proj)
         ds_cls.GetRasterBand(1).SetNoDataValue(0)
 
         ds_conf = driver.Create(str(self.conf_tif), cols, rows, 1, gdal.GDT_Float32,
                                 options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
-        ds_conf.SetGeoTransform(ds_stack.GetGeoTransform())
-        ds_conf.SetProjection(ds_stack.GetProjection())
+        ds_conf.SetGeoTransform(gt)
+        ds_conf.SetProjection(proj)
         ds_conf.GetRasterBand(1).SetNoDataValue(0)
 
         tile_size = 2048
 
-        for y in range(0, rows, tile_size):
-            for x in range(0, cols, tile_size):
-                xsize = min(tile_size, cols - x)
-                ysize = min(tile_size, rows - y)
+        # We need a lock when writing to the output datasets
+        write_lock = threading.Lock()
 
-                print(f"    Inferencing Tile: x={x}, y={y}")
+        def process_tile(x, y):
+            xsize = min(tile_size, cols - x)
+            ysize = min(tile_size, rows - y)
 
+            # Each thread needs its own GDAL dataset handles to be thread-safe
+            ds_stack = gdal.Open(str(self.ras))
+            ds_seg = gdal.Open(str(self.seg_tif))
+
+            try:
                 seg_arr = ds_seg.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
-                if np.all(seg_arr == 0): continue
+                if np.all(seg_arr == 0):
+                    return
 
                 img_list = []
                 for b in range(1, nbands + 1):
@@ -855,7 +865,8 @@ class ProcessingPipeline:
                 mask = flat_seg > 0
                 valid_seg = flat_seg[mask]
 
-                if len(valid_seg) == 0: continue
+                if len(valid_seg) == 0:
+                    return
 
                 flat_img = img.reshape(-1, nbands)[mask]
 
@@ -876,20 +887,14 @@ class ProcessingPipeline:
                 preds = clf.predict(X_scaled)
                 probs = np.max(clf.predict_proba(X_scaled), axis=1)
 
-                # SAFE MAPPING to avoid mixing IDs
                 unique_ids = df_props['label'].values
                 sort_idx = np.argsort(unique_ids)
                 sorted_ids = unique_ids[sort_idx]
                 sorted_preds = preds[sort_idx]
                 sorted_probs = probs[sort_idx]
 
-                flat_seg = seg_arr.ravel()
-                mask = flat_seg > 0
-                valid_seg = flat_seg[mask]
-
                 idx_map = np.searchsorted(sorted_ids, valid_seg)
                 idx_map = np.clip(idx_map, 0, len(sorted_ids) - 1)
-
                 valid_match = sorted_ids[idx_map] == valid_seg
 
                 flat_cls = np.zeros_like(flat_seg, dtype=np.int32)
@@ -904,8 +909,25 @@ class ProcessingPipeline:
                 cls_tile = flat_cls.reshape(ysize, xsize)
                 conf_tile = flat_conf.reshape(ysize, xsize)
 
-                ds_cls.GetRasterBand(1).WriteArray(cls_tile, x, y)
-                ds_conf.GetRasterBand(1).WriteArray(conf_tile, x, y)
+                with write_lock:
+                    print(f"    Writing Tile: x={x}, y={y}")
+                    ds_cls.GetRasterBand(1).WriteArray(cls_tile, x, y)
+                    ds_conf.GetRasterBand(1).WriteArray(conf_tile, x, y)
+            finally:
+                ds_stack = None
+                ds_seg = None
+
+
+        tiles_to_process = []
+        for y in range(0, rows, tile_size):
+            for x in range(0, cols, tile_size):
+                tiles_to_process.append((x, y))
+
+        print(f"    Dispatching {len(tiles_to_process)} tiles to 20 workers...")
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(process_tile, x, y) for x, y in tiles_to_process]
+            for future in futures:
+                future.result() # Wait for completion and raise any exceptions
 
         ds_cls.FlushCache()
         ds_conf.FlushCache()
