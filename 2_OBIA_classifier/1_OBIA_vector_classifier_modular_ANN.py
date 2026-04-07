@@ -148,7 +148,7 @@ class ProcessingPipeline:
 
             # OTB Params (User's original working params for LargeScaleMeanShift vector mode)
             # Zastosowano ranger 2.0, optymalny dla stert dB radaru, oraz 1024 tiles do unikania obcietych map
-            'spatialr': 15, 'ranger': 3.0, 'minsize': 100, 'tilesizex': 4096, 'tilesizey': 4096,
+            'spatialr': 20, 'ranger': 6.0, 'minsize': 100, 'tilesizex': 4096, 'tilesizey': 4096,
 
             # Python Params (Fallback)
             'n_segments': 20000, 'compactness': 5.0, 'slic_sigma': 1.0,
