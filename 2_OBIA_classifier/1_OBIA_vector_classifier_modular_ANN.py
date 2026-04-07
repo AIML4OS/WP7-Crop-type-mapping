@@ -143,7 +143,7 @@ class ProcessingPipeline:
         self.stage1_params = {
             'method': 'otb_meanshift',
             'tile_size': 4096,
-            'ram': 65536,
+            'ram': 32768,
 
             # OTB Params (User's original working params for LargeScaleMeanShift vector mode)
             # Zastosowano ranger 2.0, optymalny dla stert dB radaru, oraz 1024 tiles do unikania obcietych map
@@ -574,12 +574,12 @@ class ProcessingPipeline:
             print("ERROR: Input sample file not found.")
             return
 
-        gdf = gpd.read_file(str(self.sample_shp))
+        gdf = gpd.read_file(str(self.sample_shp), engine="pyogrio")
         learn = gdf.sample(frac=params['learn_frac'], random_state=params['random_state'])
         control = gdf.drop(learn.index)
 
-        learn.to_file(str(self.learn_shp))
-        control.to_file(str(self.control_shp))
+        learn.to_file(str(self.learn_shp), engine="pyogrio")
+        control.to_file(str(self.control_shp), engine="pyogrio")
         print(f"Completed stage {stage}.\n")
 
     # --- Stage 3: Feature Extraction (Object-Based) ---
@@ -597,7 +597,7 @@ class ProcessingPipeline:
             print("ERROR: Learn samples not found.")
             return
 
-        gdf = gpd.read_file(str(self.learn_shp))
+        gdf = gpd.read_file(str(self.learn_shp), engine="pyogrio")
 
         ds = gdal.Open(str(self.ras))
         gt = ds.GetGeoTransform()
@@ -975,7 +975,7 @@ class ProcessingPipeline:
                 print(f"ERROR: Masked classification not found.")
                 return
 
-            ctrl = gpd.read_file(str(self.control_shp))
+            ctrl = gpd.read_file(str(self.control_shp), engine="pyogrio")
 
             ds = gdal.Open(str(self.masked_class))
             raster_proj = ds.GetProjection()

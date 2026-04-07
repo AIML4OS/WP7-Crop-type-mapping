@@ -257,12 +257,12 @@ class ProcessingPipeline:
 
         # --- Step 4: Intersect with NUTS (The Logic from Old Code) ---
         try:
-            gdf_footprint = gpd.read_file(str(temp_footprint))
+            gdf_footprint = gpd.read_file(str(temp_footprint), engine="pyogrio")
             # Keep only valid parts (DN=1)
             gdf_footprint = gdf_footprint[gdf_footprint['DN'] == 1]
 
             if has_nuts:
-                gdf_nuts = gpd.read_file(str(nuts_path))
+                gdf_nuts = gpd.read_file(str(nuts_path), engine="pyogrio")
 
                 # Ensure Coordinate Systems match
                 if gdf_footprint.crs != gdf_nuts.crs:
@@ -284,7 +284,7 @@ class ProcessingPipeline:
             gdf_final['DN'] = 1
 
             # Save Final Cutline
-            gdf_final.to_file(str(cutline_shp))
+            gdf_final.to_file(str(cutline_shp), engine="pyogrio")
             print(f"Cutline saved to {cutline_shp}\n")
 
         except Exception as e:
@@ -359,12 +359,12 @@ class ProcessingPipeline:
             print(f"ERROR: Input sample file not found: {self.sample_shp}")
             return
 
-        gdf = gpd.read_file(str(self.sample_shp))
+        gdf = gpd.read_file(str(self.sample_shp), engine="pyogrio")
         learn = gdf.sample(frac=params['learn_frac'], random_state=params['random_state'])
         control = gdf.drop(learn.index)
 
-        learn.to_file(str(self.learn_shp))
-        control.to_file(str(self.control_shp))
+        learn.to_file(str(self.learn_shp), engine="pyogrio")
+        control.to_file(str(self.control_shp), engine="pyogrio")
         print(f"Completed stage {stage}. Total {len(gdf)}, Learn {len(learn)}, Control {len(control)}\n")
 
     # --- Stage 3: Selection (FIXED FOR NEW GEOPANDAS) ---
@@ -380,8 +380,8 @@ class ProcessingPipeline:
                 print("ERROR: Segmentation not found. Run Stage 1 first.")
                 return
 
-            pts = gpd.read_file(self.learn_shp)
-            polys = gpd.read_file(self.seg_shp)
+            pts = gpd.read_file(self.learn_shp, engine="pyogrio")
+            polys = gpd.read_file(self.seg_shp, engine="pyogrio")
 
             # Ensure CRS matches
             if polys.crs != pts.crs:
@@ -396,7 +396,7 @@ class ProcessingPipeline:
                 # Fallback for very old versions (just in case)
                 sel = gpd.sjoin(polys, pts, how='inner', op='intersects')
 
-            sel.to_file(self.sel_shp)
+            sel.to_file(self.sel_shp, engine="pyogrio")
             print(f"[Stage {stage}/{self.total_stages}] Selected {len(sel)} features\n")
         else:
             print(f"[Stage {stage}/{self.total_stages}] Selection exists, skipping\n")
@@ -414,7 +414,7 @@ class ProcessingPipeline:
             print("ERROR: Selected samples file not found. Run Stage 3 first.")
             return
 
-        df_sel = gpd.read_file(self.sel_shp)
+        df_sel = gpd.read_file(self.sel_shp, engine="pyogrio")
         feats = [c for c in df_sel.columns if c.startswith('meanB')]
         if not feats:
             print("ERROR: No features starting with 'meanB' found in selected shapefile.")
@@ -483,7 +483,7 @@ class ProcessingPipeline:
             try:
                 if not self.sel_shp.exists():
                     raise FileNotFoundError("sel_shp not found, run stage 3")
-                df_sel = gpd.read_file(self.sel_shp)
+                df_sel = gpd.read_file(self.sel_shp, engine="pyogrio")
                 feats = [c for c in df_sel.columns if c.startswith('meanB')]
                 self.feat_str = ' '.join(feats)
             except Exception as e:
@@ -591,7 +591,7 @@ class ProcessingPipeline:
                 return
 
             # Read control points and masked classified raster
-            ctrl = gpd.read_file(str(self.control_shp))
+            ctrl = gpd.read_file(str(self.control_shp), engine="pyogrio")
             ds = gdal.Open(str(self.masked_class))
             arr = ds.GetRasterBand(1).ReadAsArray()
             gt = ds.GetGeoTransform()

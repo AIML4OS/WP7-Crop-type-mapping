@@ -180,7 +180,7 @@ TEMPLATE_FILTER_TC_FULL = r'''<graph id="Graph">
   <node id="Terrain-Correction">
     <operator>Terrain-Correction</operator>
     <sources>
-      <sourceProduct refid="Multi-Temporal-Speckle-Filter"/>
+      <sourceProduct refid="Speckle-Filter"/>
     </sources>
     <parameters class="com.bc.ceres.binding.dom.XppDomElement">
       <demName>SRTM 3Sec</demName>
@@ -203,7 +203,7 @@ TEMPLATE_FILTER_TC_FULL = r'''<graph id="Graph">
   <node id="Speckle-Filter">
     <operator>Speckle-Filter</operator>
     <sources>
-        <sourceProduct refid="LinearToFromdB"/>
+        <sourceProduct refid="Multi-Temporal-Speckle-Filter"/>
     </sources>
     <parameters class="com.bc.ceres.binding.dom.XppDomElement">
       <filter>Median</filter>
@@ -211,7 +211,7 @@ TEMPLATE_FILTER_TC_FULL = r'''<graph id="Graph">
   </node>
   <node id="Write">
     <operator>Write</operator>
-    <sources><sourceProduct refid="Speckle-Filter"/></sources>
+    <sources><sourceProduct refid="LinearToFromdB"/></sources>
     <parameters class="com.bc.ceres.binding.dom.XppDomElement">
       <file>{output_file}</file>
       <formatName>BEAM-DIMAP</formatName>
