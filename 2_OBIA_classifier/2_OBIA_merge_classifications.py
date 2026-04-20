@@ -103,79 +103,93 @@ def main():
 
     print(f"Global mosaic: {cols} cols × {rows} rows")
 
-    # --- warp and stack -----------------------------------------------------
-    class_stack = []
-    conf_stack  = []
+    # --- warp and stack using VRTs to avoid OOM ------------------------------
+    ds_cls_list = []
+    ds_conf_list = []
+    nodata_vals = []
+    
     for tr, country, cls_fp, conf_fp in tracks:
-        # classification
-        mem_cls = gdal.Warp(
-            '', str(cls_fp), format='MEM',
+        # classification VRT
+        vrt_cls = gdal.Warp(
+            '', str(cls_fp), format='VRT',
             width=cols, height=rows,
             outputBounds=(minX, minY, maxX, maxY),
             dstSRS=proj,
             resampleAlg=gdal.GRA_NearestNeighbour
         )
-        arr_cls = mem_cls.GetRasterBand(1).ReadAsArray()
-        nod     = mem_cls.GetRasterBand(1).GetNoDataValue()
+        ds_cls_list.append(vrt_cls)
+        nodata_vals.append(vrt_cls.GetRasterBand(1).GetNoDataValue())
 
-        # confidence
-        mem_conf = gdal.Warp(
-            '', str(conf_fp), format='MEM',
+        # confidence VRT
+        vrt_conf = gdal.Warp(
+            '', str(conf_fp), format='VRT',
             width=cols, height=rows,
             outputBounds=(minX, minY, maxX, maxY),
             dstSRS=proj,
             resampleAlg=gdal.GRA_NearestNeighbour
         )
-        arr_conf = mem_conf.GetRasterBand(1).ReadAsArray().astype(np.float32)
+        ds_conf_list.append(vrt_conf)
 
-        # mask out nodata
-        if nod is not None:
-            arr_conf[arr_cls == nod] = np.nan
-            arr_cls = np.where(arr_cls == nod, 0, arr_cls).astype(np.int32)
-
-        class_stack.append(arr_cls)
-        conf_stack.append(arr_conf)
-
-    class_stack = np.stack(class_stack, axis=0)  # (n_tracks, rows, cols)
-    conf_stack  = np.stack(conf_stack, axis=0)
-
-    # --- build highest-confidence mosaic -----------------------------------
-    conf_stack[np.isnan(conf_stack)] = -np.inf
-    idx   = np.argmax(conf_stack, axis=0)               # (rows, cols)
-    final = np.take_along_axis(class_stack, idx[None,:,:], axis=0)[0]
-    final[np.all(np.isneginf(conf_stack), axis=0)] = 0
-
-    # --- apply morphological sieve filter to restore objects -------------
-    print("Applying Sieve Filter to remove slivers and isolated pixels...")
-    drv_mem = gdal.GetDriverByName('MEM')
-    mem_ds = drv_mem.Create('', cols, rows, 1, gdal.GDT_Int32)
-    mem_band = mem_ds.GetRasterBand(1)
-    mem_band.WriteArray(final)
-    # EXPLICITLY SET NODATA so background (0) does not merge with small crops
-    mem_band.SetNoDataValue(0)
-
-    # Using threshold of 50 pixels (approx field size depending on resolution)
-    # 8-connectedness is generally preferred for diagonals
-    gdal.SieveFilter(mem_band, None, mem_band, 50, 8, callback=None)
-    final = mem_band.ReadAsArray()
-    mem_ds = None
-    print("Sieve Filter complete.")
-
-    # --- save mosaic --------------------------------------------------------
+    # --- Prepare output file ------------------------------------------------
     base_tr, base_country, _, _ = tracks[0]
     out_dir = base_dir / base_tr / 'classification_results'
     out_tif = out_dir / f"{base_country}_final_classification.tif"
-    drv     = gdal.GetDriverByName('GTiff')
-    ds_out  = drv.Create(str(out_tif), cols, rows, 1, gdal.GDT_Int32)
+    
+    drv = gdal.GetDriverByName('GTiff')
+    ds_out = drv.Create(str(out_tif), cols, rows, 1, gdal.GDT_Int32, 
+                        options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
     ds_out.SetGeoTransform(gt_global)
     ds_out.SetProjection(proj)
-    band = ds_out.GetRasterBand(1)
-    band.WriteArray(final)
-    band.SetNoDataValue(0)
+    band_out = ds_out.GetRasterBand(1)
+    band_out.SetNoDataValue(0)
+    
+    # --- Block by block processing ------------------------------------------
+    gdal.SetCacheMax(4 * 1024 * 1024 * 1024)
+    tile_size = 4096
+    print("Merging tracks block-by-block to conserve memory...")
+    
+    for y in range(0, rows, tile_size):
+        for x in range(0, cols, tile_size):
+            xsize = min(tile_size, cols - x)
+            ysize = min(tile_size, rows - y)
+            
+            c_stack = []
+            cf_stack = []
+            
+            for i in range(len(tracks)):
+                c_arr = ds_cls_list[i].GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                cf_arr = ds_conf_list[i].GetRasterBand(1).ReadAsArray(x, y, xsize, ysize).astype(np.float32)
+                nod = nodata_vals[i]
+                
+                if nod is not None:
+                    cf_arr[c_arr == nod] = np.nan
+                    c_arr = np.where(c_arr == nod, 0, c_arr).astype(np.int32)
+                    
+                c_stack.append(c_arr)
+                cf_stack.append(cf_arr)
+                
+            c_stack = np.stack(c_stack, axis=0)
+            cf_stack = np.stack(cf_stack, axis=0)
+            
+            cf_stack[np.isnan(cf_stack)] = -np.inf
+            idx = np.argmax(cf_stack, axis=0)
+            final_block = np.take_along_axis(c_stack, idx[None,:,:], axis=0)[0]
+            final_block[np.all(np.isneginf(cf_stack), axis=0)] = 0
+            
+            band_out.WriteArray(final_block, x, y)
+
+    ds_out.FlushCache()
+    
+    # --- apply morphological sieve filter to restore objects -------------
+    print("Applying Sieve Filter to remove slivers and isolated pixels...")
+    # Using threshold of 50 pixels (approx field size depending on resolution)
+    # 8-connectedness is generally preferred for diagonals
+    gdal.SieveFilter(band_out, None, band_out, 50, 8, callback=None)
     ds_out.FlushCache()
     print(f"Merged classification saved: {out_tif}")
 
     # --- compute metrics & areas --------------------------------------------
+    print("Calculating metrics and areas...")
     ctrl_shp = out_dir / 'samples' / 'control.shp'
     ctrl     = gpd.read_file(str(ctrl_shp))
     inv      = gdal.InvGeoTransform(gt_global)
@@ -192,7 +206,14 @@ def main():
     valid_px = px_vals[valid_mask]
     valid_py = py_vals[valid_mask]
     valid_crop_ids = crop_ids[valid_mask].astype(int)
-    valid_preds = final[valid_py, valid_px].astype(int)
+    
+    # Read predictions locally per point to avoid full raster memory
+    valid_preds = np.zeros(len(valid_px), dtype=int)
+    for i in range(len(valid_px)):
+        val = band_out.ReadAsArray(int(valid_px[i]), int(valid_py[i]), 1, 1)
+        if val is not None:
+            valid_preds[i] = val[0, 0]
+            
     final_mask = (valid_crop_ids > 0) & (valid_preds > 0)
 
     true_vals = valid_crop_ids[final_mask].tolist()
@@ -214,11 +235,23 @@ def main():
     oa    = np.trace(cm) / total
     kappa = (oa - exp) / (1 - exp) if (1 - exp) else np.nan
 
+    # Calculate areas block-by-block
+    areas_counts = {}
+    for y in range(0, rows, tile_size):
+        for x in range(0, cols, tile_size):
+            xsize = min(tile_size, cols - x)
+            ysize = min(tile_size, rows - y)
+            block = band_out.ReadAsArray(x, y, xsize, ysize)
+            unique, counts = np.unique(block, return_counts=True)
+            for u, c in zip(unique, counts):
+                if u != 0:
+                    areas_counts[u] = areas_counts.get(u, 0) + c
+
     resx, resy = abs(gt_global[1]), abs(gt_global[5])
     area_ha    = resx * resy / 10000
     areas      = [{
         'Class':   c,
-        'Area_ha': round((final == c).sum() * area_ha, 2)
+        'Area_ha': round(areas_counts.get(c, 0) * area_ha, 2)
     } for c in labels]
 
     # --- write Excel report -------------------------------------------------

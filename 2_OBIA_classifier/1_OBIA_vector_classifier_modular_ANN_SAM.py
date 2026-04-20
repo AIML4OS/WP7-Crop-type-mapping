@@ -428,6 +428,8 @@ class ProcessingPipeline:
         """Creates a single-band composite by summing the linear values of all SAR bands to reduce speckle."""
         print("    [INFO] Creating a summed composite of all SAR bands to reduce speckle...")
 
+        gdal.SetCacheMax(4 * 1024 * 1024 * 1024)  # Increase GDAL cache to 4GB to prevent allocation errors
+
         composite_tif = self.seg_dir / f"{self.country}_{self.track}_summed_composite.tif"
 
         if composite_tif.exists():
@@ -465,6 +467,10 @@ class ProcessingPipeline:
                 for b in range(1, nbands + 1):
                     band = ds.GetRasterBand(b)
                     arr = band.ReadAsArray(x, y, xsize, ysize)
+                    
+                    if arr is None:
+                        raise RuntimeError(f"Failed to read block at x={x}, y={y} for band {b}. Possible memory exhaustion.")
+                        
                     nodata = band.GetNoDataValue()
                     
                     if nodata is not None:
@@ -602,6 +608,8 @@ class ProcessingPipeline:
         print(f"[Stage {stage}/{self.total_stages}] Running Tiled Python Segmentation ({method})...")
 
         try:
+            gdal.SetCacheMax(4 * 1024 * 1024 * 1024)  # Increase GDAL cache to 4GB
+            
             ds = gdal.Open(str(self.ras))
             if not ds: raise RuntimeError("Could not open raster")
 
@@ -654,8 +662,14 @@ class ProcessingPipeline:
                     for b in range(1, nbands + 1):
                         band = ds.GetRasterBand(b)
                         arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                        if arr is None:
+                            print(f"    [WARNING] Failed to read block at x={x_start_buf}, y={y_start_buf}. Skipping tile.")
+                            img_list = None
+                            break
                         arr = np.nan_to_num(arr)
                         img_list.append(arr)
+
+                    if img_list is None: continue
 
                     img = np.dstack(img_list)
                     if np.all(img == 0): continue
@@ -1257,20 +1271,20 @@ class ProcessingPipeline:
 # --- Interactive Menu Helpers ---
 
 SAM_MODELS = {
-    '1': {'name': 'vit_b  (Mały,  ~375 MB, SZYBKI,  ~2 GB VRAM - polecany do testów)',
+    '1': {'name': 'vit_b  (Maly,  ~375 MB, SZYBKI,  ~2 GB VRAM - polecany do testow)',
            'model_type': 'vit_b',  'checkpoint': 'sam_vit_b_01ec64.pth',
            'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth'},
-    '2': {'name': 'vit_l  (Średni, ~1.2 GB, ŚREDNI,  ~6 GB VRAM)',
+    '2': {'name': 'vit_l  (Sredni, ~1.2 GB, SREDNI,  ~6 GB VRAM)',
            'model_type': 'vit_l',  'checkpoint': 'sam_vit_l_0b3195.pth',
            'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth'},
-    '3': {'name': 'vit_h  (Ogromny,~2.4 GB, WOLNY,  ~10 GB VRAM - najwyższa dokładność)',
+    '3': {'name': 'vit_h  (Ogromny,~2.4 GB, WOLNY,  ~10 GB VRAM - najwyzsza dokladnosc)',
            'model_type': 'vit_h',  'checkpoint': 'sam_vit_h_4b8939.pth',
            'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth'},
 }
 
 
 def get_stage1_params_sam(param_dict):
-    """Interaktywne menu wyboru modelu SAM i parametrów Stage 1."""
+    """Interaktywne menu wyboru modelu SAM i parametrow Stage 1."""
     new_params = param_dict.copy()
     current_type = new_params.get('sam_model_type', 'vit_b')
     current_ckpt = new_params.get('sam_checkpoint', 'sam_vit_b_01ec64.pth')
@@ -1279,18 +1293,18 @@ def get_stage1_params_sam(param_dict):
     buffer = new_params.get('buffer', 128)
 
     print("\n--- Stage 1: Segmentacja SAM ---")
-    print(f"  Urządzenie (device)  : {device}")
+    print(f"  Urzadzenie (device)  : {device}")
     print(f"  Rozmiar kafla (px)   : {tile_size}")
     print(f"  Bufor kafla (px)     : {buffer}")
     print(f"  Aktualny model       : {current_type}  [{current_ckpt}]")
     print()
-    print("  Dostępne modele SAM:")
+    print("  Dostepne modele SAM:")
     for k, v in SAM_MODELS.items():
         marker = " <-- aktualny" if v['model_type'] == current_type else ""
         print(f"    [{k}] {v['name']}{marker}")
     print()
 
-    choice = input("Wybierz model SAM (1/2/3) lub Enter aby zachować aktualny: ").strip()
+    choice = input("Wybierz model SAM (1/2/3) lub Enter aby zachowac aktualny: ").strip()
     if choice in SAM_MODELS:
         selected = SAM_MODELS[choice]
         new_params['sam_model_type'] = selected['model_type']
@@ -1298,19 +1312,19 @@ def get_stage1_params_sam(param_dict):
         import pathlib
         ckpt_path = pathlib.Path(selected['checkpoint'])
         if not ckpt_path.exists():
-            print(f"\n  [UWAGA] Plik wag '{selected['checkpoint']}' nie istnieje w bieżącym katalogu!")
+            print(f"\n  [UWAGA] Plik wag '{selected['checkpoint']}' nie istnieje w biezacym katalogu!")
             print(f"  Pobierz go z: {selected['url']}")
-            print(f"  i wrzuć do: {pathlib.Path.cwd()}")
-            proceed = input("  Kontynuować mimo to? (y/n) [n]: ").strip().lower()
+            print(f"  i wrzuc do: {pathlib.Path.cwd()}")
+            proceed = input("  Kontynuowac mimo to? (y/n) [n]: ").strip().lower()
             if proceed != 'y':
                 return None   # Sygnał do przerwania
         else:
             print(f"  [OK] Plik wag '{selected['checkpoint']}' znaleziony.")
     else:
-        print("  Zachowuję aktualny model.")
+        print("  Zachowuje aktualny model.")
 
     # Opcjonalna zmiana urządzenia
-    dev_choice = input(f"  Urządzenie (cuda/cpu) [{device}]: ").strip().lower()
+    dev_choice = input(f"  Urzadzenie (cuda/cpu) [{device}]: ").strip().lower()
     if dev_choice in ('cuda', 'cpu'):
         new_params['sam_device'] = dev_choice
 
