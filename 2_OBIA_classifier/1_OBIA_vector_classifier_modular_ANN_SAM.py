@@ -34,6 +34,15 @@ except ImportError:
     HAS_SKIMAGE = False
     print("WARNING: scikit-image not found. This script requires scikit-image for raster segmentation.")
 
+# Try importing SAM
+try:
+    import torch
+    from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
+    HAS_SAM = True
+except ImportError:
+    HAS_SAM = False
+    print("WARNING: segment-anything or torch not found.")
+
 # --- Configuration (Global) ---
 
 # python 1_OBIA_vector_classifier_modular_ANN.py --track P1a
@@ -145,13 +154,12 @@ class ProcessingPipeline:
 
         # --- 4. Parameters ---
         self.stage1_params = {
-            'method': 'python_mrs_summed',
-            'tile_size': 4096,
-            'buffer': 256,
-            'n_segments': 10000,     # Zmniejszono, by startować z większych "ziaren"
-            'compactness': 0.01,     # Zmniejszono, aby SLIC bardziej trzymał się krawędzi (mniej kwadratowe)
-            'ws_compactness': 0.001, 
-            'mrs_thresh': 0.15       # Zwiększono, aby mocniej łączył podobne segmenty (pola) ze sobą
+            'method': 'python_sam',
+            'tile_size': 2048, # SAM is memory intensive, smaller tile
+            'buffer': 128,     # buffer to avoid edge artifacts
+            'sam_checkpoint': 'sam_vit_h_4b8939.pth',
+            'sam_model_type': 'vit_h',
+            'sam_device': 'cuda' if (HAS_SAM and torch.cuda.is_available()) else 'cpu'
         }
         self.stage2_params = {
             'learn_frac': 0.7, 'random_state': 42
@@ -561,9 +569,12 @@ class ProcessingPipeline:
 
             return
 
-        if method in ['python_felzenszwalb', 'python_slic', 'python_mrs', 'python_mrs_seasonal', 'python_mrs_summed']:
-            if not HAS_SKIMAGE:
+        if method in ['python_felzenszwalb', 'python_slic', 'python_mrs', 'python_mrs_seasonal', 'python_mrs_summed', 'python_sam']:
+            if method != 'python_sam' and not HAS_SKIMAGE:
                 print("Error: scikit-image not installed.")
+                return
+            if method == 'python_sam' and not HAS_SAM:
+                print("Error: segment-anything or torch not installed. Install via: pip install git+https://github.com/facebookresearch/segment-anything.git")
                 return
                 
             original_ras = self.ras
@@ -572,13 +583,13 @@ class ProcessingPipeline:
                     self.ras = self._create_seasonal_composite()
                 except Exception as e:
                     print(f"    [WARNING] Failed to create seasonal composite: {e}. Falling back to full stack.")
-            elif method == 'python_mrs_summed':
+            elif method in ['python_mrs_summed', 'python_sam']:
                 try:
                     self.ras = self._create_summed_composite()
                 except Exception as e:
                     print(f"    [WARNING] Failed to create summed composite: {e}. Falling back to full stack.")
             
-            # Use 'python_mrs' logic internally
+            # Use appropriate internal method logic
             internal_method = 'python_mrs' if method in ['python_mrs_seasonal', 'python_mrs_summed'] else method
             self._run_python_segmentation_tiled(params, stage, internal_method)
             
@@ -608,9 +619,21 @@ class ProcessingPipeline:
             out_band = out_ds.GetRasterBand(1)
             out_band.SetNoDataValue(0)
 
-            tile_size = params.get('tile_size', 4096)
-            buffer = params.get('buffer', 256)
+            tile_size = params.get('tile_size', 2048 if method == 'python_sam' else 4096)
+            buffer = params.get('buffer', 128 if method == 'python_sam' else 256)
             global_seg_id = 1
+            
+            mask_generator = None
+            if method == 'python_sam':
+                print(f"    Loading SAM model ({params['sam_model_type']}) to {params['sam_device']}...")
+                try:
+                    sam = sam_model_registry[params['sam_model_type']](checkpoint=params['sam_checkpoint'])
+                    sam.to(device=params['sam_device'])
+                    mask_generator = SamAutomaticMaskGenerator(sam)
+                except Exception as e:
+                    print(f"    [ERROR] Failed to load SAM model: {e}")
+                    print("    Please ensure you have downloaded the checkpoint file (e.g., sam_vit_h_4b8939.pth) and placed it in the project root.")
+                    return
 
             for y in range(0, rows, tile_size):
                 for x in range(0, cols, tile_size):
@@ -642,7 +665,32 @@ class ProcessingPipeline:
 
                     img_norm = img_as_float(img)
 
-                    if method == 'python_felzenszwalb':
+                    if method == 'python_sam':
+                        # Convert float32 1-band to 8-bit RGB for SAM
+                        p2, p98 = np.percentile(img[img != 0], (2, 98))
+                        img_clip = np.clip(img, p2, p98)
+                        # Avoid division by zero
+                        if p98 > p2:
+                            img_8bit = ((img_clip - p2) / (p98 - p2) * 255).astype(np.uint8)
+                        else:
+                            img_8bit = np.zeros_like(img_clip, dtype=np.uint8)
+                            
+                        # SAM requires 3 channel RGB
+                        if img_8bit.shape[2] == 1:
+                            img_rgb = np.repeat(img_8bit, 3, axis=2)
+                        else:
+                            img_rgb = img_8bit[:, :, :3]
+                            if img_rgb.shape[2] < 3:
+                                img_rgb = np.pad(img_rgb, ((0,0),(0,0),(0, 3-img_rgb.shape[2])), mode='constant')
+                                
+                        masks = mask_generator.generate(img_rgb)
+                        segments_buf = np.zeros(img_rgb.shape[:2], dtype=np.int32)
+                        if masks:
+                            # Sort by area descending so smaller masks overwrite larger overlapping ones
+                            masks_sorted = sorted(masks, key=lambda x: x['area'], reverse=True)
+                            for i, m in enumerate(masks_sorted, start=1):
+                                segments_buf[m['segmentation']] = i
+                    elif method == 'python_felzenszwalb':
                         segments_buf = felzenszwalb(img_norm, scale=params['scale'], sigma=params['sigma'],
                                                 min_size=params['min_size'])
                     elif method == 'python_slic':
@@ -1208,6 +1256,79 @@ class ProcessingPipeline:
 
 # --- Interactive Menu Helpers ---
 
+SAM_MODELS = {
+    '1': {'name': 'vit_b  (Mały,  ~375 MB, SZYBKI,  ~2 GB VRAM - polecany do testów)',
+           'model_type': 'vit_b',  'checkpoint': 'sam_vit_b_01ec64.pth',
+           'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth'},
+    '2': {'name': 'vit_l  (Średni, ~1.2 GB, ŚREDNI,  ~6 GB VRAM)',
+           'model_type': 'vit_l',  'checkpoint': 'sam_vit_l_0b3195.pth',
+           'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth'},
+    '3': {'name': 'vit_h  (Ogromny,~2.4 GB, WOLNY,  ~10 GB VRAM - najwyższa dokładność)',
+           'model_type': 'vit_h',  'checkpoint': 'sam_vit_h_4b8939.pth',
+           'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth'},
+}
+
+
+def get_stage1_params_sam(param_dict):
+    """Interaktywne menu wyboru modelu SAM i parametrów Stage 1."""
+    new_params = param_dict.copy()
+    current_type = new_params.get('sam_model_type', 'vit_b')
+    current_ckpt = new_params.get('sam_checkpoint', 'sam_vit_b_01ec64.pth')
+    device = new_params.get('sam_device', 'cpu')
+    tile_size = new_params.get('tile_size', 2048)
+    buffer = new_params.get('buffer', 128)
+
+    print("\n--- Stage 1: Segmentacja SAM ---")
+    print(f"  Urządzenie (device)  : {device}")
+    print(f"  Rozmiar kafla (px)   : {tile_size}")
+    print(f"  Bufor kafla (px)     : {buffer}")
+    print(f"  Aktualny model       : {current_type}  [{current_ckpt}]")
+    print()
+    print("  Dostępne modele SAM:")
+    for k, v in SAM_MODELS.items():
+        marker = " <-- aktualny" if v['model_type'] == current_type else ""
+        print(f"    [{k}] {v['name']}{marker}")
+    print()
+
+    choice = input("Wybierz model SAM (1/2/3) lub Enter aby zachować aktualny: ").strip()
+    if choice in SAM_MODELS:
+        selected = SAM_MODELS[choice]
+        new_params['sam_model_type'] = selected['model_type']
+        new_params['sam_checkpoint'] = selected['checkpoint']
+        import pathlib
+        ckpt_path = pathlib.Path(selected['checkpoint'])
+        if not ckpt_path.exists():
+            print(f"\n  [UWAGA] Plik wag '{selected['checkpoint']}' nie istnieje w bieżącym katalogu!")
+            print(f"  Pobierz go z: {selected['url']}")
+            print(f"  i wrzuć do: {pathlib.Path.cwd()}")
+            proceed = input("  Kontynuować mimo to? (y/n) [n]: ").strip().lower()
+            if proceed != 'y':
+                return None   # Sygnał do przerwania
+        else:
+            print(f"  [OK] Plik wag '{selected['checkpoint']}' znaleziony.")
+    else:
+        print("  Zachowuję aktualny model.")
+
+    # Opcjonalna zmiana urządzenia
+    dev_choice = input(f"  Urządzenie (cuda/cpu) [{device}]: ").strip().lower()
+    if dev_choice in ('cuda', 'cpu'):
+        new_params['sam_device'] = dev_choice
+
+    # Opcjonalna zmiana rozmiaru kafla
+    ts_str = input(f"  Rozmiar kafla w px [{tile_size}]: ").strip()
+    if ts_str:
+        try:
+            new_params['tile_size'] = int(ts_str)
+        except ValueError:
+            print("  Nieprawidłowa wartość, pozostawiam domyślną.")
+
+    print("\n--- Zatwierdzone parametry Stage 1 (SAM) ---")
+    for k, v in new_params.items():
+        print(f"  {k}: {v}")
+    print()
+    return new_params
+
+
 def get_params(param_dict):
     new_params = param_dict.copy()
     print("--- Current Parameters ---")
@@ -1261,7 +1382,7 @@ def main_menu(pipeline):
     --- Raster-Based OBIA Pipeline (ANN) ---
     Track: {pipeline.track} ({pipeline.country})
 
-    [1] Stage 1: SAR Summed Segmentation (eCognition-style MRS)
+    [1] Stage 1: SAR Segmentation (Meta SAM - Automatic Mask Generator)
     [2] Stage 2: Split Samples
     [3] Stage 3: Extract Features (Object-based Training)
     [4] Stage 4: Train ANN Classifier
@@ -1280,7 +1401,10 @@ def main_menu(pipeline):
         choice = input(menu).strip().upper()
         try:
             if choice == '1':
-                new_params = get_params(pipeline.stage1_params)
+                new_params = get_stage1_params_sam(pipeline.stage1_params)
+                if new_params is None:
+                    print("  Anulowano uruchamianie segmentacji SAM.")
+                    continue
                 pipeline.stage1_params.update(new_params)
                 pipeline.stage_1_segmentation(**pipeline.stage1_params)
             elif choice == '2':

@@ -6,3 +6,4 @@ __pycache__/
 *.tif
 *.csv
 .idea/
+2_OBIA_classifier/*.pth
