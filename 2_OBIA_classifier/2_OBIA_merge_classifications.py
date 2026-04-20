@@ -66,7 +66,7 @@ def main():
     args = parser.parse_args()
     prefix = args.track
 
-    base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:\AIML\WP7-Crop-type-mapping\AIML_CropMapper\workingDir"))
+    base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:\AIML_CropMapper_Cloud\workingDir"))
     tracks   = discover_tracks(base_dir, prefix)
     if not tracks:
         raise FileNotFoundError(
