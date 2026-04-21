@@ -637,7 +637,14 @@ class ProcessingPipeline:
                 try:
                     sam = sam_model_registry[params['sam_model_type']](checkpoint=params['sam_checkpoint'])
                     sam.to(device=params['sam_device'])
-                    mask_generator = SamAutomaticMaskGenerator(sam)
+                    
+                    # Generate points based on tile size to ensure small fields are detected
+                    # For a 1024x1024 tile, 64 points per side gives 1 point per 16 pixels.
+                    sam_pts = max(32, tile_size // 16)
+                    mask_generator = SamAutomaticMaskGenerator(
+                        sam,
+                        points_per_side=sam_pts
+                    )
                 except Exception as e:
                     print(f"    [ERROR] Failed to load SAM model: {e}")
                     print("    Please ensure you have downloaded the checkpoint file (e.g., sam_vit_h_4b8939.pth) and placed it in the project root.")
@@ -681,13 +688,16 @@ class ProcessingPipeline:
 
                     if method == 'python_sam':
                         # Convert float32 1-band to 8-bit RGB for SAM
-                        p2, p98 = np.percentile(img[img != 0], (2, 98))
-                        img_clip = np.clip(img, p2, p98)
-                        # Avoid division by zero
-                        if p98 > p2:
-                            img_8bit = ((img_clip - p2) / (p98 - p2) * 255).astype(np.uint8)
-                        else:
-                            img_8bit = np.zeros_like(img_clip, dtype=np.uint8)
+                        img_8bit = np.zeros(img.shape, dtype=np.uint8)
+                        valid_pixels = valid_mask[:, :, np.newaxis]
+                        
+                        if np.any(valid_pixels):
+                            p2, p98 = np.percentile(img[valid_pixels], (2, 98))
+                            img_clip = np.clip(img, p2, p98)
+                            
+                            # Avoid division by zero
+                            if p98 > p2:
+                                img_8bit[valid_pixels] = ((img_clip[valid_pixels] - p2) / (p98 - p2) * 255).astype(np.uint8)
                             
                         # SAM requires 3 channel RGB
                         if img_8bit.shape[2] == 1:
