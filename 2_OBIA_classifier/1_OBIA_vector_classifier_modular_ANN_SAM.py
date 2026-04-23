@@ -157,7 +157,7 @@ class ProcessingPipeline:
             'method': 'python_sam',
             'tile_size': 2048, # SAM is memory intensive, smaller tile
             'buffer': 128,     # buffer to avoid edge artifacts
-            'sam_checkpoint': 'sam_vit_h_4b8939.pth',
+            'sam_checkpoint': str(self.aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'),
             'sam_model_type': 'vit_h',
             'sam_device': 'cuda' if (HAS_SAM and torch.cuda.is_available()) else 'cpu'
         }
@@ -638,12 +638,14 @@ class ProcessingPipeline:
                     sam = sam_model_registry[params['sam_model_type']](checkpoint=params['sam_checkpoint'])
                     sam.to(device=params['sam_device'])
                     
-                    # Generate points based on tile size to ensure small fields are detected
-                    # For a 1024x1024 tile, 64 points per side gives 1 point per 16 pixels.
-                    sam_pts = max(32, tile_size // 16)
                     mask_generator = SamAutomaticMaskGenerator(
                         sam,
-                        points_per_side=sam_pts
+                        points_per_side=96,
+                        pred_iou_thresh=0.55,
+                        stability_score_thresh=0.55,
+                        crop_n_layers=1,
+                        crop_n_points_downscale_factor=2,
+                        min_mask_region_area=10
                     )
                 except Exception as e:
                     print(f"    [ERROR] Failed to load SAM model: {e}")
@@ -687,6 +689,9 @@ class ProcessingPipeline:
                     img_norm = img_as_float(img)
 
                     if method == 'python_sam':
+                        import cv2
+                        from scipy.ndimage import distance_transform_edt
+                        
                         # Convert float32 1-band to 8-bit RGB for SAM
                         img_8bit = np.zeros(img.shape, dtype=np.uint8)
                         valid_pixels = valid_mask[:, :, np.newaxis]
@@ -698,6 +703,11 @@ class ProcessingPipeline:
                             # Avoid division by zero
                             if p98 > p2:
                                 img_8bit[valid_pixels] = ((img_clip[valid_pixels] - p2) / (p98 - p2) * 255).astype(np.uint8)
+                                
+                            # Apply CLAHE to enhance contrast in darker regions (SAR data is very skewed)
+                            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                            img_clahe = clahe.apply(img_8bit[:, :, 0])
+                            img_8bit[:, :, 0] = img_clahe
                             
                         # SAM requires 3 channel RGB
                         if img_8bit.shape[2] == 1:
@@ -713,7 +723,14 @@ class ProcessingPipeline:
                             # Sort by area descending so smaller masks overwrite larger overlapping ones
                             masks_sorted = sorted(masks, key=lambda x: x['area'], reverse=True)
                             for i, m in enumerate(masks_sorted, start=1):
-                                segments_buf[m['segmentation']] = i
+                                if 10 <= m['area'] <= 100000:
+                                    segments_buf[m['segmentation']] = i
+                                    
+                        # Fill empty spaces (NoData) with nearest segment (distance transform)
+                        zero_mask_buf = (segments_buf == 0) & valid_mask
+                        if np.any(zero_mask_buf) and np.any(segments_buf > 0):
+                            _, indices = distance_transform_edt(segments_buf == 0, return_indices=True)
+                            segments_buf[zero_mask_buf] = segments_buf[tuple(indices)][zero_mask_buf]
                     elif method == 'python_felzenszwalb':
                         segments_buf = felzenszwalb(img_norm, scale=params['scale'], sigma=params['sigma'],
                                                 min_size=params['min_size'])
