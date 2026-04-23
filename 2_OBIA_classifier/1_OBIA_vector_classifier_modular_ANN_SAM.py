@@ -631,25 +631,27 @@ class ProcessingPipeline:
             buffer = params.get('buffer', 128 if method == 'python_sam' else 256)
             global_seg_id = 1
             
-            mask_generator = None
+            sam_geo = None
             if method == 'python_sam':
-                print(f"    Loading SAM model ({params['sam_model_type']}) to {params['sam_device']}...")
+                print(f"    Loading SAM-Geo model ({params['sam_model_type']}) to {params['sam_device']}...")
                 try:
-                    sam = sam_model_registry[params['sam_model_type']](checkpoint=params['sam_checkpoint'])
-                    sam.to(device=params['sam_device'])
-                    
-                    mask_generator = SamAutomaticMaskGenerator(
-                        sam,
-                        points_per_side=96,
-                        pred_iou_thresh=0.55,
-                        stability_score_thresh=0.55,
-                        crop_n_layers=1,
-                        crop_n_points_downscale_factor=2,
-                        min_mask_region_area=10
+                    from samgeo import SamGeo
+                    sam_geo = SamGeo(
+                        model_type=params['sam_model_type'],
+                        checkpoint=params['sam_checkpoint'],
+                        device=params['sam_device'],
+                        sam_kwargs={
+                            "points_per_side": 96,
+                            "pred_iou_thresh": 0.55,
+                            "stability_score_thresh": 0.55,
+                            "crop_n_layers": 1,
+                            "crop_n_points_downscale_factor": 2,
+                            "min_mask_region_area": 10
+                        }
                     )
                 except Exception as e:
-                    print(f"    [ERROR] Failed to load SAM model: {e}")
-                    print("    Please ensure you have downloaded the checkpoint file (e.g., sam_vit_h_4b8939.pth) and placed it in the project root.")
+                    print(f"    [ERROR] Failed to load SAM-Geo model: {e}")
+                    print("    Please ensure you have installed segment-geospatial and have the proper checkpoint.")
                     return
 
             for y in range(0, rows, tile_size):
@@ -717,14 +719,15 @@ class ProcessingPipeline:
                             if img_rgb.shape[2] < 3:
                                 img_rgb = np.pad(img_rgb, ((0,0),(0,0),(0, 3-img_rgb.shape[2])), mode='constant')
                                 
-                        masks = mask_generator.generate(img_rgb)
-                        segments_buf = np.zeros(img_rgb.shape[:2], dtype=np.int32)
-                        if masks:
-                            # Sort by area descending so smaller masks overwrite larger overlapping ones
-                            masks_sorted = sorted(masks, key=lambda x: x['area'], reverse=True)
-                            for i, m in enumerate(masks_sorted, start=1):
-                                if 10 <= m['area'] <= 100000:
-                                    segments_buf[m['segmentation']] = i
+                        sam_geo.generate(
+                            source=img_rgb,
+                            output=None,
+                            foreground=False,
+                            unique=True,
+                            min_size=10,
+                            max_size=100000
+                        )
+                        segments_buf = sam_geo.objects.astype(np.int32)
                                     
                         # Fill empty spaces (NoData) with nearest segment (distance transform)
                         zero_mask_buf = (segments_buf == 0) & valid_mask
