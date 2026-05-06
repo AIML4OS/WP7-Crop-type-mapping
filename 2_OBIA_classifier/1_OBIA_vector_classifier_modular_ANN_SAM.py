@@ -148,6 +148,7 @@ class ProcessingPipeline:
         self.class_tif = self.class_dir / f"{self.country}_{self.track}_classified.tif"
         self.conf_tif = self.class_dir / f"{self.country}_{self.track}_confidence_map.tif"
 
+        self.footprint_mask = self.seg_dir / f"{self.country}_{self.track}_data_footprint.tif"
         self.masked_class = self.class_dir / f"{self.country}_{self.track}_classified_masked.tif"
         self.masked_conf = self.class_dir / f"{self.country}_{self.track}_confidence_masked.tif"
         self.metrics_fp = self.class_dir / f"{self.country}_{self.track}_metrics.xlsx"
@@ -227,6 +228,14 @@ class ProcessingPipeline:
         if not ds_stack: raise RuntimeError(f"Could not open source raster {self.ras} for footprint masking.")
         stack_band = ds_stack.GetRasterBand(1)
 
+        # 0. Open Data Footprint Mask (Stage 0 output)
+        if self.footprint_mask.exists():
+            ds_foot = gdal.Open(str(self.footprint_mask))
+            foot_band = ds_foot.GetRasterBand(1)
+        else:
+            ds_foot = None
+            foot_band = None
+
         if not mask_tif.exists():
             print(f"    WARNING: Arable mask not found at {mask_tif}. Will only apply data footprint mask.")
             has_arable_mask = False
@@ -285,20 +294,18 @@ class ProcessingPipeline:
                 # 1. Read the Classification/Confidence Data
                 arr = in_band.ReadAsArray(x, y, xsize, ysize)
 
-                # 2. Read the Original Radar Stack (to find empty track halves)
-                # Ensure we handle potential out of bounds or missing stack bands gracefully
-                if stack_band:
+                # 2. Apply Footprint Mask
+                if foot_band:
+                    f_arr = foot_band.ReadAsArray(x, y, xsize, ysize)
+                    arr[f_arr == 0] = nodata
+                elif stack_band:
                     try:
                         stack_arr = stack_band.ReadAsArray(x, y, xsize, ysize)
-                        # Apply Footprint Mask: If original radar data is exactly 0 or NaN, force output to NoData
+                        # Fallback to simple zero-check if Stage 0 mask is missing
                         if stack_arr is not None:
-                            stack_nodata = stack_band.GetNoDataValue()
-                            if stack_nodata is not None:
-                                arr[stack_arr == stack_nodata] = nodata
                             arr[stack_arr == 0] = nodata
-                            arr[np.isnan(stack_arr)] = nodata
                     except Exception as e:
-                        print(f"Warning: Failed to read stack band: {e}")
+                        print(f"Warning: Failed to read stack band for fallback masking: {e}")
 
                 # 3. Read and Apply the Arable Mask (if it exists)
                 if ds_mask:
@@ -316,6 +323,50 @@ class ProcessingPipeline:
         if has_arable_mask and os.path.exists(temp_mask_vrt): os.remove(temp_mask_vrt)
 
         print(f"Completed stage {stage}\n")
+
+    def stage_0_generate_footprint(self, force_recompute=False):
+        """Generates a precise data footprint mask from the input raster."""
+        self._ensure_directories()
+        if self.footprint_mask.exists() and not force_recompute:
+            print("[Stage 0] Data footprint mask already exists, skipping.")
+            return
+
+        print(f"[Stage 0/{self.total_stages}] Generating robust data footprint mask from radar stack...")
+        ds = gdal.Open(str(self.ras))
+        cols, rows = ds.RasterXSize, ds.RasterYSize
+        gt, proj = ds.GetGeoTransform(), ds.GetProjection()
+
+        driver = gdal.GetDriverByName('GTiff')
+        out_ds = driver.Create(str(self.footprint_mask), cols, rows, 1, gdal.GDT_Byte,
+                               options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+        out_ds.SetGeoTransform(gt)
+        out_ds.SetProjection(proj)
+        out_band = out_ds.GetRasterBand(1)
+
+        tile_size = 4096
+        for y in range(0, rows, tile_size):
+            for x in range(0, cols, tile_size):
+                xsize = min(tile_size, cols - x)
+                ysize = min(tile_size, rows - y)
+
+                # Check multiple bands for a more robust footprint
+                combined_mask = None
+                for b in range(1, min(ds.RasterCount + 1, 3)): # Check first 2 bands (usually VH/VV)
+                    data = ds.GetRasterBand(b).ReadAsArray(x, y, xsize, ysize)
+                    m = (np.abs(data) > 1e-7) & (~np.isnan(data))
+                    if combined_mask is None:
+                        combined_mask = m
+                    else:
+                        combined_mask |= m
+
+                out_band.WriteArray(combined_mask.astype(np.uint8), x, y)
+
+        out_ds.FlushCache()
+        # Sieve filter to remove small noise artifacts
+        gdal.SieveFilter(out_band, None, out_band, threshold=100, connectedness=4)
+        out_ds = None
+        ds = None
+        print(f"    Footprint mask saved to {self.footprint_mask}\n")
 
     def _create_seasonal_composite(self):
         """Creates a lightweight 6-band composite (3 evenly spaced dates x 2 pol) from the optimal 'Golden Window' of vegetation."""
@@ -613,6 +664,11 @@ class ProcessingPipeline:
             ds = gdal.Open(str(self.ras))
             if not ds: raise RuntimeError("Could not open raster")
 
+            # Open Data Footprint Mask (Stage 0 output) if it exists
+            ds_foot = None
+            if self.footprint_mask.exists():
+                ds_foot = gdal.Open(str(self.footprint_mask))
+
             cols = ds.RasterXSize
             rows = ds.RasterYSize
             nbands = ds.RasterCount
@@ -683,9 +739,14 @@ class ProcessingPipeline:
                     if img_list is None: continue
 
                     img = np.dstack(img_list)
-                    if np.all(img == 0): continue
-
-                    valid_mask = np.sum(np.abs(img), axis=2) > 0
+                    
+                    # Use footprint mask if available, otherwise fallback to sum > 0
+                    if ds_foot:
+                        valid_mask_buf = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf) > 0
+                        valid_mask = valid_mask_buf
+                    else:
+                        valid_mask = np.sum(np.abs(img), axis=2) > 0
+                        
                     if not np.any(valid_mask): continue
 
                     img_norm = img_as_float(img)
@@ -763,9 +824,12 @@ class ProcessingPipeline:
 
                     y_offset = y - y_start_buf
                     x_offset = x - x_start_buf
-                    segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
-                    valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+                    
+                    # Mask out segments outside footprint
+                    segments_buf[~valid_mask] = 0
 
+                    segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+                    
                     seg_valid_mask = segments > 0
                     
                     unique_segs = np.unique(segments[seg_valid_mask])
@@ -784,6 +848,8 @@ class ProcessingPipeline:
 
             out_ds.FlushCache()
             out_ds = None
+            ds = None
+            ds_foot = None
             print(f"    Segmentation Raster saved to {self.seg_tif}\n")
 
         except Exception as e:
@@ -1056,9 +1122,15 @@ class ProcessingPipeline:
             # Each thread needs its own GDAL dataset handles to be thread-safe
             ds_stack = gdal.Open(str(self.ras))
             ds_seg = gdal.Open(str(self.seg_tif))
+            ds_foot = gdal.Open(str(self.footprint_mask))
 
             try:
                 seg_arr = ds_seg.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                foot_arr = ds_foot.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                
+                # Apply footprint to segmentation tile
+                seg_arr[foot_arr == 0] = 0
+
                 if np.all(seg_arr == 0):
                     return
 
@@ -1125,6 +1197,7 @@ class ProcessingPipeline:
             finally:
                 ds_stack = None
                 ds_seg = None
+                ds_foot = None
 
 
         tiles_to_process = []
@@ -1426,6 +1499,7 @@ def main_menu(pipeline):
     --- Raster-Based OBIA Pipeline (ANN) ---
     Track: {pipeline.track} ({pipeline.country})
 
+    [0] Stage 0: Generate Data Footprint Mask
     [1] Stage 1: SAR Segmentation (Meta SAM - Automatic Mask Generator)
     [2] Stage 2: Split Samples
     [3] Stage 3: Extract Features (Object-based Training)
@@ -1444,7 +1518,9 @@ def main_menu(pipeline):
     while True:
         choice = input(menu).strip().upper()
         try:
-            if choice == '1':
+            if choice == '0':
+                pipeline.stage_0_generate_footprint()
+            elif choice == '1':
                 new_params = get_stage1_params_sam(pipeline.stage1_params)
                 if new_params is None:
                     print("  Anulowano uruchamianie segmentacji SAM.")
@@ -1473,6 +1549,7 @@ def main_menu(pipeline):
             elif choice == 'A':
                 print(
                     "\nNOTE: Running 'A' will automatically force recomputation of Stages 5-8 to clear any corrupted old files.")
+                pipeline.stage_0_generate_footprint()
                 pipeline.stage_1_segmentation(**pipeline.stage1_params)
                 pipeline.stage_2_split_samples(**pipeline.stage2_params)
                 pipeline.stage_3_selection()
