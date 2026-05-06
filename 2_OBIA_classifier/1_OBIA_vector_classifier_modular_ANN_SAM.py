@@ -1411,18 +1411,22 @@ def get_stage1_params_sam(param_dict):
     if choice in SAM_MODELS:
         selected = SAM_MODELS[choice]
         new_params['sam_model_type'] = selected['model_type']
-        new_params['sam_checkpoint'] = selected['checkpoint']
-        import pathlib
-        ckpt_path = pathlib.Path(selected['checkpoint'])
+        
+        # Use absolute path to auxiliary_files/SAM_models
+        sam_models_dir = aux_dir / 'SAM_models'
+        ckpt_fn = selected['checkpoint']
+        ckpt_path = sam_models_dir / ckpt_fn
+        new_params['sam_checkpoint'] = str(ckpt_path)
+
         if not ckpt_path.exists():
-            print(f"\n  [UWAGA] Plik wag '{selected['checkpoint']}' nie istnieje w biezacym katalogu!")
+            print(f"\n  [UWAGA] Plik wag '{ckpt_fn}' nie istnieje w katalogu {sam_models_dir}!")
             print(f"  Pobierz go z: {selected['url']}")
-            print(f"  i wrzuc do: {pathlib.Path.cwd()}")
+            print(f"  i wrzuc do: {sam_models_dir}")
             proceed = input("  Kontynuowac mimo to? (y/n) [n]: ").strip().lower()
             if proceed != 'y':
                 return None   # Sygnał do przerwania
         else:
-            print(f"  [OK] Plik wag '{selected['checkpoint']}' znaleziony.")
+            print(f"  [OK] Plik wag '{ckpt_fn}' znaleziony w {sam_models_dir}.")
     else:
         print("  Zachowuje aktualny model.")
 
