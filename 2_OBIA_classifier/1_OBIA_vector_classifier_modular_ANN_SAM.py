@@ -828,6 +828,9 @@ class ProcessingPipeline:
                     # Mask out segments outside footprint
                     segments_buf[~valid_mask] = 0
 
+                    # Get the valid mask for the unbuffered tile
+                    valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+
                     segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
                     
                     seg_valid_mask = segments > 0
