@@ -67,8 +67,9 @@ TOTAL_STAGES = 8
 # --- Main Pipeline Class ---
 
 class ProcessingPipeline:
-    def __init__(self, track):
+    def __init__(self, track, mask_variant='3class'):
         self.track = track
+        self.mask_variant = mask_variant  # '3class' lub 'allcrops'
         try:
             self.country = track_regions[track]
         except KeyError:
@@ -153,6 +154,9 @@ class ProcessingPipeline:
         self.masked_conf = self.class_dir / f"{self.country}_{self.track}_confidence_masked.tif"
         self.metrics_fp = self.class_dir / f"{self.country}_{self.track}_metrics.xlsx"
 
+        # Agricultural mask - resolved per country (set in _resolve_agri_mask)
+        self.agri_mask = self._resolve_agri_mask()
+
         # --- 4. Parameters ---
         self.stage1_params = {
             'method': 'python_sam',
@@ -178,6 +182,43 @@ class ProcessingPipeline:
         self.feat_cols = []
 
         # --- Utility Methods ---
+
+    def _resolve_agri_mask(self) -> Path:
+        """
+        Inteligentnie dobiera binarna maske terenow rolnych per kraj.
+        Wariant wybierany przez self.mask_variant ('3class' lub 'allcrops').
+
+        Kolejnosc wyszukiwania (dla mask_variant='3class'):
+          1. AgriMasks/<COUNTRY>/<COUNTRY>_agri_mask_3class_epsg3857.tif
+          2. AgriMasks/<COUNTRY>/<COUNTRY>_agri_mask_allcrops_epsg3857.tif
+          3. EU_arable_areas_mask_3857.tif (fallback)
+
+        Aby wygenerowac maske: python build_agri_mask.py --country {self.country}
+        """
+        raster_dir  = self.aux_dir / 'raster_files'
+        country_dir = raster_dir / 'AgriMasks' / self.country
+
+        mask_3class   = country_dir / f"{self.country}_agri_mask_3class_epsg3857.tif"
+        mask_allcrops = country_dir / f"{self.country}_agri_mask_allcrops_epsg3857.tif"
+        mask_eu       = raster_dir / 'EU_arable_areas_mask_3857.tif'
+
+        # Kolejnosc kandydatow zalezna od wybranego wariantu
+        if self.mask_variant == 'allcrops':
+            candidates = [mask_allcrops, mask_3class, mask_eu]
+            print(f"  Mask variant: allcrops (wszystkie uprawy wlacznie z trwalymi)")
+        else:
+            candidates = [mask_3class, mask_allcrops, mask_eu]
+            print(f"  Mask variant: 3class (jare/oziminy/rzepak)")
+
+        for p in candidates:
+            if p.exists():
+                print(f"Agricultural mask selected: {p}")
+                return p
+
+        print(f"[WARNING] No agricultural mask found for country '{self.country}'.")
+        print(f"  Generate mask with: python build_agri_mask.py --country {self.country}")
+        return mask_eu
+
 
     def _ensure_directories(self):
         for d in [self.samples_dir, self.model_dir, self.seg_dir, self.class_dir]:
@@ -1222,7 +1263,11 @@ class ProcessingPipeline:
     def stage_6_mask_class(self, force_recompute=False):
         self._ensure_directories()
         stage = 6
-        mask_file = self.aux_dir / 'raster_files' / 'EU_arable_areas_mask_3857.tif'
+        mask_file = self.agri_mask
+        if not mask_file.exists():
+            print(f"[Stage {stage}] ERROR: Agricultural mask not found: {mask_file}")
+            print(f"  Run: python auxiliary_files/raster_files/AgriMasks/build_agri_mask.py --country {self.country}")
+            return
         if not self.class_tif.exists():
             print(f"ERROR: Classified TIF not found.")
             return
@@ -1236,7 +1281,11 @@ class ProcessingPipeline:
     def stage_7_mask_confidence(self, force_recompute=False):
         self._ensure_directories()
         stage = 7
-        mask_file = self.aux_dir / 'raster_files' / 'EU_arable_areas_mask_3857.tif'
+        mask_file = self.agri_mask
+        if not mask_file.exists():
+            print(f"[Stage {stage}] ERROR: Agricultural mask not found: {mask_file}")
+            print(f"  Run: python auxiliary_files/raster_files/AgriMasks/build_agri_mask.py --country {self.country}")
+            return
         if not self.conf_tif.exists():
             print(f"ERROR: Confidence TIF not found.")
             return
@@ -1578,10 +1627,14 @@ def main_menu(pipeline):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Modular OBIA Pipeline (True Object-Based Training)")
     parser.add_argument('--track', required=True, help="Processing track ID (e.g., P1, P2)")
+    parser.add_argument('--mask_variant', default='3class',
+                        choices=['3class', 'allcrops'],
+                        help="Agricultural mask variant: '3class' (jare/oziminy/rzepak, default) "
+                             "or 'allcrops' (wszystkie uprawy wlacznie z trwalymi)")
     args = parser.parse_args()
 
     try:
-        pipeline = ProcessingPipeline(track=args.track)
+        pipeline = ProcessingPipeline(track=args.track, mask_variant=args.mask_variant)
         main_menu(pipeline)
     except Exception as e:
         print(f"Initialization Error: {e}")
