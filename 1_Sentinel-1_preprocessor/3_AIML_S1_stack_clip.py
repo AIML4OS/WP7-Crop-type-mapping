@@ -6,7 +6,9 @@ import sys
 from datetime import datetime
 from osgeo import gdal, gdalconst, ogr, osr
 
-# python 3_AIML_S1_stack_clip.py -t P1
+# Jak uruchomić skrypt:
+# python 3_AIML_S1_stack_clip.py -t PL/orbit_12
+# python 3_AIML_S1_stack_clip.py -t FR/orbit_8 FR/orbit_81 FR/orbit_110
 
 # ================= CONFIGURATION =================
 # Update these paths to match your system
@@ -163,16 +165,25 @@ def stack_and_clip(track: str):
     print("    VRT created.")
 
     # --- CLIP FROM VRT ---
-    regions = TRACK_REGIONS_MAP.get(track, [])
+    if '/' in track or '\\' in track:
+        normalized_track = track.replace('\\', '/')
+        regions = [normalized_track.split('/')[0].upper()]
+    else:
+        regions = TRACK_REGIONS_MAP.get(track, [])
+    
     if not regions:
-        print(f"No regions defined for {track}, skipping clip.")
+        if len(track) == 2:
+            regions = [track.upper()]
+        else:
+            print(f"No regions defined for {track}, skipping clip.")
+            return
 
     # CHANGED: Removed PREDICTOR=2 to fix SNAP compatibility
     creation_options = ['COMPRESS=DEFLATE', 'BIGTIFF=YES', 'TILED=YES']
 
     for region in regions:
-        shp_path = SHAPEFILES_DIR / region / f"NUTS2_{region}.shp"
-        out_file = out_dir / f"{region}_{track}_{dr}_VH_VV.tif"
+        sanitized_track = track.replace('/', '_').replace('\\', '_')
+        out_file = out_dir / f"{region}_{sanitized_track}_{dr}_VH_VV.tif"
 
         if not shp_path.exists():
             print(f"    WARNING: Shapefile not found: {shp_path}")
@@ -225,7 +236,7 @@ def stack_and_clip(track: str):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-t', '--track', nargs='+', required=True)
+    parser.add_argument('-t', '--track', nargs='+', required=True, help="Track path(s) to process, e.g. PL/orbit_12")
     args = parser.parse_args()
 
     sel = set(args.track)
@@ -233,10 +244,10 @@ def main():
         if t in GROUP_MAP:
             sel.add(GROUP_MAP[t])
 
-    for track in ['P1', 'P1a', 'P2', 'P2a', 'P3', 'P4', 'P4a']:
-        if track in sel:
-            print(f"\n=== Processing {track} ===")
-            stack_and_clip(track)
+    # Process all requested tracks dynamically
+    for track in sorted(list(sel)):
+        print(f"\n=== Processing {track} ===")
+        stack_and_clip(track)
 
 
 if __name__ == '__main__':

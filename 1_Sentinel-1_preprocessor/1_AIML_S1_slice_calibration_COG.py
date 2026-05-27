@@ -7,12 +7,14 @@ import re
 import subprocess
 import shutil
 from collections import defaultdict
-from osgeo import ogr
+from osgeo import ogr, osr
 
 import os
 
 # ================= CONFIGURATION =================
-# python 1_AIML_S1_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -t P1
+# Jak uruchomić skrypt dla wybranego kraju (np. Polski - PL, Francji - FR, Austrii - AT):
+# python 1_AIML_S1_slice_calibration_COG.py -s 2024-10-15 -e 2024-11-30 -c PL
+# python 1_AIML_S1_slice_calibration_COG.py -s 2024-10-15 -e 2024-11-30 -c FR
 
 GPT_EXE = os.environ.get("SNAP_GPT_EXE", r"D:/Program Files/esa-snap/bin/gpt.exe")
 
@@ -24,30 +26,6 @@ LOCAL_REPO_PATH = os.environ.get("S1_REPO_PATH", r"Y:\Sentinel-1\SAR\IW_GRDH_1S-
 # Directory where processing results (calibrated/sliced) will be saved
 WORKING_DIR = os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir")
 
-# Track Cycle Definitions (Reference dates for 6-day repeat cycle)
-# Used as fallback if Relative Orbit Number is not defined in TRACK_ORBITS
-BASE_DATES = {
-    'P1': datetime.date(2019, 3, 11), 'P1a': datetime.date(2019, 3, 12),
-    'P3': datetime.date(2019, 3, 19),
-    'P4': datetime.date(2019, 3, 16), 'P4a': datetime.date(2019, 3, 17)
-}
-
-# Relative Orbit Numbers (Preferred method for identification)
-TRACK_ORBITS = {
-    'P2': 1,
-    'P2a': 74
-}
-
-# Geo-region polygons (WKT)
-GEO_REGIONS = {
-    "P1": "POLYGON ((14.440557479858398 47.45246505737305, 17.1320743560791 47.45246505737305, 17.1320743560791 49.17211456298828, 14.440557479858398 49.17211456298828, 14.440557479858398 47.45246505737305, 14.440557479858398 47.45246505737305))",
-    "P1a": "POLYGON ((14.440557479858398 47.45246505737305, 17.1320743560791 47.45246505737305, 17.1320743560791 49.17211456298828, 14.440557479858398 49.17211456298828, 14.440557479858398 47.45246505737305, 14.440557479858398 47.45246505737305))",
-    "P2": "POLYGON ((-11.0 51.0, -5.0 51.0, -5.0 56.0, -11.0 56.0, -11.0 51.0))",
-    "P2a": "POLYGON ((-11.0 51.0, -5.0 51.0, -5.0 56.0, -11.0 56.0, -11.0 51.0))",
-    "P3": "POLYGON ((5.67898359033639721 52.34101116853894808, 5.67898359033639721 53.47158269585312951, 7.54043640634247758 53.47158269585312951, 7.54043640634247758 52.34101116853894808, 5.67898359033639721 52.34101116853894808))",
-    "P4": "POLYGON ((-9.51702908045403007 38.7314903865104867, -9.51702908045403007 39.83872917391149571, -7.80898814257814 39.83872917391149571, -7.80898814257814 38.7314903865104867, -9.51702908045403007 38.7314903865104867, -9.51702908045403007 38.7314903865104867))",
-    "P4a": "POLYGON ((-9.51702908045403007 38.7314903865104867, -9.51702908045403007 39.83872917391149571, -7.80898814257814 39.83872917391149571, -7.80898814257814 38.7314903865104867, -9.51702908045403007 38.7314903865104867, -9.51702908045403007 38.7314903865104867))"
-}
 
 # ================= XML TEMPLATES =================
 
@@ -187,14 +165,217 @@ CALIB_NODE = r'''  <node id="Calibration">
   </node>'''
 
 
+# Path to NUTS shapefiles
+SHAPEFILES_DIR = pathlib.Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files")) / "shapefiles_nuts"
+
+
+def load_shapefile_geometry_ogr(shp_path, target_epsg=4326):
+    """Loads all geometries from a shapefile, transforms them to the target EPSG code, and returns their union."""
+    driver = ogr.GetDriverByName('ESRI Shapefile')
+    ds = driver.Open(str(shp_path))
+    if not ds:
+        return None
+    layer = ds.GetLayer()
+
+    src_srs = layer.GetSpatialRef()
+    dst_srs = osr.SpatialReference()
+    dst_srs.ImportFromEPSG(target_epsg)
+
+    coord_trans = None
+    if src_srs and not src_srs.IsSame(dst_srs):
+        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        coord_trans = osr.CoordinateTransformation(src_srs, dst_srs)
+
+    union_geom = None
+    layer.ResetReading()
+    for feature in layer:
+        geom = feature.GetGeometryRef()
+        if geom:
+            cloned_geom = geom.Clone()
+            if coord_trans:
+                cloned_geom.Transform(coord_trans)
+            if union_geom is None:
+                union_geom = cloned_geom
+            else:
+                union_geom = union_geom.Union(cloned_geom)
+    ds = None
+    return union_geom
+
+
+def get_country_geometry(country_code: str):
+    """Dynamically locates and loads the NUTS2 shapefile for the given country code."""
+    shp_path = SHAPEFILES_DIR / country_code / f"NUTS2_{country_code}.shp"
+    if not shp_path.exists():
+        logging.warning(f"Country shapefile not found at {shp_path}. Searching for any .shp in folder...")
+        country_dir = SHAPEFILES_DIR / country_code
+        if country_dir.exists():
+            shp_files = list(country_dir.glob("*.shp"))
+            if shp_files:
+                shp_path = shp_files[0]
+            else:
+                logging.error(f"No shapefile found in {country_dir}")
+                return None
+        else:
+            logging.error(f"Country directory {country_dir} does not exist.")
+            return None
+
+    logging.info(f"Loading country geometry from {shp_path}...")
+    return load_shapefile_geometry_ogr(shp_path)
+
+
+class CountryOrbitOptimizer:
+    def __init__(self, repo_path: pathlib.Path, country_geom: ogr.Geometry):
+        self.repo_path = repo_path
+        self.country_geom = country_geom
+        self.finder = LocalSentinel1Finder(repo_path)
+
+    def _solve_set_cover(self, discovered_orbits):
+        if not discovered_orbits:
+            return [], 0.0
+
+        # Compute union footprint for each orbit and its intersection area
+        orbit_intersections = {}
+        for orbit_num, footprints in discovered_orbits.items():
+            orbit_union = None
+            for fp in footprints:
+                if orbit_union is None:
+                    orbit_union = fp.Clone()
+                else:
+                    orbit_union = orbit_union.Union(fp)
+
+            intersection = orbit_union.Intersection(self.country_geom)
+            if intersection and not intersection.IsEmpty():
+                orbit_intersections[orbit_num] = {
+                    'geom': intersection,
+                    'area': intersection.GetArea()
+                }
+
+        if not orbit_intersections:
+            return [], 0.0
+
+        # Greedy Set Cover Solver
+        selected_orbits = []
+        target_geom = None
+        for orbit_data in orbit_intersections.values():
+            if target_geom is None:
+                target_geom = orbit_data['geom'].Clone()
+            else:
+                target_geom = target_geom.Union(orbit_data['geom'])
+
+        total_target_area = target_geom.GetArea()
+        remaining_target = target_geom.Clone()
+
+        while remaining_target and not remaining_target.IsEmpty():
+            best_orbit = None
+            best_new_area = 0.0
+
+            for orbit_num, data in orbit_intersections.items():
+                if orbit_num in selected_orbits:
+                    continue
+                new_overlap = data['geom'].Intersection(remaining_target)
+                if new_overlap and not new_overlap.IsEmpty():
+                    new_area = new_overlap.GetArea()
+                    if new_area > best_new_area:
+                        best_new_area = new_area
+                        best_orbit = orbit_num
+
+            # Stop if the best candidate adds less than 0.5% new coverage
+            if best_orbit is None or best_new_area < (total_target_area * 0.005):
+                break
+
+            selected_orbits.append(best_orbit)
+            remaining_target = remaining_target.Difference(orbit_intersections[best_orbit]['geom'])
+
+        # Calculate final coverage area
+        final_coverage_geom = None
+        for o_num in selected_orbits:
+            o_geom = orbit_intersections[o_num]['geom']
+            if final_coverage_geom is None:
+                final_coverage_geom = o_geom.Clone()
+            else:
+                final_coverage_geom = final_coverage_geom.Union(o_geom)
+
+        final_coverage_area = final_coverage_geom.GetArea() if final_coverage_geom else 0.0
+        return selected_orbits, final_coverage_area
+
+    def discover_and_optimize(self, start_date: datetime.date, search_days=24):
+        """Scans a 24-day period in the S1 repository to separate ascending/descending orbits,
+           optimizes both using Set Cover, and selects the direction with the best coverage and minimal orbits."""
+        logging.info(f"Starting orbit discovery for a {search_days}-day window starting from {start_date}...")
+        discovered_asc = defaultdict(list)
+        discovered_dsc = defaultdict(list)
+
+        current_date = start_date
+        end_search_date = start_date + datetime.timedelta(days=search_days)
+
+        while current_date < end_search_date:
+            day_path = self.repo_path / str(current_date.year) / f"{current_date.month:02d}" / f"{current_date.day:02d}"
+            if day_path.exists() and any(day_path.iterdir()):
+                for safe_dir in day_path.glob("*.SAFE"):
+                    orbit_num = self.finder._get_relative_orbit(safe_dir)
+                    if orbit_num is None:
+                        continue
+
+                    footprint = self.finder._get_safe_footprint(safe_dir)
+                    if footprint is None:
+                        continue
+
+                    # Check intersection with country geometry
+                    if footprint.Intersects(self.country_geom):
+                        pass_dir = self.finder._get_pass_direction(safe_dir)
+                        if pass_dir == 'ASCENDING':
+                            discovered_asc[orbit_num].append(footprint)
+                        elif pass_dir == 'DESCENDING':
+                            discovered_dsc[orbit_num].append(footprint)
+                        else:
+                            discovered_asc[orbit_num].append(footprint)
+
+            current_date += datetime.timedelta(days=1)
+
+        logging.info(f"Discovered orbits: {len(discovered_asc)} ASCENDING, {len(discovered_dsc)} DESCENDING.")
+
+        logging.info("Optimizing coverage for ASCENDING passes...")
+        selected_asc, area_asc = self._solve_set_cover(discovered_asc)
+        logging.info(f"  ASCENDING: Selected {len(selected_asc)} orbits covering {area_asc:.4f} sq. degrees.")
+
+        logging.info("Optimizing coverage for DESCENDING passes...")
+        selected_dsc, area_dsc = self._solve_set_cover(discovered_dsc)
+        logging.info(f"  DESCENDING: Selected {len(selected_dsc)} orbits covering {area_dsc:.4f} sq. degrees.")
+
+        # Choose the best direction based on coverage first, then minimal orbits
+        if not selected_asc and not selected_dsc:
+            logging.error("No overlapping Sentinel-1 orbits discovered in the repository!")
+            return [], None
+        elif not selected_asc:
+            choose_asc = False
+        elif not selected_dsc:
+            choose_asc = True
+        else:
+            diff_area = area_asc - area_dsc
+            if abs(diff_area) < 0.05:
+                # Coverage is nearly identical, choose the direction with fewer orbits
+                if len(selected_asc) <= len(selected_dsc):
+                    choose_asc = True
+                else:
+                    choose_asc = False
+            else:
+                # Choose the one with larger coverage area
+                choose_asc = diff_area > 0
+
+        if choose_asc:
+            logging.info(f"Selected ASCENDING pass direction (Orbits: {selected_asc})")
+            return selected_asc, 'ASCENDING'
+        else:
+            logging.info(f"Selected DESCENDING pass direction (Orbits: {selected_dsc})")
+            return selected_dsc, 'DESCENDING'
+
+
 # ================= LOGIC: FINDER =================
 
 class LocalSentinel1Finder:
     def __init__(self, repo_path: pathlib.Path):
         self.repo_path = repo_path
-        self.poly_geoms = {}
-        for name, wkt in GEO_REGIONS.items():
-            self.poly_geoms[name] = ogr.CreateGeometryFromWkt(wkt)
 
     def _get_safe_footprint(self, safe_path: pathlib.Path):
         """Reads manifest.safe to find the footprint."""
@@ -259,55 +440,58 @@ class LocalSentinel1Finder:
             match = re.search(r':relativeOrbitNumber\s+type="start">(\d+)<', content)
             if match:
                 return int(match.group(1))
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"Failed to parse relative orbit for {safe_path.name}: {e}")
         return None
 
-    def find_products(self, track_name: str, start_date: datetime.date, end_date: datetime.date,
-                      working_dir: pathlib.Path = None):
+    def _get_pass_direction(self, safe_path: pathlib.Path):
+        """Reads manifest.safe to find the pass direction (ASCENDING or DESCENDING)."""
+        try:
+            manifest = safe_path / "manifest.safe"
+            if not manifest.exists():
+                manifest = safe_path / "manifest.SAFE"
+            if not manifest.exists():
+                return None
 
-        target_orbit = TRACK_ORBITS.get(track_name)
-        base_date = BASE_DATES.get(track_name)
-        geo_key = track_name
-        target_geom = self.poly_geoms.get(geo_key)
+            with open(manifest, 'r', encoding='utf-8') as f:
+                content = f.read()
 
-        if not target_geom:
-            logging.error(f"No geometry defined for {track_name}")
-            return
+            match = re.search(r':pass>(ASCENDING|DESCENDING)<', content)
+            if match:
+                return match.group(1)
+        except Exception as e:
+            logging.warning(f"Failed to parse pass direction for {safe_path.name}: {e}")
+        return None
 
-        if target_orbit is None and base_date is None:
-            logging.error(f"No configuration (Orbit or Base Date) found for {track_name}")
-            return
-
-        # This will store the date of the first successful find for orbit-based tracks.
+    def find_products_by_orbit(self, orbit_num: int, target_geom: ogr.Geometry,
+                               start_date: datetime.date, end_date: datetime.date,
+                               working_dir: pathlib.Path = None, country_code: str = None,
+                               pass_direction: str = None):
+        """Finds Sentinel-1 SAFE directories for a given relative orbit that intersect the country's geometry."""
         first_orbit_match_date = None
-
         current_date = start_date
-        while current_date <= end_date:
 
+        while current_date <= end_date:
             should_scan = False
-            if target_orbit is not None:
-                if first_orbit_match_date is None:
-                    # Scan every day until the first match
-                    should_scan = True
-                else:
-                    # After first match, only scan on the 6-day cycle
-                    if (current_date - first_orbit_match_date).days % 6 == 0:
-                        should_scan = True
-            elif base_date:
-                # Fallback to date cycle for non-orbit tracks
-                if (current_date - base_date).days % 6 == 0:
+            if first_orbit_match_date is None:
+                # Scan every day until the first match
+                should_scan = True
+            else:
+                # After first match, only scan on the 6-day cycle
+                if (current_date - first_orbit_match_date).days % 6 == 0:
                     should_scan = True
 
             if should_scan:
                 day_products = []
 
                 # --- CHECK IF FINAL SLICED PRODUCT ALREADY EXISTS ---
-                if working_dir:
+                if working_dir and country_code:
                     date_str = current_date.strftime("%Y%m%d")
-                    final_output_dir = working_dir / track_name / "slice_assembly"
+                    final_output_dir = working_dir / country_code / f"orbit_{orbit_num}" / "slice_assembly"
                     if final_output_dir.exists():
-                        existing_finals = [f for f in final_output_dir.glob(f"{date_str}_{track_name}_*.dim") if f.with_suffix('.data').is_dir()]
+                        # We use country_code and orbit_num in the final dim name
+                        existing_finals = [f for f in final_output_dir.glob(f"{date_str}_{country_code}_orbit_{orbit_num}_*.dim") if
+                                           f.with_suffix('.data').is_dir()]
                         if existing_finals:
                             logging.info(
                                 f"Skipping search for {date_str}: Final output already exists ({existing_finals[0].name})")
@@ -320,19 +504,22 @@ class LocalSentinel1Finder:
 
                 try:
                     if day_path.exists() and any(day_path.iterdir()):
-                        scan_msg = f"Scanning {day_path} for track {track_name}"
-                        if target_orbit:
-                            scan_msg += f" (Orbit {target_orbit})"
+                        scan_msg = f"Scanning {day_path} for orbit {orbit_num}"
                         logging.info(scan_msg)
 
                         for safe_dir in day_path.glob("*.SAFE"):
-                            # 1. Check Orbit (if defined)
-                            if target_orbit:
-                                orbit_num = self._get_relative_orbit(safe_dir)
-                                if orbit_num != target_orbit:
+                            # 1. Check Orbit
+                            parsed_orbit = self._get_relative_orbit(safe_dir)
+                            if parsed_orbit != orbit_num:
+                                continue
+
+                            # 2. Check Pass Direction
+                            if pass_direction:
+                                parsed_pass = self._get_pass_direction(safe_dir)
+                                if parsed_pass != pass_direction:
                                     continue
 
-                            # 2. Check Geometry
+                            # 3. Check Geometry
                             prod_geom = self._get_safe_footprint(safe_dir)
                             if not prod_geom:
                                 logging.warning(f"   [SKIP] Geometry parse failed: {safe_dir.name}")
@@ -345,9 +532,10 @@ class LocalSentinel1Finder:
                     logging.error(f"SKIP DATE {current_date}: I/O Error accessing folder {day_path}: {e}")
 
                 if day_products:
-                    # If this is an orbit-based track and it's the first find, set the new base date.
-                    if target_orbit is not None and first_orbit_match_date is None:
-                        logging.info(f"   First orbit match for {track_name} found on {current_date}. Switching to 6-day scan cycle.")
+                    # If this is the first find, set the base date for the 6-day cycle.
+                    if first_orbit_match_date is None:
+                        logging.info(
+                            f"   First orbit match for orbit {orbit_num} found on {current_date}. Switching to 6-day scan cycle.")
                         first_orbit_match_date = current_date
 
                     yield current_date, day_products
@@ -429,7 +617,7 @@ def run_calibration_stage(track_name, safe_paths, working_dir):
     return processed_dims
 
 
-def run_slice_assembly_stage(track_name, calibrated_dims, working_dir):
+def run_slice_assembly_stage(track_name, calibrated_dims, working_dir, roi_wkt=None):
     track_dir = working_dir / track_name
     slice_folder = track_dir / "slice_assembly"
     slice_folder.mkdir(parents=True, exist_ok=True)
@@ -446,31 +634,22 @@ def run_slice_assembly_stage(track_name, calibrated_dims, working_dir):
             parts = dim_path.stem.split('_')
             date_str = next((p[:8] for p in parts if len(p) >= 8 and p[:8].isdigit()), "00000000")
             groups[date_str].append(dim_path)
-        except Exception:
-            logging.warning(f"Could not parse date from {dim_path.name}")
+        except Exception as e:
+            logging.warning(f"Could not parse date from {dim_path.name}: {e}")
 
     for date_str, files in groups.items():
         if date_str == "00000000":
             continue
 
         # --- FIX: Ensure we have files to process ---
-        valid_files = []
-        for f in files:
-            data_dir = f.with_suffix('.data')
-            if f.exists() and data_dir.exists() and data_dir.is_dir():
-                valid_files.append(f)
-            else:
-                logging.warning(f"[{track_name}] Incomplete BEAM-DIMAP product skipped: {f.name}")
-
-        files = valid_files
-
         if not files:
             logging.warning(f"[{track_name}] No valid calibrated files for {date_str}. Skipping.")
             continue
 
         files.sort(key=lambda p: p.name)
         sensor = files[0].stem.split('_')[0]
-        out_dim = slice_folder / f"{date_str}_{track_name}_IW_GRDH_{sensor}.dim"
+        sanitized_track = track_name.replace('/', '_')
+        out_dim = slice_folder / f"{date_str}_{sanitized_track}_IW_GRDH_{sensor}.dim"
 
         # CHECK IF FINAL SLICE EXISTS - SKIP IF SO
         if out_dim.exists() and out_dim.with_suffix('.data').is_dir():
@@ -478,7 +657,9 @@ def run_slice_assembly_stage(track_name, calibrated_dims, working_dir):
             continue
 
         xml_file = track_dir / f"stage2_slice_{date_str}.xml"
-        roi_wkt = GEO_REGIONS.get(track_name, "")
+        if not roi_wkt:
+            logging.error("No ROI WKT geometry provided for cropping. Skipping.")
+            continue
 
         if len(files) > 1:
             logging.info(f"[{track_name}] Assembling & Cropping date {date_str} ({len(files)} slices)")
@@ -546,11 +727,10 @@ def run_slice_assembly_stage(track_name, calibrated_dims, working_dir):
 # ================= MAIN =================
 
 def main():
-    parser = argparse.ArgumentParser(description="Sentinel-1 Find & Process (Local Y: Drive)")
+    parser = argparse.ArgumentParser(description="Sentinel-1 Find & Process (Local Y: Drive - COG)")
     parser.add_argument('-s', '--start_date', required=True, help="Start date YYYY-MM-DD")
     parser.add_argument('-e', '--end_date', required=True, help="End date YYYY-MM-DD")
-    parser.add_argument('-t', '--track', action='append', choices=list(BASE_DATES.keys()) + list(TRACK_ORBITS.keys()),
-                        help="Track(s) to process. If omitted, all are processed.")
+    parser.add_argument('-c', '--country', required=True, help="Country code (e.g. AT, IE, NL, PT...) for automatic orbit selection.")
 
     args = parser.parse_args()
 
@@ -581,29 +761,45 @@ def main():
 
     finder = LocalSentinel1Finder(repo)
 
-    # Combine keys from both configs
-    all_tracks = set(BASE_DATES.keys()) | set(TRACK_ORBITS.keys())
-    tracks_to_process = args.track or list(all_tracks)
+    country_code = args.country.upper()
+    country_geom = get_country_geometry(country_code)
+    if not country_geom:
+        logging.error(f"Could not load boundary geometry for country {country_code}")
+        sys.exit(1)
 
-    for track in tracks_to_process:
-        logging.info(f"--- STARTING TRACK: {track} ---")
+    # Optimize orbit selection dynamically
+    optimizer = CountryOrbitOptimizer(repo, country_geom)
+    selected_orbits, selected_pass = optimizer.discover_and_optimize(start)
+
+    if not selected_orbits:
+        logging.error(f"No optimal orbits found for country {country_code}.")
+        sys.exit(1)
+
+    # Get simplified bounding polygon for SNAP Subset
+    env = country_geom.GetEnvelope()  # (minX, maxX, minY, maxY)
+    roi_wkt = f"POLYGON (({env[0]} {env[2]}, {env[1]} {env[2]}, {env[1]} {env[3]}, {env[0]} {env[3]}, {env[0]} {env[2]}))"
+
+    for orbit_num in selected_orbits:
+        logging.info(f"--- STARTING ORBIT: {orbit_num} (Country: {country_code}) ---")
+        track_name = f"{country_code}/orbit_{orbit_num}"
 
         # 1. FIND & PROCESS LOOP
-        # Now iterating date by date
-        for date_obj, found_safes in finder.find_products(track, start, end, working_dir=work_dir):
+        for date_obj, found_safes in finder.find_products_by_orbit(
+            orbit_num, country_geom, start, end, working_dir=work_dir, country_code=country_code, pass_direction=selected_pass
+        ):
             logging.info(f"Processing {len(found_safes)} products for date {date_obj}")
 
             # 2. CALIBRATE
-            calibrated_files = run_calibration_stage(track, found_safes, work_dir)
+            calibrated_files = run_calibration_stage(track_name, found_safes, work_dir)
 
             if not calibrated_files:
                 logging.warning(f"No files were successfully calibrated for {date_obj}. Skipping Assembly.")
                 continue
 
-            # 3. SLICE ASSEMBLY & SUBSET
-            run_slice_assembly_stage(track, calibrated_files, work_dir)
+            # 3. SLICE ASSEMBLY & SUBSET (passing dynamic roi_wkt)
+            run_slice_assembly_stage(track_name, calibrated_files, work_dir, roi_wkt=roi_wkt)
 
-        logging.info(f"--- FINISHED TRACK: {track} ---")
+        logging.info(f"--- FINISHED ORBIT: {orbit_num} (Country: {country_code}) ---")
 
 
 if __name__ == '__main__':

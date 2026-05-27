@@ -47,6 +47,10 @@ except ImportError:
 
 # python 1_OBIA_vector_classifier_modular_ANN.py --track P1a
 
+# Jak uruchomić skrypt:
+# python 1_OBIA_vector_classifier_modular_ANN_SAM.py --track PL/orbit_12
+# python 1_OBIA_vector_classifier_modular_ANN_SAM.py --track FR/orbit_8
+
 # Base Paths provided by user
 base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
 aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
@@ -70,14 +74,25 @@ class ProcessingPipeline:
     def __init__(self, track, mask_variant='3class'):
         self.track = track
         self.mask_variant = mask_variant  # '3class' lub 'allcrops'
-        try:
-            self.country = track_regions[track]
-        except KeyError:
-            print(f"Error: Track '{track}' not defined in track_regions configuration.")
-            sys.exit(1)
+        
+        # Dedykowana obsługa dynamicznych pasów dla krajów (np. PL/orbit_12)
+        if '/' in track or '\\' in track:
+            normalized_track = track.replace('\\', '/')
+            self.country = normalized_track.split('/')[0].upper()
+        else:
+            self.country = track_regions.get(track)
+            if not self.country:
+                if len(track) == 2:
+                    self.country = track.upper()
+                else:
+                    print(f"Error: Track '{track}' not defined in track_regions configuration.")
+                    sys.exit(1)
 
         self.total_stages = TOTAL_STAGES
         print(f"Initializing pipeline for Track: {self.track}, Country: {self.country}")
+
+        # Sanitized track name for filenames (no slashes)
+        self.sanitized_track = self.track.replace('/', '_').replace('\\', '_')
 
         # --- 1. Define all paths ---
         self.base_dir = base_dir
@@ -93,11 +108,14 @@ class ProcessingPipeline:
 
         # --- 2. Resolve input raster ---
         search_patterns = [
+            f"{self.sanitized_track}_*_VH_VV*.tif",
+            f"*_{self.sanitized_track}_*_VH_VV*.tif",
+            f"*{self.sanitized_track}*.tif",
             f"{self.track}_*_VH_VV*.tif",
             f"*_{self.track}_*_VH_VV*.tif",
             f"*{self.track}*.tif",
-            f"{self.track}_*_VH_VV*.hdr",
-            f"*{self.track}*.hdr",
+            f"{self.sanitized_track}_*_VH_VV*.hdr",
+            f"*{self.sanitized_track}*.hdr",
         ]
 
         self.hdr = None
@@ -116,14 +134,15 @@ class ProcessingPipeline:
             raise FileNotFoundError(f"Processing directory does not exist: {self.proc_dir}")
 
         # --- 3. Define all output file paths ---
-        # Zmieniamy rozszerzenie wektora na .sqlite, aby ominąć 2GB limit dla Shapefile!
-        self.seg_tif = self.seg_dir / f"{self.country}_{self.track}_segmentation.tif"
-        self.seg_shp = self.seg_dir / f"{self.country}_{self.track}_segmentation.sqlite"
+        self.seg_tif = self.seg_dir / f"{self.country}_{self.sanitized_track}_segmentation.tif"
+        self.seg_shp = self.seg_dir / f"{self.country}_{self.sanitized_track}_segmentation.sqlite"
 
         # Samples
         samples_base = self.aux_dir / 'shapefiles_samples'
         candidate_paths = [
+            samples_base / f"{self.country}_{self.sanitized_track}" / "samples.shp",
             samples_base / f"{self.country}_{self.track}" / "samples.shp",
+            samples_base / self.sanitized_track / "samples.shp",
             samples_base / self.track / "samples.shp",
             samples_base / self.country / "samples.shp",
             samples_base / "samples.shp"
@@ -138,21 +157,21 @@ class ProcessingPipeline:
 
         if not self.sample_shp:
             print(f"\nCRITICAL WARNING: Could not find 'samples.shp' inside {samples_base}")
-            self.sample_shp = samples_base / f"{self.country}_{self.track}" / "samples.shp"
+            self.sample_shp = samples_base / f"{self.country}_{self.sanitized_track}" / "samples.shp"
 
         # Output paths
         self.learn_shp = self.samples_dir / 'learn.shp'
         self.control_shp = self.samples_dir / 'control.shp'
-        self.sel_csv = self.samples_dir / f"{self.country}_{self.track}_learn_features.csv"
+        self.sel_csv = self.samples_dir / f"{self.country}_{self.sanitized_track}_learn_features.csv"
 
         # Classification outputs
-        self.class_tif = self.class_dir / f"{self.country}_{self.track}_classified.tif"
-        self.conf_tif = self.class_dir / f"{self.country}_{self.track}_confidence_map.tif"
+        self.class_tif = self.class_dir / f"{self.country}_{self.sanitized_track}_classified.tif"
+        self.conf_tif = self.class_dir / f"{self.country}_{self.sanitized_track}_confidence_map.tif"
 
-        self.footprint_mask = self.seg_dir / f"{self.country}_{self.track}_data_footprint.tif"
-        self.masked_class = self.class_dir / f"{self.country}_{self.track}_classified_masked.tif"
-        self.masked_conf = self.class_dir / f"{self.country}_{self.track}_confidence_masked.tif"
-        self.metrics_fp = self.class_dir / f"{self.country}_{self.track}_metrics.xlsx"
+        self.footprint_mask = self.seg_dir / f"{self.country}_{self.sanitized_track}_data_footprint.tif"
+        self.masked_class = self.class_dir / f"{self.country}_{self.sanitized_track}_classified_masked.tif"
+        self.masked_conf = self.class_dir / f"{self.country}_{self.sanitized_track}_confidence_masked.tif"
+        self.metrics_fp = self.class_dir / f"{self.country}_{self.sanitized_track}_metrics.xlsx"
 
         # Agricultural mask - resolved per country (set in _resolve_agri_mask)
         self.agri_mask = self._resolve_agri_mask()
@@ -500,7 +519,7 @@ class ProcessingPipeline:
             f"    [INFO] Final 3 dates chosen for segmentation composite: {[d.strftime('%Y-%m-%d') for d in selected_dates]}")
         print(f"    [INFO] Extracting {len(selected_bands)} bands (VH+VV) into a lightweight composite...")
 
-        composite_tif = self.seg_dir / f"{self.country}_{self.track}_seasonal_composite.tif"
+        composite_tif = self.seg_dir / f"{self.country}_{self.sanitized_track}_seasonal_composite.tif"
 
         if not composite_tif.exists():
             gdal.Translate(
@@ -517,12 +536,12 @@ class ProcessingPipeline:
         return composite_tif
 
     def _create_summed_composite(self):
-        """Creates a single-band composite by summing the linear values of all SAR bands to reduce speckle."""
-        print("    [INFO] Creating a summed composite of all SAR bands to reduce speckle...")
+        """Creates a single-band composite by summing the log-domain (dB) values of all SAR bands to reduce speckle while preserving low-backscatter crop contrast."""
+        print("    [INFO] Creating a log-domain (dB) summed composite of all SAR bands...")
 
         gdal.SetCacheMax(4 * 1024 * 1024 * 1024)  # Increase GDAL cache to 4GB to prevent allocation errors
 
-        composite_tif = self.seg_dir / f"{self.country}_{self.track}_summed_composite.tif"
+        composite_tif = self.seg_dir / f"{self.country}_{self.sanitized_track}_summed_composite.tif"
 
         if composite_tif.exists():
             print(f"    [INFO] Summed composite already exists at {composite_tif}.")
@@ -813,6 +832,12 @@ class ProcessingPipeline:
                             img_clahe = clahe.apply(img_8bit[:, :, 0])
                             img_8bit[:, :, 0] = img_clahe
                             
+                            # Apply bilateral filter to smooth out speckle noise while preserving sharp boundaries
+                            print("    [SAM-Geo] Applying bilateral filter for edge-preserving speckle smoothing...")
+                            img_chan = np.ascontiguousarray(img_8bit[:, :, 0])
+                            img_smoothed = cv2.bilateralFilter(img_chan, d=9, sigmaColor=50, sigmaSpace=50)
+                            img_8bit[:, :, 0] = img_smoothed
+                            
                         # SAM requires 3 channel RGB
                         if img_8bit.shape[2] == 1:
                             img_rgb = np.repeat(img_8bit, 3, axis=2)
@@ -912,12 +937,77 @@ class ProcessingPipeline:
             return
 
         gdf = gpd.read_file(str(self.sample_shp), engine="pyogrio")
-        learn = gdf.sample(frac=params['learn_frac'], random_state=params['random_state'])
-        control = gdf.drop(learn.index)
+
+        # Prevent spatial data leakage by splitting on unique segment IDs
+        if not self.seg_tif.exists():
+            print("ERROR: Segmentation raster not found. Run Stage 1 first to do spatial-leakage-free split.")
+            return
+
+        print(f"    Aligning training samples with segmentation raster {self.seg_tif.name} to prevent spatial data leakage...")
+        ds_seg = gdal.Open(str(self.seg_tif))
+        gt = ds_seg.GetGeoTransform()
+        inv_gt = gdal.InvGeoTransform(gt)
+        raster_proj = ds_seg.GetProjection()
+        cols = ds_seg.RasterXSize
+        rows = ds_seg.RasterYSize
+        seg_band = ds_seg.GetRasterBand(1)
+
+        # Reproject points if CRS differs
+        from pyproj import CRS
+        if raster_proj and gdf.crs:
+            target_crs = CRS.from_wkt(raster_proj)
+            if gdf.crs != target_crs:
+                print("    Reprojecting points to match segmentation CRS...")
+                gdf = gdf.to_crs(target_crs)
+
+        xs = gdf.geometry.x.values
+        ys = gdf.geometry.y.values
+        pxs = (inv_gt[0] + inv_gt[1] * xs + inv_gt[2] * ys).astype(int)
+        pys = (inv_gt[3] + inv_gt[4] * xs + inv_gt[5] * ys).astype(int)
+
+        seg_ids = []
+        for px, py in zip(pxs, pys):
+            if 0 <= px < cols and 0 <= py < rows:
+                try:
+                    val = seg_band.ReadAsArray(int(px), int(py), 1, 1)[0, 0]
+                    seg_ids.append(val)
+                except:
+                    seg_ids.append(0)
+            else:
+                seg_ids.append(0)
+
+        gdf['seg_id'] = seg_ids
+        ds_seg = None  # Close dataset
+
+        # Keep only points that fall into a valid segment (seg_id > 0)
+        gdf_valid = gdf[gdf['seg_id'] > 0].copy()
+        dropped = len(gdf) - len(gdf_valid)
+        if dropped > 0:
+            print(f"    Warning: Dropped {dropped} points that fell outside valid segments.")
+
+        if len(gdf_valid) == 0:
+            print("ERROR: No points fell within any valid segments.")
+            return
+
+        unique_segs = gdf_valid['seg_id'].unique()
+        print(f"    Found {len(unique_segs)} unique segments for {len(gdf_valid)} valid points.")
+
+        # Split unique segment IDs
+        np.random.seed(params['random_state'])
+        np.random.shuffle(unique_segs)
+        split_idx = int(len(unique_segs) * params['learn_frac'])
+        train_segs = set(unique_segs[:split_idx])
+
+        learn = gdf_valid[gdf_valid['seg_id'].isin(train_segs)].copy()
+        control = gdf_valid[~gdf_valid['seg_id'].isin(train_segs)].copy()
+
+        # Remove temporary column to avoid shapefile writing issues
+        learn = learn.drop(columns=['seg_id'])
+        control = control.drop(columns=['seg_id'])
 
         learn.to_file(str(self.learn_shp), engine="pyogrio")
         control.to_file(str(self.control_shp), engine="pyogrio")
-        print(f"Completed stage {stage}.\n")
+        print(f"Completed stage {stage}. Total valid: {len(gdf_valid)}, Learn: {len(learn)}, Control: {len(control)}\n")
 
     # --- Stage 3: Feature Extraction (Object-Based) ---
     def stage_3_selection(self):
@@ -1058,7 +1148,7 @@ class ProcessingPipeline:
             print("ERROR: Feature CSV not found.")
             return
 
-        model_fn = self.model_dir / f"{self.country}_{self.track}_model.pkl"
+        model_fn = self.model_dir / f"{self.country}_{self.sanitized_track}_model.pkl"
 
         print(f"[Stage {stage}/{self.total_stages}] Training ANN...")
 
@@ -1117,7 +1207,7 @@ class ProcessingPipeline:
         self._ensure_directories()
         stage = 5
 
-        model_file = self.model_dir / f"{self.country}_{self.track}_model.pkl"
+        model_file = self.model_dir / f"{self.country}_{self.sanitized_track}_model.pkl"
         if not model_file.exists():
             print("ERROR: Model not found.")
             return
@@ -1193,26 +1283,36 @@ class ProcessingPipeline:
                 if len(valid_seg) == 0:
                     return
 
-                flat_img = img.reshape(-1, nbands)[mask]
+                # Get unique segment IDs in this tile (excluding 0)
+                unique_ids = np.unique(seg_arr)
+                unique_ids = unique_ids[unique_ids > 0]
 
-                df_img = pd.DataFrame(flat_img, columns=[f'B{i}' for i in range(nbands)])
-                df_img['label'] = valid_seg
+                if len(unique_ids) == 0:
+                    return
 
-                grouped = df_img.groupby('label')
-                means = grouped.mean()
-                stds = grouped.std().fillna(0)
+                # Calculate means and standard deviations for all bands using scipy.ndimage (extremely fast and memory efficient)
+                means = np.zeros((len(unique_ids), nbands), dtype=np.float32)
+                stds = np.zeros((len(unique_ids), nbands), dtype=np.float32)
 
-                df_props = pd.DataFrame({'label': means.index})
-                for i in range(nbands):
-                    df_props[f'meanB{i}'] = means[f'B{i}'].values
-                    df_props[f'stdB{i}'] = stds[f'B{i}'].values
+                for b in range(nbands):
+                    means[:, b] = ndi.mean(img[:, :, b], labels=seg_arr, index=unique_ids)
+                    stds[:, b] = ndi.standard_deviation(img[:, :, b], labels=seg_arr, index=unique_ids)
 
-                X_tile = df_props[feat_cols].values
+                stds = np.nan_to_num(stds)
+
+                # Assemble X_tile matching the exact feature columns order
+                X_tile = np.zeros((len(unique_ids), len(feat_cols)), dtype=np.float32)
+                for idx, col in enumerate(feat_cols):
+                    if col.startswith('meanB'):
+                        b = int(col[5:])
+                        X_tile[:, idx] = means[:, b]
+                    elif col.startswith('stdB'):
+                        b = int(col[4:])
+                        X_tile[:, idx] = stds[:, b]
+
                 X_scaled = scaler.transform(X_tile)
                 preds = clf.predict(X_scaled)
                 probs = np.max(clf.predict_proba(X_scaled), axis=1)
-
-                unique_ids = df_props['label'].values
                 sort_idx = np.argsort(unique_ids)
                 sorted_ids = unique_ids[sort_idx]
                 sorted_preds = preds[sort_idx]

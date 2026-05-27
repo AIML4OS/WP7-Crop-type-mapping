@@ -36,7 +36,9 @@ except ImportError:
 
 # --- Configuration (Global) ---
 
-# python 1_OBIA_vector_classifier_modular_ANN.py --track P1a
+# Jak uruchomić skrypt:
+# python 1_OBIA_vector_classifier_modular_ANN.py --track PL/orbit_12
+# python 1_OBIA_vector_classifier_modular_ANN.py --track FR/orbit_8
 
 # Base Paths provided by user
 base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
@@ -60,14 +62,25 @@ TOTAL_STAGES = 8
 class ProcessingPipeline:
     def __init__(self, track):
         self.track = track
-        try:
-            self.country = track_regions[track]
-        except KeyError:
-            print(f"Error: Track '{track}' not defined in track_regions configuration.")
-            sys.exit(1)
+        
+        # Dedykowana obsługa dynamicznych pasów dla krajów (np. PL/orbit_12)
+        if '/' in track or '\\' in track:
+            normalized_track = track.replace('\\', '/')
+            self.country = normalized_track.split('/')[0].upper()
+        else:
+            self.country = track_regions.get(track)
+            if not self.country:
+                if len(track) == 2:
+                    self.country = track.upper()
+                else:
+                    print(f"Error: Track '{track}' not defined in track_regions configuration.")
+                    sys.exit(1)
 
         self.total_stages = TOTAL_STAGES
         print(f"Initializing pipeline for Track: {self.track}, Country: {self.country}")
+
+        # Sanitized track name for filenames (no slashes)
+        self.sanitized_track = self.track.replace('/', '_').replace('\\', '_')
 
         # --- 1. Define all paths ---
         self.base_dir = base_dir
@@ -83,11 +96,14 @@ class ProcessingPipeline:
 
         # --- 2. Resolve input raster ---
         search_patterns = [
+            f"{self.sanitized_track}_*_VH_VV*.tif",
+            f"*_{self.sanitized_track}_*_VH_VV*.tif",
+            f"*{self.sanitized_track}*.tif",
             f"{self.track}_*_VH_VV*.tif",
             f"*_{self.track}_*_VH_VV*.tif",
             f"*{self.track}*.tif",
-            f"{self.track}_*_VH_VV*.hdr",
-            f"*{self.track}*.hdr",
+            f"{self.sanitized_track}_*_VH_VV*.hdr",
+            f"*{self.sanitized_track}*.hdr",
         ]
 
         self.hdr = None
@@ -106,14 +122,15 @@ class ProcessingPipeline:
             raise FileNotFoundError(f"Processing directory does not exist: {self.proc_dir}")
 
         # --- 3. Define all output file paths ---
-        # Zmieniamy rozszerzenie wektora na .sqlite, aby ominąć 2GB limit dla Shapefile!
-        self.seg_tif = self.seg_dir / f"{self.country}_{self.track}_segmentation.tif"
-        self.seg_shp = self.seg_dir / f"{self.country}_{self.track}_segmentation.sqlite"
+        self.seg_tif = self.seg_dir / f"{self.country}_{self.sanitized_track}_segmentation.tif"
+        self.seg_shp = self.seg_dir / f"{self.country}_{self.sanitized_track}_segmentation.sqlite"
 
         # Samples
         samples_base = self.aux_dir / 'shapefiles_samples'
         candidate_paths = [
+            samples_base / f"{self.country}_{self.sanitized_track}" / "samples.shp",
             samples_base / f"{self.country}_{self.track}" / "samples.shp",
+            samples_base / self.sanitized_track / "samples.shp",
             samples_base / self.track / "samples.shp",
             samples_base / self.country / "samples.shp",
             samples_base / "samples.shp"
@@ -128,20 +145,20 @@ class ProcessingPipeline:
 
         if not self.sample_shp:
             print(f"\nCRITICAL WARNING: Could not find 'samples.shp' inside {samples_base}")
-            self.sample_shp = samples_base / f"{self.country}_{self.track}" / "samples.shp"
+            self.sample_shp = samples_base / f"{self.country}_{self.sanitized_track}" / "samples.shp"
 
         # Output paths
         self.learn_shp = self.samples_dir / 'learn.shp'
         self.control_shp = self.samples_dir / 'control.shp'
-        self.sel_csv = self.samples_dir / f"{self.country}_{self.track}_learn_features.csv"
+        self.sel_csv = self.samples_dir / f"{self.country}_{self.sanitized_track}_learn_features.csv"
 
         # Classification outputs
-        self.class_tif = self.class_dir / f"{self.country}_{self.track}_classified.tif"
-        self.conf_tif = self.class_dir / f"{self.country}_{self.track}_confidence_map.tif"
+        self.class_tif = self.class_dir / f"{self.country}_{self.sanitized_track}_classified.tif"
+        self.conf_tif = self.class_dir / f"{self.country}_{self.sanitized_track}_confidence_map.tif"
 
-        self.masked_class = self.class_dir / f"{self.country}_{self.track}_classified_masked.tif"
-        self.masked_conf = self.class_dir / f"{self.country}_{self.track}_confidence_masked.tif"
-        self.metrics_fp = self.class_dir / f"{self.country}_{self.track}_metrics.xlsx"
+        self.masked_class = self.class_dir / f"{self.country}_{self.sanitized_track}_classified_masked.tif"
+        self.masked_conf = self.class_dir / f"{self.country}_{self.sanitized_track}_confidence_masked.tif"
+        self.metrics_fp = self.class_dir / f"{self.country}_{self.sanitized_track}_metrics.xlsx"
 
         # --- 4. Parameters ---
         self.stage1_params = {
@@ -400,7 +417,7 @@ class ProcessingPipeline:
             f"    [INFO] Final 3 dates chosen for segmentation composite: {[d.strftime('%Y-%m-%d') for d in selected_dates]}")
         print(f"    [INFO] Extracting {len(selected_bands)} bands (VH+VV) into a lightweight composite...")
 
-        composite_tif = self.seg_dir / f"{self.country}_{self.track}_seasonal_composite.tif"
+        composite_tif = self.seg_dir / f"{self.country}_{self.sanitized_track}_seasonal_composite.tif"
 
         if not composite_tif.exists():
             gdal.Translate(
@@ -420,7 +437,7 @@ class ProcessingPipeline:
         """Creates a single-band composite by summing the linear values of all SAR bands to reduce speckle."""
         print("    [INFO] Creating a summed composite of all SAR bands to reduce speckle...")
 
-        composite_tif = self.seg_dir / f"{self.country}_{self.track}_summed_composite.tif"
+        composite_tif = self.seg_dir / f"{self.country}_{self.sanitized_track}_summed_composite.tif"
 
         if composite_tif.exists():
             print(f"    [INFO] Summed composite already exists at {composite_tif}.")
@@ -856,7 +873,7 @@ class ProcessingPipeline:
             print("ERROR: Feature CSV not found.")
             return
 
-        model_fn = self.model_dir / f"{self.country}_{self.track}_model.pkl"
+        model_fn = self.model_dir / f"{self.country}_{self.sanitized_track}_model.pkl"
 
         print(f"[Stage {stage}/{self.total_stages}] Training ANN...")
 
@@ -915,7 +932,7 @@ class ProcessingPipeline:
         self._ensure_directories()
         stage = 5
 
-        model_file = self.model_dir / f"{self.country}_{self.track}_model.pkl"
+        model_file = self.model_dir / f"{self.country}_{self.sanitized_track}_model.pkl"
         if not model_file.exists():
             print("ERROR: Model not found.")
             return

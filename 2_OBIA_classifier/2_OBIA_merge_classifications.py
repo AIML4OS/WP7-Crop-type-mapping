@@ -1,3 +1,8 @@
+# Jak uruchomić skrypt:
+# python 2_OBIA_merge_classifications.py --track PL
+# python 2_OBIA_merge_classifications.py --track FR
+# python 2_OBIA_merge_classifications.py --track P1
+
 import argparse
 import os
 from pathlib import Path
@@ -42,27 +47,81 @@ def find_masked_files(base_dir: Path, tr: str, country: str):
 
 def discover_tracks(base_dir: Path, prefix: str):
     """
-    Automatically discover subfolders under base_dir whose
-    names start with `prefix` and exist in TRACK_REGIONS.
+    Discovers track folders and their classification/confidence files.
+    Supports both:
+      1. Country-based orbits: Prefix is a country code (e.g. PL, FR).
+         We scan base_dir/prefix/ for orbit_* folders.
+      2. Legacy tracks: Prefix is a track prefix (e.g. P1, P2).
+         We scan base_dir/ for folders starting with prefix.
     Returns list of (tr, country, cls_fp, conf_fp).
     """
     tracks = []
-    for sub in base_dir.iterdir():
-        tr = sub.name
-        if not tr.startswith(prefix):
-            continue
-        country = TRACK_REGIONS.get(tr)
-        if country is None:
-            continue
-        cls_fp, conf_fp = find_masked_files(base_dir, tr, country)
-        if cls_fp:
-            tracks.append((tr, country, cls_fp, conf_fp))
+    prefix_upper = prefix.upper()
+    
+    # Case 1: Prefix is a country code (2 letters)
+    if len(prefix) == 2 and prefix.isalpha():
+        country = prefix_upper
+        country_dir = base_dir / country
+        if country_dir.exists():
+            for sub in country_dir.iterdir():
+                if not sub.is_dir() or not sub.name.startswith("orbit_"):
+                    continue
+                tr = f"{country}/{sub.name}"
+                sanitized = tr.replace('/', '_').replace('\\', '_')
+                
+                cls_name  = f"{country}_{sanitized}_classified_masked.tif"
+                conf_name = f"{country}_{sanitized}_confidence_masked.tif"
+                
+                candidates = [
+                    sub / 'classification_results' / 'classification',
+                    sub / 'classification_results'
+                ]
+                for folder in candidates:
+                    cls_fp  = folder / cls_name
+                    conf_fp = folder / conf_name
+                    if cls_fp.exists() and conf_fp.exists():
+                        tracks.append((tr, country, cls_fp, conf_fp))
+                        break
+    
+    # Case 2: Prefix is a legacy track prefix
+    if not tracks:
+        for sub in base_dir.iterdir():
+            if not sub.is_dir():
+                continue
+            tr = sub.name
+            if not tr.startswith(prefix):
+                continue
+            if '/' in tr or '\\' in tr:
+                country = tr.replace('\\', '/').split('/')[0].upper()
+            else:
+                country = TRACK_REGIONS.get(tr)
+            if country is None:
+                if len(tr) == 2:
+                    country = tr.upper()
+                else:
+                    continue
+            
+            sanitized = tr.replace('/', '_').replace('\\', '_')
+            cls_name  = f"{country}_{sanitized}_classified_masked.tif"
+            conf_name = f"{country}_{sanitized}_confidence_masked.tif"
+            
+            candidates = [
+                base_dir / tr / 'classification_results' / 'classification',
+                base_dir / tr / 'classification_results'
+            ]
+            for folder in candidates:
+                cls_fp  = folder / cls_name
+                conf_fp = folder / conf_name
+                if cls_fp.exists() and conf_fp.exists():
+                    tracks.append((tr, country, cls_fp, conf_fp))
+                    break
+                    
     return tracks
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--track', required=True,
-                        help='Base track prefix (e.g. P1)')
+                        help='Base track prefix or country code (e.g. P1, PL, FR)')
     args = parser.parse_args()
     prefix = args.track
 
@@ -132,7 +191,11 @@ def main():
 
     # --- Prepare output file ------------------------------------------------
     base_tr, base_country, _, _ = tracks[0]
-    out_dir = base_dir / base_tr / 'classification_results'
+    if '/' in base_tr or '\\' in base_tr:
+        out_dir = base_dir / base_country / 'classification_results'
+    else:
+        out_dir = base_dir / base_tr / 'classification_results'
+    out_dir.mkdir(parents=True, exist_ok=True)
     out_tif = out_dir / f"{base_country}_final_classification.tif"
     
     drv = gdal.GetDriverByName('GTiff')
@@ -191,6 +254,8 @@ def main():
     # --- compute metrics & areas --------------------------------------------
     print("Calculating metrics and areas...")
     ctrl_shp = out_dir / 'samples' / 'control.shp'
+    if not ctrl_shp.exists():
+        ctrl_shp = base_dir / base_tr / 'classification_results' / 'samples' / 'control.shp'
     ctrl     = gpd.read_file(str(ctrl_shp))
     inv      = gdal.InvGeoTransform(gt_global)
 

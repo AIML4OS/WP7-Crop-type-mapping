@@ -4,6 +4,19 @@ build_agri_mask.py
 Rozpakowuje, mozaikuje, przycina i tworzy binarne maski terenow rolnych
 z danych Copernicus HRL Crop Type 2023.
 
+UWAGA: Dane wejściowe należy pobrać RĘCZNIE. Skrypt NIE pobiera ich automatycznie,
+ponieważ portal Copernicus CLMS wymaga uwierzytelnienia użytkownika.
+
+INSTRUKCJA POBIERANIA I PRZYGOTOWANIA DANYCH:
+  1. Zaloguj się na portalu Copernicus Land Monitoring Service (CLMS).
+  2. Wyszukaj i pobierz warstwę "High Resolution Layer: Crop Type 2023" (HRL CTY 2023)
+     dla obszaru interesującego Cię kraju (np. w postaci kafelków ZIP).
+  3. Utwórz katalog (jeśli nie istnieje):
+     auxiliary_files/raster_files/AgriMasks/<COUNTRY>/Results/
+     (gdzie <COUNTRY> to kod kraju, np. PL, FR, IE).
+  4. Umieść pobrane pliki ZIP bezpośrednio w katalogu "Results/".
+  5. Uruchom skrypt (przykład poniżej).
+
 Generuje 2 warianty masek (obie BINARNE: 0=brak upraw, 1=uprawy, 255=NoData):
 
   Wariant A: maska pola uprawne 3-klasowe (jare / oziminy / rzepak ozimy)
@@ -25,7 +38,7 @@ Struktura katalogow (dane wejsciowe):
     raster_files/
       AgriMasks/
         <COUNTRY>/
-          Results/    <- zip-y z Copernicus CLMS
+          Results/    <- zip-y z Copernicus CLMS (NALEŻY POBRAĆ RĘCZNIE!)
 
     shapefiles_nuts/
       <COUNTRY>/
@@ -230,17 +243,31 @@ def mosaic_and_reproject(tif_files: list, output_path: str, target_crs: str,
 
     print(f"  Mozaikowanie + reprojekcja {len(tif_files)} kafelkow do {target_crs}...")
 
+    warp_kwargs = {
+        'format': 'GTiff',
+        'dstSRS': target_crs,
+        'resampleAlg': gdal.GRA_NearestNeighbour,
+        'creationOptions': ['COMPRESS=DEFLATE', 'TILED=YES',
+                            'BLOCKXSIZE=512', 'BLOCKYSIZE=512', 'BIGTIFF=YES'],
+        'multithread': True,
+        'warpOptions': ['NUM_THREADS=ALL_CPUS'],
+    }
+
+    if clip_shp:
+        print(f"  Przycinanie do granicy przy uzyciu: {clip_shp}")
+        warp_kwargs['cutlineDSName'] = clip_shp
+        warp_kwargs['cropToCutline'] = True
+        
+        # Wykrycie i ustawienie odpowiedniego CRS dla cutline (przydatne przy roznych ukladow odniesienia)
+        real_shp_crs = _detect_shp_crs(clip_shp)
+        if real_shp_crs:
+            warp_kwargs['cutlineSRS'] = real_shp_crs
+
     # gdal.Warp przyjmuje liste plikow bezposrednio - bez VRT
     ds = gdal.Warp(
         output_path,
         tif_files,          # lista reklasyfikowanych kafelkow w EPSG:3035
-        format='GTiff',
-        dstSRS=target_crs,
-        resampleAlg=gdal.GRA_NearestNeighbour,
-        creationOptions=['COMPRESS=DEFLATE', 'TILED=YES',
-                         'BLOCKXSIZE=512', 'BLOCKYSIZE=512', 'BIGTIFF=YES'],
-        multithread=True,
-        warpOptions=['NUM_THREADS=ALL_CPUS'],
+        **warp_kwargs
     )
     if ds is None:
         print(f"  BLAD: gdal.Warp nie powiodl sie!")
