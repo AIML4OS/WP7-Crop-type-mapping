@@ -24,15 +24,15 @@ authors:
   - family-names: "Slesinski"
     given-names: "Przemyslaw"
     alias: "przemek"
-    email: "przemyslaw.slesinski@eurostat.europa.eu"
+    email: "p.slesinski@stat.gov.pl"
 
   - family-names: "Kotulak"
     given-names: "Natalia"
-    email: "natalia.kotulak@eurostat.europa.eu"
+    email: "n.kotulak@stat.gov.pl"
 
   - family-names: "Roos"
     given-names: "Marko"
-    email: "marko.roos@eurostat.europa.eu"
+    email: "m.roos@cbs.nl"
 
 keywords:
   - "Sentinel-1"
