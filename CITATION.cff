@@ -1,0 +1,74 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite it using the metadata below.
+  This citation is required under the terms of the Apache 2.0 License
+  accompanying this software.
+
+title: "Sentinel-1 OBIA Crop Type Mapping Pipeline"
+version: "2.0.0"
+date-released: "2025-01-01"
+license: "Apache-2.0"
+repository-code: "https://github.com/AIML4OS/WP7-Crop-type-mapping"
+url: "https://github.com/AIML4OS/WP7-Crop-type-mapping"
+
+abstract: >-
+  An automated, object-based image analysis (OBIA) pipeline for Sentinel-1
+  SAR time series processing and crop type classification using Artificial
+  Neural Networks (ANN) and Segment Anything Model (SAM). Developed within
+  the AIML4OS project (One Stop Shop for Artificial Intelligence in Official
+  Statistics), funded by Eurostat, European Commission. Supports dynamic
+  country-wide processing for any EU member state using adaptive orbit
+  optimization and multi-orbit merging.
+
+authors:
+  - family-names: "Slesinski"
+    given-names: "Przemyslaw"
+    alias: "przemek"
+    email: "przemyslaw.slesinski@eurostat.europa.eu"
+
+  - family-names: "Kotulak"
+    given-names: "Natalia"
+    email: "natalia.kotulak@eurostat.europa.eu"
+
+  - family-names: "Roos"
+    given-names: "Marko"
+    email: "marko.roos@eurostat.europa.eu"
+
+keywords:
+  - "Sentinel-1"
+  - "SAR"
+  - "remote sensing"
+  - "crop type mapping"
+  - "OBIA"
+  - "object-based image analysis"
+  - "neural network"
+  - "ANN"
+  - "SAM"
+  - "Segment Anything"
+  - "time series"
+  - "agriculture"
+  - "land cover"
+  - "European Union"
+  - "Eurostat"
+  - "AIML4OS"
+
+funding:
+  - name: "AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics"
+    funder-name: "Eurostat, European Commission"
+    url: "https://cros.ec.europa.eu/landing-page/aiml4os"
+
+references:
+  - type: software
+    title: "Sentinel Application Platform (SNAP)"
+    authors:
+      - name: "European Space Agency (ESA)"
+    url: "https://step.esa.int/main/toolboxes/snap/"
+
+  - type: article
+    title: "Segment Anything"
+    authors:
+      - family-names: "Kirillov"
+        given-names: "Alexander"
+    journal: "arXiv"
+    year: 2023
+    doi: "10.48550/arXiv.2304.02643"
