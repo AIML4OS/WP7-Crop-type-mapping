@@ -6,7 +6,7 @@ message: >-
 
 title: "Sentinel-1 OBIA Crop Type Mapping Pipeline"
 version: "2.0.0"
-date-released: "2025-01-01"
+date-released: "2026-05-27"
 license: "Apache-2.0"
 repository-code: "https://github.com/AIML4OS/WP7-Crop-type-mapping"
 url: "https://github.com/AIML4OS/WP7-Crop-type-mapping"
@@ -55,7 +55,7 @@ keywords:
 funding:
   - name: "AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics"
     funder-name: "Eurostat, European Commission"
-    url: "https://cros.ec.europa.eu/landing-page/aiml4os"
+    url: "https://cros.ec.europa.eu/dashboard/aiml4os"
 
 references:
   # --- Core SAR Processing ---
