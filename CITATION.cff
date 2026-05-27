@@ -58,17 +58,155 @@ funding:
     url: "https://cros.ec.europa.eu/landing-page/aiml4os"
 
 references:
+  # --- Core SAR Processing ---
   - type: software
     title: "Sentinel Application Platform (SNAP)"
+    abbreviation: "SNAP"
     authors:
       - name: "European Space Agency (ESA)"
+    license: "GPL-3.0"
     url: "https://step.esa.int/main/toolboxes/snap/"
+    notes: >-
+      Used for Sentinel-1 SAR preprocessing: radiometric calibration,
+      orbit correction, thermal noise removal, and terrain correction.
 
+  # --- Deep Learning / Segmentation ---
   - type: article
     title: "Segment Anything"
+    abbreviation: "SAM"
     authors:
       - family-names: "Kirillov"
         given-names: "Alexander"
+      - family-names: "Mintun"
+        given-names: "Eric"
+      - family-names: "Ravi"
+        given-names: "Nikhila"
+      - name: "et al."
     journal: "arXiv"
     year: 2023
     doi: "10.48550/arXiv.2304.02643"
+    url: "https://github.com/facebookresearch/segment-anything"
+    notes: >-
+      Used for image segmentation to delineate agricultural parcels.
+
+  - type: software
+    title: "PyTorch"
+    authors:
+      - name: "The PyTorch Foundation"
+    license: "BSD-3-Clause"
+    url: "https://pytorch.org"
+    notes: >-
+      Underlying deep learning framework for SAM model inference.
+
+  # --- Machine Learning ---
+  - type: article
+    title: >-
+      Scikit-learn: Machine Learning in Python
+    abbreviation: "scikit-learn"
+    authors:
+      - family-names: "Pedregosa"
+        given-names: "Fabian"
+      - family-names: "Varoquaux"
+        given-names: "Gaël"
+      - name: "et al."
+    journal: "Journal of Machine Learning Research"
+    volume: 12
+    year: 2011
+    start: 2825
+    end: 2830
+    url: "https://scikit-learn.org"
+    notes: >-
+      Used for ANN (MLPClassifier) training and inference,
+      StandardScaler normalization, confusion matrix and accuracy metrics.
+
+  # --- Geospatial Libraries ---
+  - type: software
+    title: "GDAL – Geospatial Data Abstraction Library"
+    abbreviation: "GDAL"
+    authors:
+      - name: "GDAL/OGR contributors"
+    license: "MIT"
+    url: "https://gdal.org"
+    notes: >-
+      Used for raster/vector I/O, clipping, reprojection, and format
+      conversion throughout the preprocessing and classification pipeline.
+
+  - type: software
+    title: "GeoPandas"
+    authors:
+      - name: "GeoPandas developers"
+    license: "BSD-3-Clause"
+    url: "https://geopandas.org"
+    notes: >-
+      Used for reading and processing NUTS2 shapefiles and training sample
+      vector data.
+
+  # --- Scientific Python Stack ---
+  - type: software
+    title: "NumPy"
+    authors:
+      - family-names: "Harris"
+        given-names: "Charles R."
+      - name: "et al."
+    license: "BSD-3-Clause"
+    url: "https://numpy.org"
+    notes: "Used for array operations, band stacking, and time-series statistics."
+
+  - type: software
+    title: "pandas"
+    authors:
+      - name: "The Pandas Development Team"
+    license: "BSD-3-Clause"
+    url: "https://pandas.pydata.org"
+    notes: "Used for tabular data handling, training sample management, and reporting."
+
+  - type: software
+    title: "joblib"
+    authors:
+      - name: "joblib developers"
+    license: "BSD-3-Clause"
+    url: "https://joblib.readthedocs.io"
+    notes: "Used for serializing and loading trained ANN classification models."
+
+  - type: software
+    title: "openpyxl"
+    authors:
+      - name: "openpyxl developers"
+    license: "MIT"
+    url: "https://openpyxl.readthedocs.io"
+    notes: "Used for generating Excel (.xlsx) accuracy and confusion matrix reports."
+
+  # --- Data Sources ---
+  - type: data
+    title: >-
+      Copernicus Land Monitoring Service – High Resolution Layer Crop Type
+    abbreviation: "CLMS HRL Crop Type"
+    authors:
+      - name: "European Environment Agency (EEA)"
+    license: "Copernicus Data Policy"
+    url: "https://land.copernicus.eu/en/products/high-resolution-layer-crop-type"
+    notes: >-
+      Used as an agricultural mask to exclude non-agricultural areas before
+      classification. Must be downloaded manually from the CLMS portal.
+
+  - type: data
+    title: "Eurostat GISCO – NUTS Administrative Boundaries"
+    abbreviation: "NUTS2 Shapefiles"
+    authors:
+      - name: "Eurostat, European Commission"
+    license: "Eurostat © (open, reuse with attribution)"
+    url: "https://gisco-services.ec.europa.eu/distribution/v2/nuts/"
+    notes: >-
+      Provides country and NUTS2 region boundary shapefiles for spatial
+      subsetting of Sentinel-1 scenes.
+
+  - type: data
+    title: "Copernicus Sentinel-1 SAR Data"
+    abbreviation: "Sentinel-1 GRD"
+    authors:
+      - name: "European Space Agency (ESA) / Copernicus Programme"
+    license: "Copernicus Sentinel Data Terms and Conditions"
+    url: "https://sentinel.esa.int/web/sentinel/missions/sentinel-1"
+    notes: >-
+      Primary input data: Sentinel-1 GRD SAR scenes (IW mode) acquired
+      over agricultural areas across EU member states.

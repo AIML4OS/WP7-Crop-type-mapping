@@ -1,0 +1,136 @@
+NOTICE
+======
+
+Sentinel-1 OBIA Crop Type Mapping Pipeline (v2.0)
+Copyright (c) 2024-2026 Przemyslaw Slesinski, Natalia Kotulak, Marko Roos
+AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics
+Funded by Eurostat, European Commission
+
+This product is licensed under the Apache License 2.0.
+See the LICENSE file for the full license text.
+
+-------------------------------------------------------------------------------
+
+This software makes use of the following third-party open-source libraries
+and software. Each is governed by its own license, listed below.
+
+-------------------------------------------------------------------------------
+
+1. GDAL / OGR / OSR
+   Copyright (c) 1998-2024 Frank Warmerdam, Even Roulet, and contributors
+   License: MIT License
+   Website: https://gdal.org
+   Python binding: osgeo (GDAL Python Bindings)
+   Used for: raster/vector processing, coordinate transformations,
+             clipping, reprojection, and format conversion.
+
+2. NumPy
+   Copyright (c) 2005-2024 NumPy Developers
+   License: BSD 3-Clause License
+   Website: https://numpy.org
+   Used for: numerical array operations, statistical calculations,
+             time-series band stacking.
+
+3. pandas
+   Copyright (c) 2008-2024 AQR Capital Management, LLC; Lambda Foundry, Inc.;
+                PyData Development Team
+   License: BSD 3-Clause License
+   Website: https://pandas.pydata.org
+   Used for: tabular data processing, training sample management,
+             metrics reporting.
+
+4. GeoPandas
+   Copyright (c) 2013-2024 GeoPandas developers
+   License: BSD 3-Clause License
+   Website: https://geopandas.org
+   Used for: reading/writing vector shapefiles, NUTS2 boundary processing,
+             spatial joins.
+
+5. scikit-learn
+   Copyright (c) 2007-2024 The scikit-learn developers
+   License: BSD 3-Clause License
+   Website: https://scikit-learn.org
+   Reference: Pedregosa et al., 2011. Scikit-learn: Machine Learning in
+              Python. JMLR, 12, pp. 2825-2830.
+   Used for: ANN (MLPClassifier) training and inference,
+             StandardScaler normalization, confusion matrix,
+             precision/recall/F1 metrics, bootstrapped resampling.
+
+6. joblib
+   Copyright (c) 2008-2024 joblib developers
+   License: BSD 3-Clause License
+   Website: https://joblib.readthedocs.io
+   Used for: model serialization (saving/loading trained ANN classifiers).
+
+7. openpyxl
+   Copyright (c) 2010-2024 openpyxl developers
+   License: MIT License
+   Website: https://openpyxl.readthedocs.io
+   Used for: generating Excel (.xlsx) classification accuracy reports.
+
+8. Segment Anything Model (SAM)
+   Copyright (c) 2023 Meta AI Research
+   License: Apache License 2.0
+   Website: https://github.com/facebookresearch/segment-anything
+   Reference: Kirillov, A., Mintun, E., Ravi, N., et al. (2023).
+              Segment Anything. arXiv:2304.02643.
+              https://doi.org/10.48550/arXiv.2304.02643
+   Used for: image segmentation to delineate agricultural parcels
+             as input to ANN classification.
+
+9. PyTorch
+   Copyright (c) 2016-2024 The PyTorch Foundation; Facebook, Inc.
+   License: BSD 3-Clause License
+   Website: https://pytorch.org
+   Reference: Paszke, A., et al. (2019). PyTorch: An Imperative Style,
+              High-Performance Deep Learning Library. NeurIPS.
+   Used for: underlying deep learning framework for SAM inference.
+
+10. ESA SNAP (Sentinel Application Platform)
+    Copyright (c) European Space Agency (ESA)
+    License: GNU GPL v3 with ESA SNAP License
+    Website: https://step.esa.int/main/toolboxes/snap/
+    Used for: Sentinel-1 SAR preprocessing – radiometric calibration,
+              orbit file application, thermal noise removal,
+              terrain correction, and coregistration.
+    Note: SNAP is invoked as an external process via the SNAP Graph
+          Processing Tool (GPT). It is not bundled with this software.
+
+-------------------------------------------------------------------------------
+
+DATA SOURCES
+
+11. Copernicus Land Monitoring Service (CLMS) – High Resolution Layers
+    Copyright (c) European Environment Agency (EEA) / European Union
+    License: Copernicus Data Policy (free and open access)
+    Website: https://land.copernicus.eu/en/products/high-resolution-layer-crop-type
+    Used as: Agricultural mask (crop type reference layer) for
+             masking non-agricultural areas prior to classification.
+    Note: Data must be manually downloaded from the CLMS portal
+          (authentication required). See README.md for instructions.
+
+12. Eurostat GISCO – NUTS2 Administrative Boundaries
+    Copyright (c) European Union, 1995-2024
+    License: Eurostat © (open data, reuse with attribution)
+    Website: https://gisco-services.ec.europa.eu/distribution/v2/nuts/
+    Used as: Country and region boundary shapefiles for spatial
+             subsetting of Sentinel-1 scenes.
+
+13. Copernicus Sentinel-1 SAR Data
+    Copyright (c) European Space Agency (ESA) / Copernicus Programme
+    License: Copernicus Sentinel Data Terms and Conditions (free and open)
+    Website: https://sentinel.esa.int/web/sentinel/missions/sentinel-1
+    Used as: Primary input data – Sentinel-1 GRD SAR scenes (IW mode)
+             acquired over agricultural areas.
+
+-------------------------------------------------------------------------------
+
+DISCLAIMER
+
+This software was developed as part of the AIML4OS project. The views and
+opinions expressed are those of the authors and do not necessarily reflect
+the official policy or position of Eurostat or the European Commission.
+
+The use of third-party libraries, data, and software is subject to their
+respective license terms. Users are responsible for compliance with all
+applicable licenses when using or redistributing this software.
