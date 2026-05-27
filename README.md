@@ -12,7 +12,8 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
    - [Windows Setup](#windows-setup)
    - [Linux Setup](#linux-setup)
 3. [Environment Configuration](#environment-configuration)
-4. [Step-by-Step Execution Guide](#step-by-step-execution-guide)
+4. [Training Samples Specification (samples.shp)](#training-samples-specification-samplesshp)
+5. [Step-by-Step Execution Guide](#step-by-step-execution-guide)
    - [Step 1: Download NUTS2 Boundaries](#step-1-download-nuts2-boundaries)
    - [Step 2: Prepare Copernicus HRL Crop Mask](#step-2-prepare-copernicus-hrl-crop-mask)
    - [Step 3: SAR Slice Calibration & Assembly](#step-3-sar-slice-calibration--assembly)
@@ -20,7 +21,7 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
    - [Step 5: Stack Clipping](#step-5-stack-clipping)
    - [Step 6: Object-Based Classification](#step-6-object-based-classification)
    - [Step 7: Merge Country Classification](#step-7-merge-country-classification)
-5. [Troubleshooting & Performance Tuning](#troubleshooting--performance-tuning)
+6. [Troubleshooting & Performance Tuning](#troubleshooting--performance-tuning)
 
 ---
 
@@ -51,11 +52,11 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
 
 2. **Install ESA SNAP**:
    - Download the SNAP installer from [ESA SNAP Download](https://step.esa.int/main/download/snap-download/).
-   - Install to the default path (e.g. `C:\Program Files\esa-snap`).
-   - Find `gpt.exe` inside `C:\Program Files\esa-snap\bin\gpt.exe`.
+   - Run the installer. You can install to the default path on drive `C:\` or choose another drive (e.g., `D:\Program Files\esa-snap`).
+   - Locate the path to the executable `gpt.exe` (e.g. `D:\Program Files\esa-snap\bin\gpt.exe`). You will need to supply this exact path in the configuration.
 
 3. **Install Orfeo ToolBox (OTB) (Optional)**:
-   - Download OTB 6.2.0 Win64 and extract it to `D:\AIML_CropMapper_Cloud\2_OBIA_classifier\OTB-6.2.0-Win64`.
+   - Download OTB 6.2.0 Win64 and extract it to a local folder (e.g., `D:\AIML_CropMapper_Cloud\2_OBIA_classifier\OTB-6.2.0-Win64`).
 
 ---
 
@@ -92,33 +93,80 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
      chmod +x esa-snap_sentinel_unix_*.sh
      ./esa-snap_sentinel_unix_*.sh -q
      ```
-   - The default installation path is usually `/usr/local/esa-snap` or `$HOME/esa-snap`. Locate the `gpt` tool in the `bin/` directory.
+   - Note the installation path (typically `/usr/local/esa-snap` or `$HOME/esa-snap`). Locate the `gpt` tool in the `bin/` directory.
 
 ---
 
 ## Environment Configuration
 
-Before running any script, you must tell the tools where SNAP and your project directories are located. 
+Before running any script, you must configure the following environment variables in your terminal shell. Make sure all paths align with your actual system installation.
 
 ### On Windows (PowerShell):
-Run these commands in your console before executing the scripts:
 ```powershell
+# Set the exact path to SNAP gpt.exe (change D: to C: if installed on drive C)
 $env:SNAP_GPT_EXE="D:/Program Files/esa-snap/bin/gpt.exe"
+
+# Path to SNAP auxiliary files (where orbit files are cached)
 $env:SNAP_AUXDATA_PATH="C:/Users/Administrator/.snap/auxdata"
+
+# Path to the raw Sentinel-1 GRD SAFE repository directory
 $env:S1_REPO_PATH="Y:/Sentinel-1/SAR/IW_GRDH_1S"
+
+# Output workspace directory for intermediate and final rasters
 $env:AIML_WORKING_DIR="D:/AIML_CropMapper_Cloud/workingDir"
+
+# Path to project's auxiliary files directory
 $env:AIML_AUX_DIR="D:/AIML_CropMapper_Cloud/auxiliary_files"
 ```
 
 ### On Linux (Bash):
-Run these commands in your terminal:
 ```bash
+# Set the exact path to SNAP gpt
 export SNAP_GPT_EXE="/usr/local/esa-snap/bin/gpt"
+
+# Path to SNAP auxiliary files (where orbit files are cached)
 export SNAP_AUXDATA_PATH="$HOME/.snap/auxdata"
+
+# Path to the raw Sentinel-1 GRD SAFE repository directory
 export S1_REPO_PATH="/mnt/sentinel1/SAR/IW_GRDH_1S"
+
+# Output workspace directory for intermediate and final rasters
 export AIML_WORKING_DIR="/home/user/AIML_CropMapper_Cloud/workingDir"
+
+# Path to project's auxiliary files directory
 export AIML_AUX_DIR="/home/user/AIML_CropMapper_Cloud/auxiliary_files"
 ```
+
+---
+
+## Training Samples Specification (samples.shp)
+
+To train the machine learning classifier, you must supply a point vector dataset containing crop reference points.
+
+### 1. File Format & Geometry
+- **Format**: ESRI Shapefile or SQLite database.
+- **Geometry Type**: **Point** (`OGRPoint`). Polygons are not supported; reference points should lie inside the fields.
+- **Coordinate System (CRS)**: Any standard coordinate reference system (e.g. `EPSG:4326` or `EPSG:3857`). The pipeline automatically reprojects the points to match the raster coordinate system.
+
+### 2. Required Attribute Fields
+The shapefile attributes table **must** contain an integer column representing the crop classes:
+- **`crop_id`** (Integer): Numeric code corresponding to the crop type or land-cover class.
+  - *Note*: Positive values are parsed as training samples (e.g., `11` = Winter Wheat, `12` = Maize, `1430` = Rapeseed).
+  - *Note*: Value `0` is reserved for background/ignored areas.
+
+### 3. File Directory Hierarchy (Input Paths)
+The classifier searches for your reference shapefile in the `shapefiles_samples` directory using the following hierarchy:
+1. `auxiliary_files/shapefiles_samples/{COUNTRY}_{SAN_TRACK}/samples.shp` (e.g. `PL_PL_orbit_12/samples.shp`)
+2. `auxiliary_files/shapefiles_samples/{COUNTRY}_{TRACK}/samples.shp` (e.g. `PL_PL/orbit_12/samples.shp`)
+3. `auxiliary_files/shapefiles_samples/{SAN_TRACK}/samples.shp`
+4. `auxiliary_files/shapefiles_samples/{TRACK}/samples.shp`
+5. `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp` (e.g. `PL/samples.shp` - country-wide fallback)
+6. `auxiliary_files/shapefiles_samples/samples.shp` (global fallback)
+
+### 4. Automatic Sample Splitting
+In Stage 2, the pipeline automatically splits your `samples.shp` dataset:
+- **70%** of the points are randomly selected and saved as `learn.shp` (for model training).
+- **30%** of the points are saved as `control.shp` (for independent model validation and confusion matrix generation).
 
 ---
 
@@ -212,7 +260,7 @@ Combines the classification results from all individual orbits into a single cou
 
 ### SNAP Memory and Cache Issues (OOM)
 SNAP can consume huge amounts of RAM. If you face Java Heap Space/OOM crashes:
-1. Locate SNAP's config: `C:\Program Files\esa-snap\bin\gpt.vmoptions` (Windows) or `/usr/local/esa-snap/bin/gpt.vmoptions` (Linux).
+1. Locate SNAP's config: `gpt.vmoptions` (located in the SNAP `bin/` directory).
 2. Edit the VM options (e.g. increase `-Xmx` memory threshold):
    ```text
    -Xmx16G
