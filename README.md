@@ -14,7 +14,8 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
 3. [Environment Configuration](#environment-configuration)
 4. [Training Samples Specification (samples.shp)](#training-samples-specification-samplesshp)
 5. [Interactive Menu & Stages Selector (ANN / SAM)](#interactive-menu--stages-selector-ann--sam)
-6. [Step-by-Step Execution Guide](#step-by-step-execution-guide)
+6. [Segment Anything (SAM) Model Setup & Parameters](#segment-anything-sam-model-setup--parameters)
+7. [Step-by-Step Execution Guide](#step-by-step-execution-guide)
    - [Step 1: Download NUTS2 Boundaries](#step-1-download-nuts2-boundaries)
    - [Step 2: Prepare Copernicus HRL Crop Mask](#step-2-prepare-copernicus-hrl-crop-mask)
    - [Step 3: SAR Slice Calibration & Assembly](#step-3-sar-slice-calibration--assembly)
@@ -22,7 +23,7 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
    - [Step 5: Stack Clipping](#step-5-stack-clipping)
    - [Step 6: Object-Based Classification](#step-6-object-based-classification)
    - [Step 7: Merge Country Classification](#step-7-merge-country-classification)
-7. [Troubleshooting & Performance Tuning](#troubleshooting--performance-tuning)
+8. [Troubleshooting & Performance Tuning](#troubleshooting--performance-tuning)
 
 ---
 
@@ -247,6 +248,30 @@ You can select individual numbers to execute specific parts of the pipeline and 
 
 - **Choice `8` (Stage 8: Calculate Metrics)**:
   - Computes global Overall Accuracy, Kappa coefficient, per-class recall, precision, F1-score, and crop areas (in hectares). Generates the final Excel report.
+
+---
+
+## Segment Anything (SAM) Model Setup & Parameters
+
+If you choose to run `1_OBIA_vector_classifier_modular_ANN_SAM.py`, the segmentation stage uses Meta AI's Segment Anything Model (SAM) instead of traditional algorithms. This requires downloading a model checkpoint.
+
+### 1. Download SAM Checkpoint File
+1. Download the high-quality **ViT-H SAM model checkpoint** (`sam_vit_h_4b8939.pth`) from the official Facebook Research repository:
+   [sam_vit_h_4b8939.pth (Download Link)](https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth)
+2. Create the directory `auxiliary_files/SAM_models/` (if it does not exist).
+3. Save the downloaded `.pth` file directly as:
+   `auxiliary_files/SAM_models/sam_vit_h_4b8939.pth`
+
+### 2. Tuning SAM Segmentation Parameters
+When running the SAM-based classifier script, select option `1` (Stage 1) to configure the SAM parameters:
+
+- **`sam_checkpoint`** (String): Path to your downloaded `.pth` checkpoint. Defaults to `auxiliary_files/SAM_models/sam_vit_h_4b8939.pth`.
+- **`sam_model_type`** (String): Type of model corresponding to the checkpoint (e.g. `vit_h` for ViT-H, `vit_l` for ViT-L, `vit_b` for ViT-B).
+- **`sam_device`** (String): Hardware device to run the deep learning calculations. 
+  - Set to `cuda` if you have an NVIDIA GPU with PyTorch CUDA installed (strongly recommended for speed).
+  - Set to `cpu` to run on the processor (slower, but acts as a reliable fallback).
+- **`tile_size`** (Integer): The size of the tile grid in pixels (default `2048`) parsed to SAM at once. If your GPU runs out of VRAM (CUDA Out Of Memory errors), decrease this to `1024` or `512`.
+- **`buffer`** (Integer): Overlapping pixel boundary (default `128`) to prevent edge artifacts between tiles.
 
 ---
 
