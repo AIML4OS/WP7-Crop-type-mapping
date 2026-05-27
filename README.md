@@ -13,7 +13,8 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
    - [Linux Setup](#linux-setup)
 3. [Environment Configuration](#environment-configuration)
 4. [Training Samples Specification (samples.shp)](#training-samples-specification-samplesshp)
-5. [Step-by-Step Execution Guide](#step-by-step-execution-guide)
+5. [Interactive Menu & Stages Selector (ANN / SAM)](#interactive-menu--stages-selector-ann--sam)
+6. [Step-by-Step Execution Guide](#step-by-step-execution-guide)
    - [Step 1: Download NUTS2 Boundaries](#step-1-download-nuts2-boundaries)
    - [Step 2: Prepare Copernicus HRL Crop Mask](#step-2-prepare-copernicus-hrl-crop-mask)
    - [Step 3: SAR Slice Calibration & Assembly](#step-3-sar-slice-calibration--assembly)
@@ -21,7 +22,7 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
    - [Step 5: Stack Clipping](#step-5-stack-clipping)
    - [Step 6: Object-Based Classification](#step-6-object-based-classification)
    - [Step 7: Merge Country Classification](#step-7-merge-country-classification)
-6. [Troubleshooting & Performance Tuning](#troubleshooting--performance-tuning)
+7. [Troubleshooting & Performance Tuning](#troubleshooting--performance-tuning)
 
 ---
 
@@ -167,6 +168,85 @@ The classifier searches for your reference shapefile in the `shapefiles_samples`
 In Stage 2, the pipeline automatically splits your `samples.shp` dataset:
 - **70%** of the points are randomly selected and saved as `learn.shp` (for model training).
 - **30%** of the points are saved as `control.shp` (for independent model validation and confusion matrix generation).
+
+---
+
+## Interactive Menu & Stages Selector (ANN / SAM)
+
+When you execute the classifier script (`1_OBIA_vector_classifier_modular_ANN.py` or the SAM version), the program starts an interactive text menu in your terminal. This gives you absolute control over execution, allowing you to run everything in one go or step-by-step while adjusting hyperparameters.
+
+### The Pipeline Menu Layout
+Upon launching the script, the following menu is displayed:
+```text
+    --- Raster-Based OBIA Pipeline (ANN) ---
+    Track: PL/orbit_12 (PL)
+
+    [1] Stage 1: SAR Summed Segmentation (eCognition-style MRS)
+    [2] Stage 2: Split Samples
+    [3] Stage 3: Extract Features (Object-based Training)
+    [4] Stage 4: Train ANN Classifier
+    [5] Stage 5: Tiled Object-Based Inference
+    [6] Stage 6: Mask Classification
+    [7] Stage 7: Mask Confidence
+    [8] Stage 8: Calculate Metrics
+
+    [A] Run All Stages (Forces overwrite of Stages 5-8 to clear old bugs)
+    [Q] Quit
+
+    Enter your choice:
+```
+
+### Detailed Execution Options
+
+#### Option `A`: Run All Stages (All-in-One Execution)
+- Recommended for standard runs. 
+- Automatically executes all 8 stages sequentially.
+- Forces overwrite of the inference outputs (`Stage 5` to `8`) to ensure no corrupted files or caching issues are present.
+
+#### Single-Stage Execution & Parameter Tuning
+You can select individual numbers to execute specific parts of the pipeline and dynamically adjust their parameters:
+
+- **Choice `1` (Stage 1: Segmentation)**:
+  - Splitting the raster into homogenous segments.
+  - You can change hyperparameters interactively when prompted (e.g. `scale`, `sigma`, `min_size` for Felzenszwalb, or Multi-Resolution Segmentation parameters).
+  - Prompts:
+    ```text
+    Change parameters? (y/n) [n]: y
+    Enter new value for 'scale' [50.0]: 40.0
+    Enter new value for 'min_size' [15]: 20
+    ```
+
+- **Choice `2` (Stage 2: Split Samples)**:
+  - Randomly partitions `samples.shp` into training and validation sets.
+  - Prompts:
+    ```text
+    Change parameters? (y/n) [n]: y
+    Enter new value for 'learn_frac' [0.7]: 0.8
+    ```
+
+- **Choice `3` (Stage 3: Extract Features)**:
+  - Performs zonal statistics on the segments corresponding to training locations, storing outputs in a CSV file. No hyperparameters needed.
+
+- **Choice `4` (Stage 4: Train ANN)**:
+  - Trains the neural network on the extracted features.
+  - Allows you to change classifier settings (e.g. MLP hidden layers architecture, max training iterations, or class balancing threshold).
+  - Prompts:
+    ```text
+    Change parameters? (y/n) [n]: y
+    Enter classifier (ann_sklearn) [ann_sklearn]: ann_sklearn
+    Enter new value for 'sk_hidden_sizes' [100,50]: 120,60,30
+    Enter new value for 'sk_max_iter' [500]: 800
+    Enter new value for 'balance_threshold' [1000]: 1500
+    ```
+
+- **Choice `5` (Stage 5: Object-Based Inference)**:
+  - Runs classification on every segment across the full raster tiles. This is performed block-by-block to prevent memory exhaustion (OOM).
+
+- **Choice `6` & `7` (Stage 6 & 7: Cropland Masking)**:
+  - Applies the binary agricultural mask (generated in Step 2) and data footprint to the final classification and confidence GeoTIFFs.
+
+- **Choice `8` (Stage 8: Calculate Metrics)**:
+  - Computes global Overall Accuracy, Kappa coefficient, per-class recall, precision, F1-score, and crop areas (in hectares). Generates the final Excel report.
 
 ---
 
