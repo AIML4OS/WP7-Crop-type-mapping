@@ -299,10 +299,25 @@ class CountryOrbitOptimizer:
         final_coverage_area = final_coverage_geom.GetArea() if final_coverage_geom else 0.0
         return selected_orbits, final_coverage_area
 
-    def discover_and_optimize(self, start_date: datetime.date, search_days=12):
-        """Scans a 24-day period in the S1 repository to separate ascending/descending orbits,
+    def discover_and_optimize(self, start_date: datetime.date, search_days=12, country_code=None):
+        """Scans a period in the S1 repository to separate ascending/descending orbits,
            optimizes both using Set Cover, and selects the direction with the best coverage and minimal orbits."""
         logging.info(f"Starting orbit discovery for a {search_days}-day window starting from {start_date}...")
+        
+        # Define candidate orbits for common countries to speed up S3 scan
+        candidate_orbits = None
+        if country_code:
+            country_orbits = {
+                'NL': [15, 37, 88, 110, 139, 161],
+                'PL': [22, 29, 73, 95, 102, 124, 146, 168, 175],
+                'IE': [30, 74, 103, 132, 147],
+                'FR': [8, 30, 37, 59, 81, 88, 103, 110, 132, 139, 153, 161],
+                'AT': [22, 29, 73, 95, 102, 124, 146, 168]
+            }
+            candidate_orbits = country_orbits.get(country_code.upper())
+            if candidate_orbits:
+                logging.info(f"Using pre-filtered candidate orbits for {country_code}: {candidate_orbits}")
+
         discovered_asc = defaultdict(list)
         discovered_dsc = defaultdict(list)
 
@@ -315,6 +330,10 @@ class CountryOrbitOptimizer:
                 for safe_dir in day_path.glob("*.SAFE"):
                     orbit_num = self.finder._get_relative_orbit(safe_dir)
                     if orbit_num is None:
+                        continue
+                        
+                    # Filter by candidate list if available (avoids slow manifest read)
+                    if candidate_orbits is not None and orbit_num not in candidate_orbits:
                         continue
 
                     footprint = self.finder._get_safe_footprint(safe_dir)
@@ -789,7 +808,7 @@ def main():
 
     # Optimize orbit selection dynamically
     optimizer = CountryOrbitOptimizer(repo, country_geom)
-    selected_orbits, selected_pass = optimizer.discover_and_optimize(start)
+    selected_orbits, selected_pass = optimizer.discover_and_optimize(start, country_code=country_code)
 
     if not selected_orbits:
         logging.error(f"No optimal orbits found for country {country_code}.")
