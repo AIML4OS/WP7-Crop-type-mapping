@@ -60,8 +60,9 @@ TOTAL_STAGES = 8
 # --- Main Pipeline Class ---
 
 class ProcessingPipeline:
-    def __init__(self, track):
+    def __init__(self, track, mask_variant='allcrops'):
         self.track = track
+        self.mask_variant = mask_variant
         
         # Dedykowana obsługa dynamicznych pasów dla krajów (np. PL/orbit_12)
         if '/' in track or '\\' in track:
@@ -160,6 +161,9 @@ class ProcessingPipeline:
         self.masked_conf = self.class_dir / f"{self.country}_{self.sanitized_track}_confidence_masked.tif"
         self.metrics_fp = self.class_dir / f"{self.country}_{self.sanitized_track}_metrics.xlsx"
 
+        # Agricultural mask - resolved per country (set in _resolve_agri_mask)
+        self.agri_mask = self._resolve_agri_mask()
+
         # --- 4. Parameters ---
         self.stage1_params = {
             'method': 'python_mrs_summed',
@@ -227,6 +231,29 @@ class ProcessingPipeline:
         p_no_ext = hdr.with_suffix('')
         if p_no_ext.exists() and p_no_ext.is_file(): return p_no_ext
         raise FileNotFoundError(f"No raster image (.img/.tif) found matching header {hdr.stem}")
+
+    def _resolve_agri_mask(self) -> Path:
+        raster_dir  = self.aux_dir / 'raster_files'
+        country_dir = raster_dir / 'AgriMasks' / self.country
+
+        mask_3class   = country_dir / f"{self.country}_agri_mask_3class_epsg3857.tif"
+        mask_allcrops = country_dir / f"{self.country}_agri_mask_allcrops_epsg3857.tif"
+        mask_eu       = raster_dir / 'EU_arable_areas_mask_3857.tif'
+
+        if self.mask_variant == 'allcrops':
+            candidates = [mask_allcrops, mask_3class, mask_eu]
+            print(f"  Mask variant: allcrops (wszystkie uprawy wlacznie z trwalymi)")
+        else:
+            candidates = [mask_3class, mask_allcrops, mask_eu]
+            print(f"  Mask variant: 3class (jare/oziminy/rzepak)")
+
+        for path in candidates:
+            if path.exists():
+                print(f"  Using agricultural mask at: {path}")
+                return path
+
+        print(f"  WARNING: No agricultural mask found. Fallback to default path: {mask_eu}")
+        return mask_eu
 
     def _apply_mask(self, input_tif, mask_tif, out_tif, stage):
         print(f"[Stage {stage}/{self.total_stages}] Applying Arable & Data Footprint Mask...")
@@ -1071,7 +1098,11 @@ class ProcessingPipeline:
     def stage_6_mask_class(self, force_recompute=False):
         self._ensure_directories()
         stage = 6
-        mask_file = self.aux_dir / 'raster_files' / 'EU_arable_areas_mask_3857.tif'
+        mask_file = self.agri_mask
+        if not mask_file.exists():
+            print(f"[Stage {stage}] ERROR: Agricultural mask not found: {mask_file}")
+            print(f"  Run: python auxiliary_files/raster_files/AgriMasks/build_agri_mask.py --country {self.country}")
+            return
         if not self.class_tif.exists():
             print(f"ERROR: Classified TIF not found.")
             return
@@ -1085,7 +1116,11 @@ class ProcessingPipeline:
     def stage_7_mask_confidence(self, force_recompute=False):
         self._ensure_directories()
         stage = 7
-        mask_file = self.aux_dir / 'raster_files' / 'EU_arable_areas_mask_3857.tif'
+        mask_file = self.agri_mask
+        if not mask_file.exists():
+            print(f"[Stage {stage}] ERROR: Agricultural mask not found: {mask_file}")
+            print(f"  Run: python auxiliary_files/raster_files/AgriMasks/build_agri_mask.py --country {self.country}")
+            return
         if not self.conf_tif.exists():
             print(f"ERROR: Confidence TIF not found.")
             return
