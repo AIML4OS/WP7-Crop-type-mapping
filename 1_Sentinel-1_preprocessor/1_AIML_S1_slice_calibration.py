@@ -299,7 +299,7 @@ class CountryOrbitOptimizer:
         final_coverage_area = final_coverage_geom.GetArea() if final_coverage_geom else 0.0
         return selected_orbits, final_coverage_area
 
-    def discover_and_optimize(self, start_date: datetime.date, search_days=24):
+    def discover_and_optimize(self, start_date: datetime.date, search_days=12):
         """Scans a 24-day period in the S1 repository to separate ascending/descending orbits,
            optimizes both using Set Cover, and selects the direction with the best coverage and minimal orbits."""
         logging.info(f"Starting orbit discovery for a {search_days}-day window starting from {start_date}...")
@@ -376,26 +376,36 @@ class CountryOrbitOptimizer:
 class LocalSentinel1Finder:
     def __init__(self, repo_path: pathlib.Path):
         self.repo_path = repo_path
+        self._cache_path = None
+        self._cache_content = None
+
+    def _read_manifest(self, safe_path: pathlib.Path):
+        """Reads manifest.safe with a 1-item cache to prevent redundant remote S3/rclone reads."""
+        if self._cache_path == safe_path:
+            return self._cache_content
+            
+        self._cache_path = safe_path
+        self._cache_content = None
+        
+        manifest = safe_path / "manifest.safe"
+        try:
+            if not manifest.exists():
+                manifest = safe_path / "manifest.SAFE"
+            if manifest.exists():
+                with open(manifest, 'r', encoding='utf-8') as f:
+                    self._cache_content = f.read()
+            else:
+                logging.warning(f"Manifest not found for {safe_path.name}")
+        except Exception as e:
+            logging.error(f"SKIP: Disk I/O Error reading manifest for {safe_path.name}: {e}")
+            
+        return self._cache_content
 
     def _get_safe_footprint(self, safe_path: pathlib.Path):
         """Reads manifest.safe to find the footprint."""
         try:
-            manifest = safe_path / "manifest.safe"
-            try:
-                if not manifest.exists():
-                    manifest = safe_path / "manifest.SAFE"
-                if not manifest.exists():
-                    logging.warning(f"Manifest not found for {safe_path.name}")
-                    return None
-            except OSError as e:
-                logging.error(f"SKIP: Disk I/O Error checking existence of {safe_path.name}: {e}")
-                return None
-
-            try:
-                with open(manifest, 'r', encoding='utf-8') as f:
-                    content = f.read()
-            except OSError as e:
-                logging.error(f"SKIP: Disk I/O Error reading {manifest}: {e}")
+            content = self._read_manifest(safe_path)
+            if not content:
                 return None
 
             match = re.search(r'<gml:coordinates>(.*?)</gml:coordinates>', content, re.DOTALL)
@@ -425,17 +435,32 @@ class LocalSentinel1Finder:
             logging.warning(f"Failed to parse footprint for {safe_path.name}: {e}")
         return None
 
-    def _get_relative_orbit(self, safe_path: pathlib.Path):
-        """Reads manifest.safe to find the relative orbit number."""
-        try:
-            manifest = safe_path / "manifest.safe"
-            if not manifest.exists():
-                manifest = safe_path / "manifest.SAFE"
-            if not manifest.exists():
-                return None
+    def _estimate_relative_orbit_from_name(self, safe_name: str):
+        """Estimates the relative orbit number from the filename to avoid slow disk read."""
+        parts = safe_name.split('_')
+        if len(parts) >= 7:
+            platform = parts[0]
+            try:
+                abs_orbit = int(parts[6])
+                if platform == 'S1A':
+                    return ((abs_orbit - 73) % 175) + 1
+                elif platform == 'S1B' or platform == 'S1C' or platform == 'S1D':
+                    return ((abs_orbit - 27) % 175) + 1
+            except ValueError:
+                pass
+        return None
 
-            with open(manifest, 'r', encoding='utf-8') as f:
-                content = f.read()
+    def _get_relative_orbit(self, safe_path: pathlib.Path):
+        """Reads manifest.safe to find the relative orbit number (with fast filename-based fallback)."""
+        # Fast path: check filename estimation first
+        estimated = self._estimate_relative_orbit_from_name(safe_path.name)
+        if estimated is not None:
+            return estimated
+
+        try:
+            content = self._read_manifest(safe_path)
+            if not content:
+                return None
 
             match = re.search(r':relativeOrbitNumber\s+type="start">(\d+)<', content)
             if match:
@@ -447,14 +472,9 @@ class LocalSentinel1Finder:
     def _get_pass_direction(self, safe_path: pathlib.Path):
         """Reads manifest.safe to find the pass direction (ASCENDING or DESCENDING)."""
         try:
-            manifest = safe_path / "manifest.safe"
-            if not manifest.exists():
-                manifest = safe_path / "manifest.SAFE"
-            if not manifest.exists():
+            content = self._read_manifest(safe_path)
+            if not content:
                 return None
-
-            with open(manifest, 'r', encoding='utf-8') as f:
-                content = f.read()
 
             match = re.search(r':pass>(ASCENDING|DESCENDING)<', content)
             if match:
