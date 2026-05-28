@@ -280,8 +280,8 @@ class CountryOrbitOptimizer:
                         best_new_area = new_area
                         best_orbit = orbit_num
 
-            # Stop if the best candidate adds less than 0.5% new coverage
-            if best_orbit is None or best_new_area < (total_target_area * 0.005):
+            # Stop if the best candidate adds no new coverage
+            if best_orbit is None or best_new_area <= 0.0:
                 break
 
             selected_orbits.append(best_orbit)

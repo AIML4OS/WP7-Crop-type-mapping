@@ -211,19 +211,12 @@ def main():
     gdf_size_ok = gdf_metric[gdf_metric["area_ha"] >= min_area_ha].copy()
     logging.info(f"Filtered out fields < {min_area_ha} ha. Remaining: {len(gdf_size_ok)}")
     
-    # Centroid check (must be inside polygon)
-    logging.info("Calculating centroids inside polygons...")
-    centroids = []
-    
-    for idx, row in gdf_size_ok.iterrows():
-        poly = row.geometry
-        cnt = poly.centroid
-        if poly.contains(cnt):
-            row_cnt = row.copy()
-            row_cnt.geometry = cnt
-            centroids.append(row_cnt)
-            
-    gdf_cnt = gpd.GeoDataFrame(centroids, crs="EPSG:28992")
+    # Centroid check (must be inside polygon) - Vectorized for speed
+    logging.info("Calculating centroids inside polygons (vectorized)...")
+    centroids = gdf_size_ok.geometry.centroid
+    is_inside = gdf_size_ok.geometry.contains(centroids)
+    gdf_cnt = gdf_size_ok[is_inside].copy()
+    gdf_cnt.geometry = centroids[is_inside]
     logging.info(f"Valid interior centroids: {len(gdf_cnt)}")
     
     # Stratified Sampling: 1000 per class across the entire country
