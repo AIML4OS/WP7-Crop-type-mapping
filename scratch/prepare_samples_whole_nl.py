@@ -226,8 +226,8 @@ def main():
     gdf_cnt = gpd.GeoDataFrame(centroids, crs="EPSG:28992")
     logging.info(f"Valid interior centroids: {len(gdf_cnt)}")
     
-    # Stratified Sampling: 200 per class across the entire country
-    samples_per_class = 200
+    # Stratified Sampling: 1000 per class across the entire country
+    samples_per_class = 1000
     sampled_groups = []
     
     for crop, group in gdf_cnt.groupby("crop_name"):
