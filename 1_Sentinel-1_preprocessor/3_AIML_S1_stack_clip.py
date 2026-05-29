@@ -182,7 +182,10 @@ def stack_and_clip(track: str):
     creation_options = ['COMPRESS=DEFLATE', 'BIGTIFF=YES', 'TILED=YES']
     for region in regions:
         sanitized_track = track.replace('/', '_').replace('\\', '_')
-        out_file = out_dir / f"{region}_{sanitized_track}_{dr}_VH_VV.tif"
+        if sanitized_track.startswith(f"{region}_"):
+            out_file = out_dir / f"{sanitized_track}_{dr}_VH_VV.tif"
+        else:
+            out_file = out_dir / f"{region}_{sanitized_track}_{dr}_VH_VV.tif"
         shp_path = SHAPEFILES_DIR / region / f"NUTS2_{region}.shp"
         if not shp_path.exists():
             print(f"    WARNING: Shapefile not found: {shp_path}")
