@@ -74,6 +74,39 @@ def run_gpt(xml_path):
         return False
 
 
+def get_bands_from_dim(dim_path, pol):
+    """
+    Parses the BEAM-DIMAP .dim XML file and extracts all band names
+    corresponding to the specified polarization ('VH' or 'VV'),
+    sorted chronologically.
+    """
+    import xml.etree.ElementTree as ET
+    try:
+        tree = ET.parse(str(dim_path))
+        root = tree.getroot()
+        all_bands = [b.find('BAND_NAME').text for b in root.findall('.//Spectral_Band_Info')]
+        
+        # Filter by polarization
+        pol_pattern = f"_{pol}_"
+        filtered_bands = [b for b in all_bands if pol_pattern in b]
+        
+        # Sort chronologically by parsing date from band name
+        def parse_band_date(band_name):
+            m = re.search(r"_(\d{2}[A-Za-z]{3}\d{4})(?:_|$)", band_name)
+            if m:
+                try:
+                    return datetime.strptime(m.group(1), "%d%b%Y")
+                except ValueError:
+                    pass
+            return datetime.min
+            
+        filtered_bands.sort(key=parse_band_date)
+        return filtered_bands
+    except Exception as e:
+        logging.error(f"Error parsing .dim file {dim_path}: {e}")
+        return []
+
+
 # ================= XML TEMPLATES =================
 
 # Stage 1: Coregistration (Wrap)
@@ -295,24 +328,6 @@ def run_full_processing(selected_tracks, overwrite=False):
         first_date = files_with_dates[0][1]
         last_date = files_with_dates[-1][1]
 
-        # Band Naming Logic (Old Script: 2*i-1 and 2*i)
-        vh_bands = []
-        vv_bands = []
-
-        for i, (f, d_str) in enumerate(files_with_dates):
-            snap_date = format_date(d_str)
-            if i == 0:
-                vh_bands.append(f"Sigma0_VH_mst_{snap_date}")
-                vv_bands.append(f"Sigma0_VV_mst_{snap_date}")
-            else:
-                vh_idx = 2 * i - 1
-                vv_idx = 2 * i
-                vh_bands.append(f"Sigma0_VH_slv{vh_idx}_{snap_date}")
-                vv_bands.append(f"Sigma0_VV_slv{vv_idx}_{snap_date}")
-
-        vh_band_str = ','.join(vh_bands)
-        vv_band_str = ','.join(vv_bands)
-
         wrapped_folder = track_dir / 'wrapped'
         wrapped_folder.mkdir(exist_ok=True)
         wrapped_file = wrapped_folder / f"wrapped_{first_date}_{last_date}.dim"
@@ -341,6 +356,18 @@ def run_full_processing(selected_tracks, overwrite=False):
             if not process_wrap(files_with_dates, wrapped_file, track_dir):
                 logging.error("Wrapping failed. Stopping.")
                 continue
+
+        # Dynamic Band Discovery from wrapped DIM file to prevent index mismatch/swapped polarizations
+        vh_bands = get_bands_from_dim(wrapped_file, 'VH')
+        vv_bands = get_bands_from_dim(wrapped_file, 'VV')
+
+        if not vh_bands or not vv_bands:
+            logging.error("Failed to parse band names from wrapped .dim file. Stopping.")
+            continue
+
+        vh_band_str = ','.join(vh_bands)
+        vv_band_str = ','.join(vv_bands)
+
 
         # --- STAGE 2: VH ---
         if not process_polarization(wrapped_file, output_vh, track_dir, vh_band_str, 'VH'):
