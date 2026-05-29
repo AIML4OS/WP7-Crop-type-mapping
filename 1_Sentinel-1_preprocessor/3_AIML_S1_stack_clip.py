@@ -137,8 +137,8 @@ def stack_and_clip(track: str):
         d_end = extract_band_date(vh_imgs[-1].stem).strftime("%Y%m%d")
         dr = f"{d_end}_{d_start}"
 
-    # --- VIRTUAL STACKING ---
-    vrt_file = out_dir / f"{track}_{dr}_temp_stack.vrt"
+    sanitized_track = track.replace('/', '_').replace('\\', '_')
+    vrt_file = out_dir / f"{sanitized_track}_{dr}_temp_stack.vrt"
     print(f"Creating Virtual Stack for {track} ({dr}): {len(vh_imgs) + len(vv_imgs)} bands")
 
     input_files = [str(p) for p in vh_imgs] + [str(p) for p in vv_imgs]
