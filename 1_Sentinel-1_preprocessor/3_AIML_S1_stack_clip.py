@@ -178,8 +178,8 @@ def stack_and_clip(track: str):
             print(f"No regions defined for {track}, skipping clip.")
             return
 
-    # CHANGED: Removed PREDICTOR=2 to fix SNAP compatibility
-    creation_options = ['COMPRESS=DEFLATE', 'BIGTIFF=YES', 'TILED=YES']
+    # CHANGED: Removed PREDICTOR=2 to fix SNAP compatibility, added NUM_THREADS for parallel compression
+    creation_options = ['COMPRESS=DEFLATE', 'BIGTIFF=YES', 'TILED=YES', 'NUM_THREADS=ALL_CPUS']
     for region in regions:
         sanitized_track = track.replace('/', '_').replace('\\', '_')
         if sanitized_track.startswith(f"{region}_"):
@@ -211,6 +211,7 @@ def stack_and_clip(track: str):
             cropToCutline=True,
             dstNodata=0,
             dstSRS='EPSG:3857',
+            multithread=True,
             callback=make_progress(f"Clipping {region}")
         )
 
