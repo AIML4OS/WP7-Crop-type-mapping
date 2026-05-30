@@ -5,5 +5,7 @@ venv/
 __pycache__/
 *.tif
 *.csv
+*.json
 .idea/
 2_OBIA_classifier/*.pth
+scratch/

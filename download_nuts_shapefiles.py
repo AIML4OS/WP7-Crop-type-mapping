@@ -13,7 +13,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-URL = "https://gisco-services.ec.europa.eu/distribution/v2/nuts/download/ref-nuts-2021-20m.shp.zip"
+URL = "https://gisco-services.ec.europa.eu/distribution/v2/nuts/download/ref-nuts-2021-01m.shp.zip"
 WORKSPACE_DIR = pathlib.Path("d:/AIML_CropMapper_Cloud")
 TEMP_DIR = WORKSPACE_DIR / "workingDir" / "temp_nuts"
 OUTPUT_BASE_DIR = WORKSPACE_DIR / "auxiliary_files" / "shapefiles_nuts"
