@@ -217,9 +217,11 @@ def stack_and_clip(track: str):
         ds_out = gdal.Warp(str(out_file), str(vrt_file), options=warp_opts)
 
         if ds_out:
+            print("\n    Building internal overviews (pyramids) for instant QGIS loading...")
+            ds_out.BuildOverviews('NEAREST', [2, 4, 8, 16, 32, 64])
             ds_out = None
             size_mb = out_file.stat().st_size / (1024 * 1024)
-            print(f"\n    Clipping complete. Output size: {size_mb:.2f} MB")
+            print(f"    Clipping complete. Output size: {size_mb:.2f} MB")
             if size_mb < 100:
                 print("    WARNING: Output file is suspiciously small. Check projection overlap!")
         else:
