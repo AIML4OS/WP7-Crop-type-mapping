@@ -32,22 +32,17 @@ authors:
     email: "n.kotulak@stat.gov.pl"
     affiliation: "Statistics Poland"
 
+  - family-names: "Roos"
+    given-names: "Marko"
+    email: "m.roos@cbs.nl"
+    affiliation: "Statistics Netherlands"
+
   - family-names: "Mróz"
     given-names: "Marek"
     name-particle: "prof. dr hab. inż."
     email: "marek.mroz@uwm.edu.pl"
     affiliation: "University of Warmia and Mazury in Olsztyn"
 
-  - family-names: "Mleczko"
-    given-names: "Magdalena"
-    name-particle: "dr inż."
-    email: "magdalena.mleczko@uwm.edu.pl"
-    affiliation: "University of Warmia and Mazury in Olsztyn"
-
-  - family-names: "Roos"
-    given-names: "Marko"
-    email: "m.roos@cbs.nl"
-    affiliation: "Statistics Netherlands"
 
 keywords:
   - "Sentinel-1"
