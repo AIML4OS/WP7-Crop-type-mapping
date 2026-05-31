@@ -166,7 +166,7 @@ END OF TERMS AND CONDITIONS
 
 ---
 
-Copyright (c) 2024-2026 Przemyslaw Slesinski, Natalia Kotulak, Marko Roos
+Copyright (c) 2024-2026 Przemyslaw Slesinski, Natalia Kotulak, Marek Mróz, Magdalena Mleczko, Marko Roos
 AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics
 Funded by Eurostat, European Commission
 
@@ -190,12 +190,14 @@ If you use this software in your research, publications, reports, or
 any derivative work, you are required to acknowledge and cite the authors
 as follows:
 
-    Slesinski, P., Kotulak, N., Roos, M. (2025). Sentinel-1 OBIA Crop
-    Type Mapping Pipeline (v2.0). AIML4OS – One Stop Shop for Artificial
-    Intelligence in Official Statistics. European Commission / Eurostat.
+    Slesinski, P., Kotulak, N., Mróz, M., Mleczko, M., Roos, M. (2025).
+    Sentinel-1 OBIA Crop Type Mapping Pipeline (v2.0). AIML4OS – One Stop
+    Shop for Artificial Intelligence in Official Statistics. European
+    Commission / Eurostat.
     Available at: https://github.com/AIML4OS/WP7-Crop-type-mapping
 
 This citation requirement applies to all uses of this software,
 including but not limited to: academic publications, conference papers,
 technical reports, dashboards, and other research outputs derived from
 or using this software.
+
