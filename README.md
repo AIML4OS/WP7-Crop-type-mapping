@@ -381,7 +381,7 @@ This guide details each script in the pipeline, explaining its functionality, re
 * **Algorithm Options**:
   - **Option A (Felzenszwalb ANN)** - `1_OBIA_vector_classifier_modular_ANN.py`: Performs Felzenszwalb segmentation on CPU. Extracts zonal statistics (mean backscatter, standard deviation, and temporal ratios) per parcel object to train a scikit-learn MLP Classifier.
   - **Option B (SAM ANN)** - `1_OBIA_vector_classifier_modular_ANN_SAM.py`: Employs Meta AI's Segment Anything Model (SAM) for deep learning-based boundary delineation (requires GPU / PyTorch).
-  - **Option C (Prithvi-SAR)** - `1_OBIA_vector_classifier_Prithvi_SAR.py`: Leverages the NASA-IBM geospatial foundation model to extract `768`-dimensional temporal-spectral token embeddings from segmented image patches, training the ANN on these embeddings.
+  - **Option C (Prithvi-SAR)** - `1_OBIA_vector_classifier_Prithvi_SAR.py`: Leverages the NASA-IBM geospatial foundation model to extract `768`-dimensional temporal-spectral token embeddings from segmented image patches. It includes its own built-in Segment Anything Model (SAM) segmentation stage, making the entire pipeline completely self-contained.
 * **Prerequisites & Config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, and model checkpoints (`sam_vit_h_4b8939.pth` or `Prithvi_100M.pt`).
 * **Launch Command**:
   ```bash

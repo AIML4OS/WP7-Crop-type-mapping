@@ -23,13 +23,13 @@ from openpyxl.styles import Font
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-# Try importing skimage for segmentation
+# Try importing SAM
 try:
-    from skimage.segmentation import felzenszwalb
+    from samgeo import SamGeo
     from skimage.util import img_as_float
-    HAS_SKIMAGE = True
+    HAS_SAM = True
 except ImportError:
-    HAS_SKIMAGE = False
+    HAS_SAM = False
 
 # Try importing PyTorch & Transformers for Prithvi-SAR
 try:
@@ -294,12 +294,12 @@ class ProcessingPipeline:
 
         self.agri_mask = self._resolve_agri_mask()
         self.stage1_params = {
-            'method': 'python_felzenszwalb',
-            'scale': 50.0,
-            'sigma': 0.5,
-            'min_size': 15,
-            'tile_size': 4096,
-            'buffer': 256
+            'method': 'python_sam',
+            'tile_size': 2048,
+            'buffer': 128,
+            'sam_checkpoint': str(self.aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'),
+            'sam_model_type': 'vit_h',
+            'sam_device': 'cuda' if (HAS_TORCH and torch.cuda.is_available()) else 'cpu'
         }
         self.stage4_params = {
             'sk_hidden_sizes': '128,64',
@@ -372,20 +372,95 @@ class ProcessingPipeline:
         ds = None
         print(f"    Footprint mask saved to {self.footprint_mask}\n")
 
-    # --- Stage 1: Segmentation (Felzenszwalb) ---
+    def _create_summed_composite(self):
+        """Creates a single-band composite by summing the log-domain (dB) values of all SAR bands to reduce speckle while preserving low-backscatter crop contrast."""
+        print("    [INFO] Creating a log-domain (dB) summed composite of all SAR bands...")
+
+        gdal.SetCacheMax(4 * 1024 * 1024 * 1024)
+
+        composite_tif = self.seg_dir / f"{self.file_prefix}_summed_composite.tif"
+
+        if composite_tif.exists():
+            print(f"    [INFO] Summed composite already exists at {composite_tif}.")
+            return composite_tif
+
+        ds = gdal.Open(str(self.ras))
+        if not ds:
+            raise RuntimeError(f"Could not open source raster {self.ras}")
+
+        cols = ds.RasterXSize
+        rows = ds.RasterYSize
+        nbands = ds.RasterCount
+        gt = ds.GetGeoTransform()
+        proj = ds.GetProjection()
+
+        driver = gdal.GetDriverByName('GTiff')
+        out_ds = driver.Create(str(composite_tif), cols, rows, 1, gdal.GDT_Float32,
+                               options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+        out_ds.SetGeoTransform(gt)
+        out_ds.SetProjection(proj)
+        out_band = out_ds.GetRasterBand(1)
+        out_band.SetNoDataValue(0)
+
+        tile_size = 4096
+        
+        for y in range(0, rows, tile_size):
+            for x in range(0, cols, tile_size):
+                xsize = min(tile_size, cols - x)
+                ysize = min(tile_size, rows - y)
+
+                sum_arr = np.zeros((ysize, xsize), dtype=np.float32)
+                valid_mask = np.zeros((ysize, xsize), dtype=bool)
+
+                for b in range(1, nbands + 1):
+                    band = ds.GetRasterBand(b)
+                    arr = band.ReadAsArray(x, y, xsize, ysize)
+                    
+                    if arr is None:
+                        raise RuntimeError(f"Failed to read block at x={x}, y={y} for band {b}.")
+                        
+                    nodata = band.GetNoDataValue()
+                    
+                    if nodata is not None:
+                        mask = (arr != nodata) & (~np.isnan(arr)) & (arr != 0)
+                    else:
+                        mask = (~np.isnan(arr)) & (arr != 0)
+                        
+                    sum_arr[mask] += arr[mask]
+                    valid_mask |= mask
+
+                sum_arr[~valid_mask] = 0
+                out_band.WriteArray(sum_arr, x, y)
+
+        out_ds.FlushCache()
+        out_ds = None
+        ds = None
+        print(f"    [INFO] Summed composite saved to {composite_tif}")
+        return composite_tif
+
+    # --- Stage 1: Segmentation (SAM) ---
     def stage_1_segmentation(self, force_recompute=False):
         stage = 1
         if self.seg_tif.exists() and not force_recompute:
             print(f"[Stage {stage}/{self.total_stages}] Segmentation Raster already exists, skipping.\n")
             return
 
-        print(f"[Stage {stage}/{self.total_stages}] Generating object segmentation...")
-        if not HAS_SKIMAGE:
-            print("ERROR: scikit-image is not installed. Standalone segmentation requires it.")
+        print(f"[Stage {stage}/{self.total_stages}] Generating object segmentation using SAM...")
+        if not HAS_SAM:
+            print("ERROR: segment-geospatial (samgeo) is not installed. Standalone SAM segmentation requires it.")
             return
 
         self._ensure_directories()
-        self._run_python_segmentation_tiled(self.stage1_params, stage, 'python_felzenszwalb')
+        
+        # Create summed composite first
+        original_ras = self.ras
+        try:
+            self.ras = self._create_summed_composite()
+        except Exception as e:
+            print(f"    [WARNING] Failed to create summed composite: {e}. Falling back to full stack.")
+            
+        self._run_python_segmentation_tiled(self.stage1_params, stage, 'python_sam')
+        self.ras = original_ras
 
     def _run_python_segmentation_tiled(self, params, stage, method):
         print(f"    Running Tiled Python Segmentation ({method})...")
@@ -393,6 +468,11 @@ class ProcessingPipeline:
             ds = gdal.Open(str(self.ras))
             if not ds:
                 raise RuntimeError("Could not open raster")
+
+            # Open Data Footprint Mask (Stage 0 output) if it exists
+            ds_foot = None
+            if self.footprint_mask.exists():
+                ds_foot = gdal.Open(str(self.footprint_mask))
 
             cols = ds.RasterXSize
             rows = ds.RasterYSize
@@ -408,9 +488,31 @@ class ProcessingPipeline:
             out_band = out_ds.GetRasterBand(1)
             out_band.SetNoDataValue(0)
 
-            tile_size = params.get('tile_size', 4096)
-            buffer = params.get('buffer', 256)
+            tile_size = params.get('tile_size', 2048)
+            buffer = params.get('buffer', 128)
             global_seg_id = 1
+
+            sam_geo = None
+            if method == 'python_sam':
+                print(f"    Loading SAM-Geo model ({params['sam_model_type']}) to {params['sam_device']}...")
+                try:
+                    sam_geo = SamGeo(
+                        model_type=params['sam_model_type'],
+                        checkpoint=params['sam_checkpoint'],
+                        device=params['sam_device'],
+                        sam_kwargs={
+                            "points_per_side": 96,
+                            "pred_iou_thresh": 0.55,
+                            "stability_score_thresh": 0.55,
+                            "crop_n_layers": 1,
+                            "crop_n_points_downscale_factor": 2,
+                            "min_mask_region_area": 10
+                        }
+                    )
+                except Exception as e:
+                    print(f"    [ERROR] Failed to load SAM-Geo model: {e}")
+                    print("    Please ensure you have installed segment-geospatial and have the proper checkpoint.")
+                    return
 
             for y in range(0, rows, tile_size):
                 for x in range(0, cols, tile_size):
@@ -425,22 +527,27 @@ class ProcessingPipeline:
                     xsize_buf = x_end_buf - x_start_buf
                     ysize_buf = y_end_buf - y_start_buf
 
+                    print(f"    Processing Tile: x={x}, y={y} (buffered {xsize_buf}x{ysize_buf})")
+
                     img_list = []
                     for b in range(1, nbands + 1):
                         band = ds.GetRasterBand(b)
                         arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                        if arr is None:
+                            img_list = None
+                            break
                         arr = np.nan_to_num(arr)
                         img_list.append(arr)
 
-                    img = np.dstack(img_list)
-                    if np.all(img == 0):
+                    if img_list is None:
                         continue
 
-                    # Check footprint mask if it exists
-                    if self.footprint_mask.exists():
-                        ds_foot = gdal.Open(str(self.footprint_mask))
-                        valid_mask = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf) > 0
-                        ds_foot = None
+                    img = np.dstack(img_list)
+
+                    # Use footprint mask if available, otherwise fallback to sum > 0
+                    if ds_foot:
+                        valid_mask_buf = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf) > 0
+                        valid_mask = valid_mask_buf
                     else:
                         valid_mask = np.sum(np.abs(img), axis=2) > 0
 
@@ -449,15 +556,67 @@ class ProcessingPipeline:
 
                     img_norm = img_as_float(img)
 
-                    if method == 'python_felzenszwalb':
-                        segments_buf = felzenszwalb(img_norm, scale=params['scale'], sigma=params['sigma'],
-                                                    min_size=params['min_size'])
+                    if method == 'python_sam':
+                        import cv2
+                        from scipy.ndimage import distance_transform_edt
+                        
+                        # Convert float32 1-band to 8-bit RGB for SAM
+                        img_8bit = np.zeros(img.shape, dtype=np.uint8)
+                        valid_pixels = valid_mask[:, :, np.newaxis]
+                        
+                        if np.any(valid_pixels):
+                            p2, p98 = np.percentile(img[valid_pixels], (2, 98))
+                            img_clip = np.clip(img, p2, p98)
+                            
+                            # Avoid division by zero
+                            if p98 > p2:
+                                img_8bit[valid_pixels] = ((img_clip[valid_pixels] - p2) / (p98 - p2) * 255).astype(np.uint8)
+                                
+                            # Apply CLAHE to enhance contrast in darker regions (SAR data is very skewed)
+                            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                            img_clahe = clahe.apply(img_8bit[:, :, 0])
+                            img_8bit[:, :, 0] = img_clahe
+                            
+                            # Apply bilateral filter to smooth out speckle noise while preserving sharp boundaries
+                            print("    [SAM-Geo] Applying bilateral filter for edge-preserving speckle smoothing...")
+                            img_chan = np.ascontiguousarray(img_8bit[:, :, 0])
+                            img_smoothed = cv2.bilateralFilter(img_chan, d=9, sigmaColor=50, sigmaSpace=50)
+                            img_8bit[:, :, 0] = img_smoothed
+                            
+                        # SAM requires 3 channel RGB
+                        if img_8bit.shape[2] == 1:
+                            img_rgb = np.repeat(img_8bit, 3, axis=2)
+                        else:
+                            img_rgb = img_8bit[:, :, :3]
+                            if img_rgb.shape[2] < 3:
+                                img_rgb = np.pad(img_rgb, ((0,0),(0,0),(0, 3-img_rgb.shape[2])), mode='constant')
+                                
+                        sam_geo.generate(
+                            source=img_rgb,
+                            output=None,
+                            foreground=False,
+                            unique=True,
+                            min_size=10,
+                            max_size=100000
+                        )
+                        segments_buf = sam_geo.objects.astype(np.int32)
+                                    
+                        # Fill empty spaces (NoData) with nearest segment (distance transform)
+                        zero_mask_buf = (segments_buf == 0) & valid_mask
+                        if np.any(zero_mask_buf) and np.any(segments_buf > 0):
+                            _, indices = distance_transform_edt(segments_buf == 0, return_indices=True)
+                            segments_buf[zero_mask_buf] = segments_buf[tuple(indices)][zero_mask_buf]
 
                     y_offset = y - y_start_buf
                     x_offset = x - x_start_buf
-                    segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
-                    valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+                    
+                    # Mask out segments outside footprint
+                    segments_buf[~valid_mask] = 0
 
+                    # Get the valid mask for the unbuffered tile
+                    valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+                    segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+                    
                     seg_valid_mask = segments > 0
                     
                     unique_segs = np.unique(segments[seg_valid_mask])
@@ -476,6 +635,8 @@ class ProcessingPipeline:
 
             out_ds.FlushCache()
             out_ds = None
+            if ds_foot:
+                ds_foot = None
             print(f"    Segmentation Raster saved to {self.seg_tif}\n")
 
         except Exception as e:
@@ -1050,7 +1211,7 @@ def main():
     print("\n--- PRITHVI-SAR CLASSIFICATION MENU ---")
     print("  [1] Run Full Classification Pipeline (Stages 0-7)")
     print("  [2] Stage 0: Generate Data Footprint")
-    print("  [3] Stage 1: Segmentation (Felzenszwalb)")
+    print("  [3] Stage 1: Segmentation (SAM)")
     print("  [4] Stage 2: Prepare Point Split")
     print("  [5] Stage 3: Extract Prithvi-SAR Features")
     print("  [6] Stage 4: Train ANN Classifier")
