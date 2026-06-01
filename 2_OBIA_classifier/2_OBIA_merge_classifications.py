@@ -69,8 +69,9 @@ def discover_tracks(base_dir: Path, prefix: str):
                 tr = f"{country}/{sub.name}"
                 sanitized = tr.replace('/', '_').replace('\\', '_')
                 
-                cls_name  = f"{country}_{sanitized}_classified_masked.tif"
-                conf_name = f"{country}_{sanitized}_confidence_masked.tif"
+                prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
+                cls_name  = f"{prefix}_classified_masked.tif"
+                conf_name = f"{prefix}_confidence_masked.tif"
                 
                 candidates = [
                     sub / 'classification_results' / 'classification',
@@ -102,8 +103,9 @@ def discover_tracks(base_dir: Path, prefix: str):
                     continue
             
             sanitized = tr.replace('/', '_').replace('\\', '_')
-            cls_name  = f"{country}_{sanitized}_classified_masked.tif"
-            conf_name = f"{country}_{sanitized}_confidence_masked.tif"
+            prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
+            cls_name  = f"{prefix}_classified_masked.tif"
+            conf_name = f"{prefix}_confidence_masked.tif"
             
             candidates = [
                 base_dir / tr / 'classification_results' / 'classification',

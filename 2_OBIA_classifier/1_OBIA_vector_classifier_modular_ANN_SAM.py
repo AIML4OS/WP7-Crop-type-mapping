@@ -93,6 +93,10 @@ class ProcessingPipeline:
 
         # Sanitized track name for filenames (no slashes)
         self.sanitized_track = self.track.replace('/', '_').replace('\\', '_')
+        if self.sanitized_track.upper().startswith(self.country.upper() + "_"):
+            self.file_prefix = self.sanitized_track
+        else:
+            self.file_prefix = f"{self.country}_{self.sanitized_track}"
 
         # --- 1. Define all paths ---
         self.base_dir = base_dir
@@ -134,12 +138,13 @@ class ProcessingPipeline:
             raise FileNotFoundError(f"Processing directory does not exist: {self.proc_dir}")
 
         # --- 3. Define all output file paths ---
-        self.seg_tif = self.seg_dir / f"{self.country}_{self.sanitized_track}_segmentation.tif"
-        self.seg_shp = self.seg_dir / f"{self.country}_{self.sanitized_track}_segmentation.sqlite"
+        self.seg_tif = self.seg_dir / f"{self.file_prefix}_segmentation.tif"
+        self.seg_shp = self.seg_dir / f"{self.file_prefix}_segmentation.sqlite"
 
         # Samples
         samples_base = self.aux_dir / 'shapefiles_samples'
         candidate_paths = [
+            samples_base / self.file_prefix / "samples.shp",
             samples_base / f"{self.country}_{self.sanitized_track}" / "samples.shp",
             samples_base / f"{self.country}_{self.track}" / "samples.shp",
             samples_base / self.sanitized_track / "samples.shp",
@@ -157,21 +162,21 @@ class ProcessingPipeline:
 
         if not self.sample_shp:
             print(f"\nCRITICAL WARNING: Could not find 'samples.shp' inside {samples_base}")
-            self.sample_shp = samples_base / f"{self.country}_{self.sanitized_track}" / "samples.shp"
+            self.sample_shp = samples_base / self.file_prefix / "samples.shp"
 
         # Output paths
         self.learn_shp = self.samples_dir / 'learn.shp'
         self.control_shp = self.samples_dir / 'control.shp'
-        self.sel_csv = self.samples_dir / f"{self.country}_{self.sanitized_track}_learn_features.csv"
+        self.sel_csv = self.samples_dir / f"{self.file_prefix}_learn_features.csv"
 
         # Classification outputs
-        self.class_tif = self.class_dir / f"{self.country}_{self.sanitized_track}_classified.tif"
-        self.conf_tif = self.class_dir / f"{self.country}_{self.sanitized_track}_confidence_map.tif"
+        self.class_tif = self.class_dir / f"{self.file_prefix}_classified.tif"
+        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence_map.tif"
 
-        self.footprint_mask = self.seg_dir / f"{self.country}_{self.sanitized_track}_data_footprint.tif"
-        self.masked_class = self.class_dir / f"{self.country}_{self.sanitized_track}_classified_masked.tif"
-        self.masked_conf = self.class_dir / f"{self.country}_{self.sanitized_track}_confidence_masked.tif"
-        self.metrics_fp = self.class_dir / f"{self.country}_{self.sanitized_track}_metrics.xlsx"
+        self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
+        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked.tif"
+        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked.tif"
+        self.metrics_fp = self.class_dir / f"{self.file_prefix}_metrics.xlsx"
 
         # Agricultural mask - resolved per country (set in _resolve_agri_mask)
         self.agri_mask = self._resolve_agri_mask()
@@ -519,7 +524,7 @@ class ProcessingPipeline:
             f"    [INFO] Final 3 dates chosen for segmentation composite: {[d.strftime('%Y-%m-%d') for d in selected_dates]}")
         print(f"    [INFO] Extracting {len(selected_bands)} bands (VH+VV) into a lightweight composite...")
 
-        composite_tif = self.seg_dir / f"{self.country}_{self.sanitized_track}_seasonal_composite.tif"
+        composite_tif = self.seg_dir / f"{self.file_prefix}_seasonal_composite.tif"
 
         if not composite_tif.exists():
             gdal.Translate(
@@ -541,7 +546,7 @@ class ProcessingPipeline:
 
         gdal.SetCacheMax(4 * 1024 * 1024 * 1024)  # Increase GDAL cache to 4GB to prevent allocation errors
 
-        composite_tif = self.seg_dir / f"{self.country}_{self.sanitized_track}_summed_composite.tif"
+        composite_tif = self.seg_dir / f"{self.file_prefix}_summed_composite.tif"
 
         if composite_tif.exists():
             print(f"    [INFO] Summed composite already exists at {composite_tif}.")
@@ -1148,7 +1153,7 @@ class ProcessingPipeline:
             print("ERROR: Feature CSV not found.")
             return
 
-        model_fn = self.model_dir / f"{self.country}_{self.sanitized_track}_model.pkl"
+        model_fn = self.model_dir / f"{self.file_prefix}_model.pkl"
 
         print(f"[Stage {stage}/{self.total_stages}] Training ANN...")
 
@@ -1207,7 +1212,7 @@ class ProcessingPipeline:
         self._ensure_directories()
         stage = 5
 
-        model_file = self.model_dir / f"{self.country}_{self.sanitized_track}_model.pkl"
+        model_file = self.model_dir / f"{self.file_prefix}_model.pkl"
         if not model_file.exists():
             print("ERROR: Model not found.")
             return
