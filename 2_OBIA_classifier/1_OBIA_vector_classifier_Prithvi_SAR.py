@@ -1,3 +1,7 @@
+# Jak uruchomić skrypt:
+# python 1_OBIA_vector_classifier_Prithvi_SAR.py --track NL/orbit_88
+# python 1_OBIA_vector_classifier_Prithvi_SAR.py --track PT/orbit_161
+
 import os
 import argparse
 from pathlib import Path

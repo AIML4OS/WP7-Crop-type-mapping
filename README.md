@@ -15,7 +15,8 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
 4. [Training Samples Specification (samples.shp)](#training-samples-specification-samplesshp)
 5. [Interactive Menu & Stages Selector (ANN / SAM)](#interactive-menu--stages-selector-ann--sam)
 6. [Segment Anything (SAM) Model Setup & Parameters](#segment-anything-sam-model-setup--parameters)
-7. [Step-by-Step Execution Guide](#step-by-step-execution-guide)
+7. [NASA-IBM Prithvi-SAR Model Setup & Parameters](#nasa-ibm-prithvi-sar-model-setup--parameters)
+8. [Step-by-Step Execution Guide](#step-by-step-execution-guide)
    - [Step 1: Download NUTS2 Boundaries](#step-1-download-nuts2-boundaries)
    - [Step 2: Prepare Copernicus HRL Crop Mask](#step-2-prepare-copernicus-hrl-crop-mask)
    - [Step 3: SAR Slice Calibration & Assembly](#step-3-sar-slice-calibration--assembly)
@@ -46,10 +47,14 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
      conda create -n satmirol_env python=3.10 gdal geopandas scikit-learn pandas openpyxl joblib -y
      conda activate satmirol_env
      ```
-   - *Optional (for SAM GPU acceleration)*: Install PyTorch with CUDA:
+   - *Optional (for SAM GPU acceleration & Prithvi-SAR foundation model)*: Install PyTorch with CUDA:
      ```bash
      conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia -y
      pip install segment-anything
+     ```
+   - *Required for Prithvi-SAR*: Install HuggingFace Hub, Transformers, timm, and einops:
+     ```bash
+     pip install huggingface_hub transformers timm einops
      ```
 
 2. **Install ESA SNAP**:
@@ -82,10 +87,10 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
      conda create -n satmirol_env python=3.10 gdal geopandas scikit-learn pandas openpyxl joblib -y
      conda activate satmirol_env
      ```
-   - *Optional (for SAM)*:
+   - *Optional (for SAM & Prithvi-SAR)*:
      ```bash
      conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia -y
-     pip install segment-anything
+     pip install segment-anything huggingface_hub transformers timm einops
      ```
 
 3. **Install ESA SNAP**:
@@ -275,6 +280,26 @@ When running the SAM-based classifier script, select option `1` (Stage 1) to con
 
 ---
 
+## NASA-IBM Prithvi-SAR Model Setup & Parameters
+
+The Prithvi-SAR crop classifier (`1_OBIA_vector_classifier_Prithvi_SAR.py`) utilizes the pre-trained NASA-IBM Prithvi-EO-1.0-100M geospatial foundation model for extracting deep temporal-spectral representations from multi-date Sentinel-1 SAR stacks.
+
+### 1. Auto-Download Architecture
+The script is designed to **automatically download** all required model components from the official HuggingFace repository (`ibm-nasa-geospatial/Prithvi-EO-1.0-100M`) on the first run:
+- **Architecture definition**: `prithvi_mae.py` (downloaded and saved to `auxiliary_files/Prithvi_models/`)
+- **Model weights**: `Prithvi_100M.pt` (downloaded and saved to `auxiliary_files/Prithvi_models/`)
+
+If your processing machine lacks internet access, you can manually download these two files and place them inside the `auxiliary_files/Prithvi_models/` directory prior to running the script.
+
+### 2. Temporal Stacking Logic
+Prithvi expects 6 spectral bands across 3 temporal frames (total size `[6, 3, 224, 224]`). The script automatically:
+1. Groups Sentinel-1 VV/VH bands into three seasonal frames (early, mid, and late season).
+2. Duplicates the 2 polarization bands to construct the 6-band input expected by the model.
+3. Resizes segment crops bilinearly to `224x224` pixels.
+4. Feeds them to the Prithvi ViT encoder to extract a `768`-dimensional token embedding vector per segment.
+
+---
+
 ## Step-by-Step Execution Guide
 
 ### Step 1: Download NUTS2 Boundaries
@@ -337,7 +362,7 @@ Converts the aligned SNAP Dimap stacks into standard GeoTIFF format and crops th
 ---
 
 ### Step 6: Object-Based Classification
-Splits the image stack into objects/fields, extracts radar metrics (mean, std dev, ratios) for each object over the time-series dates, and performs classification.
+Splits the image stack into objects/fields, extracts radar metrics (mean, std dev, ratios) or deep foundation features for each object over the time-series dates, and performs classification.
 - **Option A (ANN with Felzenszwalb segmentation - Faster/Recommended)**:
   ```bash
   python 2_OBIA_classifier/1_OBIA_vector_classifier_modular_ANN.py --track PL/orbit_12
@@ -346,18 +371,27 @@ Splits the image stack into objects/fields, extracts radar metrics (mean, std de
   ```bash
   python 2_OBIA_classifier/1_OBIA_vector_classifier_modular_ANN_SAM.py --track PL/orbit_12
   ```
+- **Option C (Prithvi-SAR foundation model with ANN classifier)**:
+  ```bash
+  python 2_OBIA_classifier/1_OBIA_vector_classifier_Prithvi_SAR.py --track PL/orbit_12
+  ```
   *(Execute this sequentially for each orbit directory).*
 
 ---
 
 ### Step 7: Merge Country Classification
 Combines the classification results from all individual orbits into a single country-wide map.
-- **Command**:
+- **For standard classifications (Felzenszwalb / SAM ANN)**:
   ```bash
   python 2_OBIA_classifier/2_OBIA_merge_classifications.py --track PL
   ```
-- **Output**: The finalized classification raster is saved as:
-  `workingDir/PL/classification_results/PL_final_classification.tif`
+- **For Prithvi-SAR classification**:
+  ```bash
+  python 2_OBIA_classifier/2_OBIA_merge_classifications.py --track PL --suffix _prithvi
+  ```
+- **Output**: The finalized merged classification raster is saved as:
+  - Standard: `workingDir/PL/classification_results/PL_final_classification.tif`
+  - Prithvi: `workingDir/PL/classification_results/PL_final_classification_prithvi.tif`
 
 ---
 

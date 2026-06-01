@@ -220,3 +220,31 @@ references:
     notes: >-
       Primary input data: Sentinel-1 GRD SAR scenes (IW mode) acquired
       over agricultural areas across EU member states.
+
+  - type: generic
+    title: "NASA-IBM Prithvi-EO-1.0-100M Foundation Model"
+    authors:
+      - name: "NASA / IBM"
+    license: "Apache-2.0"
+    url: "https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-1.0-100M"
+    notes: >-
+      Geospatial foundation model used for deep temporal-spectral feature
+      extraction from multi-date Sentinel-1 stacks.
+
+  - type: software
+    title: "timm (PyTorch Image Models)"
+    authors:
+      - family-names: "Wightman"
+        given-names: "Ross"
+    license: "Apache-2.0"
+    url: "https://github.com/huggingface/pytorch-image-models"
+    notes: "Provides vision transformer backbones for the Prithvi architecture."
+
+  - type: software
+    title: "einops"
+    authors:
+      - family-names: "Rogozhnikov"
+        given-names: "Alex"
+    license: "MIT"
+    url: "https://github.com/arogozhnikov/einops"
+    notes: "Used for tensor layout manipulations and operations."

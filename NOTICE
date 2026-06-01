@@ -96,11 +96,29 @@ and software. Each is governed by its own license, listed below.
     Note: SNAP is invoked as an external process via the SNAP Graph
           Processing Tool (GPT). It is not bundled with this software.
 
+11. NASA-IBM Prithvi-EO-1.0-100M Foundation Model
+    Copyright (c) 2023 NASA / IBM
+    License: Apache License 2.0
+    Website: https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-1.0-100M
+    Used for: extracting deep temporal-spectral embeddings from Sentinel-1 SAR.
+
+12. timm (PyTorch Image Models)
+    Copyright (c) 2019-2024 Ross Wightman / HuggingFace
+    License: Apache License 2.0
+    Website: https://github.com/huggingface/pytorch-image-models
+    Used for: vision transformer modules in the Prithvi model.
+
+13. einops
+    Copyright (c) 2018-2024 Alex Rogozhnikov
+    License: MIT License
+    Website: https://github.com/arogozhnikov/einops
+    Used for: tensor rearranging operations.
+
 -------------------------------------------------------------------------------
 
 DATA SOURCES
 
-11. Copernicus Land Monitoring Service (CLMS) – High Resolution Layers
+14. Copernicus Land Monitoring Service (CLMS) – High Resolution Layers
     Copyright (c) European Environment Agency (EEA) / European Union
     License: Copernicus Data Policy (free and open access)
     Website: https://land.copernicus.eu/en/products/high-resolution-layer-crop-type
@@ -109,14 +127,14 @@ DATA SOURCES
     Note: Data must be manually downloaded from the CLMS portal
           (authentication required). See README.md for instructions.
 
-12. Eurostat GISCO – NUTS2 Administrative Boundaries
+15. Eurostat GISCO – NUTS2 Administrative Boundaries
     Copyright (c) European Union, 1995-2024
     License: Eurostat © (open data, reuse with attribution)
     Website: https://gisco-services.ec.europa.eu/distribution/v2/nuts/
     Used as: Country and region boundary shapefiles for spatial
              subsetting of Sentinel-1 scenes.
 
-13. Copernicus Sentinel-1 SAR Data
+16. Copernicus Sentinel-1 SAR Data
     Copyright (c) European Space Agency (ESA) / Copernicus Programme
     License: Copernicus Sentinel Data Terms and Conditions (free and open)
     Website: https://sentinel.esa.int/web/sentinel/missions/sentinel-1
