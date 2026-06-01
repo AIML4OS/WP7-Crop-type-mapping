@@ -337,20 +337,23 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 3: Sentinel-1 Slice Calibration & Assembly (`1_Sentinel-1_preprocessor/1a_slice_calibration.py`)
-* **Description & Logic**: Scans the local Sentinel-1 IW GRD repository and reads spatial geometries of available `.SAFE` directories. It solves a Set Cover mathematical optimization problem (`CountryOrbitOptimizer`) to find the minimal set of relative orbits required to fully cover the country's geometry. For each orbit, it runs SNAP's Graph Processing Tool (`gpt.exe`) to perform:
-  1. Radiometric Calibration (converting raw signals to Sigma0 backscatter values).
-  2. Precise Orbit File Application (for exact spatial alignment).
-  3. Thermal Noise Removal.
-  4. Range Doppler Terrain Correction (using SRTM 3 Sec DEM).
-  5. Assembly (mosaicing) of separate slices acquired on the same orbit flight pass.
+### Step 3: Sentinel-1 Slice Calibration & Assembly (`1_Sentinel-1_preprocessor/1a_slice_calibration.py` / `1b_slice_calibration_cog.py` [PREFERRED])
+* **Description & Logic**: Scans the local Sentinel-1 IW GRD repository and reads spatial geometries of available `.SAFE` directories. It solves a Set Cover mathematical optimization problem (`CountryOrbitOptimizer`) to find the minimal set of relative orbits required to fully cover the country's geometry. For each orbit, it runs SNAP's Graph Processing Tool (`gpt.exe`) to perform calibration.
+* **Calibration Alternatives**:
+  - **Standard Calibration** (`1a_slice_calibration.py`): Performs radiometric calibration, orbit application, thermal noise removal, terrain correction, and slice assembly, saving intermediate and final outputs as raw SNAP `.dim` / `.data` BEAM-DIMAP pairs.
+  - **Cloud-Optimized GeoTIFF (COG) Calibration** (`1b_slice_calibration_cog.py` [**RECOMMENDED/PREFERRED**]): Executes the same calibration steps but writes outputs directly as Cloud-Optimized GeoTIFFs (`.tif`) utilizing DEFLATE compression. 
+    > [!TIP]
+    > **Why the COG version is preferred:**
+    > 1. **Massive Disk Space Savings**: Uses up to 5x less disk space compared to uncompressed raw BEAM-DIMAP files.
+    > 2. **Cloud/Network Optimization**: Supports HTTP range requests, making it highly optimized for remote storage, virtual file systems, and cloud deployments.
+    > 3. **Reduced I/O Bottlenecks**: Faster reading/writing during downstream coregistration and clipping steps.
 * **Prerequisites & Config**: Requires SNAP GPT executable path and environment variables (`SNAP_GPT_EXE`, `S1_REPO_PATH`, `AIML_WORKING_DIR`, `AIML_AUX_DIR`) set in the active terminal.
 * **Launch Command**:
   ```bash
   # Standard Calibration (BEAM-DIMAP outputs):
   python 1_Sentinel-1_preprocessor/1a_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -c PL
 
-  # Cloud-Optimized GeoTIFF (COG) Alternative (Highly optimized for cloud run):
+  # Cloud-Optimized GeoTIFF (COG) Calibration (Preferred):
   python 1_Sentinel-1_preprocessor/1b_slice_calibration_cog.py -s 2024-10-15 -e 2024-11-30 -c PL
   ```
 * **Produced Outputs**:
