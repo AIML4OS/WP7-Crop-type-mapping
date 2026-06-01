@@ -1,11 +1,11 @@
 auxiliary_files/
 workingDir/
-2_OBIA_classifier/OTB-6.2.0-Win64/
+bin/
 venv/
 __pycache__/
 *.tif
 *.csv
 *.json
 .idea/
-2_OBIA_classifier/*.pth
+2_classifier/*.pth
 scratch/

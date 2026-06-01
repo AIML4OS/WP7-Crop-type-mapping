@@ -63,7 +63,7 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
    - Locate the path to the executable `gpt.exe` (e.g. `D:\Program Files\esa-snap\bin\gpt.exe`). You will need to supply this exact path in the configuration.
 
 3. **Install Orfeo ToolBox (OTB) (Optional)**:
-   - Download OTB 6.2.0 Win64 and extract it to a local folder (e.g., `D:\AIML_CropMapper_Cloud\2_OBIA_classifier\OTB-6.2.0-Win64`).
+   - Download OTB 6.2.0 Win64 and extract it to a local folder (e.g., `D:\AIML_CropMapper_Cloud\bin\OTB-6.2.0-Win64`).
 
 ---
 
@@ -318,12 +318,12 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 2: Crop Mask Preparation (`2_OBIA_classifier/build_agri_mask.py`)
+### Step 2: Crop Mask Preparation (`tools/build_agri_mask.py`)
 * **Description & Logic**: Mosaics and clips the Copernicus High Resolution Layer (HRL) Crop Type raster files to the exact boundary of the target country. It aligns the final raster to the Web Mercator projection (`EPSG:3857`) at a 10-meter resolution grid. Non-agricultural pixels are masked out to focus object segmentation and neural network predictions strictly on active croplands.
 * **Prerequisites & Config**: The HRL ZIP files must be manually downloaded from the Copernicus CLMS portal and placed in `auxiliary_files/raster_files/AgriMasks/{COUNTRY}/Results/` (e.g. `PL/Results/`).
 * **Launch Command**:
   ```bash
-  python 2_OBIA_classifier/build_agri_mask.py --country PL
+  python tools/build_agri_mask.py --country PL
   ```
 * **Produced Outputs**:
   - Arable Crops Mask (Cereals, Rape, Maize, Vegetables): `auxiliary_files/raster_files/AgriMasks/{COUNTRY}/{COUNTRY}_agri_mask_3class_epsg3857.tif`
@@ -331,7 +331,7 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 3: Sentinel-1 Slice Calibration & Assembly (`1_Sentinel-1_preprocessor/1_AIML_S1_slice_calibration.py`)
+### Step 3: Sentinel-1 Slice Calibration & Assembly (`1_Sentinel-1_preprocessor/1a_slice_calibration.py`)
 * **Description & Logic**: Scans the local Sentinel-1 IW GRD repository and reads spatial geometries of available `.SAFE` directories. It solves a Set Cover mathematical optimization problem (`CountryOrbitOptimizer`) to find the minimal set of relative orbits required to fully cover the country's geometry. For each orbit, it runs SNAP's Graph Processing Tool (`gpt.exe`) to perform:
   1. Radiometric Calibration (converting raw signals to Sigma0 backscatter values).
   2. Precise Orbit File Application (for exact spatial alignment).
@@ -342,57 +342,57 @@ This guide details each script in the pipeline, explaining its functionality, re
 * **Launch Command**:
   ```bash
   # Standard Calibration (BEAM-DIMAP outputs):
-  python 1_Sentinel-1_preprocessor/1_AIML_S1_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -c PL
+  python 1_Sentinel-1_preprocessor/1a_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -c PL
 
   # Cloud-Optimized GeoTIFF (COG) Alternative (Highly optimized for cloud run):
-  python 1_Sentinel-1_preprocessor/1_AIML_S1_slice_calibration_COG.py -s 2024-10-15 -e 2024-11-30 -c PL
+  python 1_Sentinel-1_preprocessor/1b_slice_calibration_cog.py -s 2024-10-15 -e 2024-11-30 -c PL
   ```
 * **Produced Outputs**:
   - Calibrated daily SAR scenes saved in: `workingDir/{COUNTRY}/orbit_{ORBIT}/slice_assembly/` as `.dim` / `.data` pairs (or `.tif` for COG).
 
 ---
 
-### Step 4: Multi-Temporal Stack Coregistration (`1_Sentinel-1_preprocessor/2_AIML_S1_coregistration.py`)
+### Step 4: Multi-Temporal Stack Coregistration (`1_Sentinel-1_preprocessor/2_coregistration.py`)
 * **Description & Logic**: Aligns the multi-temporal time-series of assembled Sentinel-1 scenes for each orbit. It dynamically parses the band ordering (VH/VV) from the `.dim` XML files, sorts the dates chronologically, and registers all dates to a common master scene. It then applies a multi-temporal Lee Sigma speckle filter to suppress radar noise while preserving field boundaries.
 * **Prerequisites & Config**: Requires calibrated outputs from Step 3.
 * **Launch Command**:
   ```bash
-  python 1_Sentinel-1_preprocessor/2_AIML_S1_coregistration.py -t PL/orbit_12 PL/orbit_88
+  python 1_Sentinel-1_preprocessor/2_coregistration.py -t PL/orbit_12 PL/orbit_88
   ```
 * **Produced Outputs**:
   - Aligned time-series stack saved to: `workingDir/{COUNTRY}/orbit_{ORBIT}/coregistration/` (as `.dim` and `.data` folders).
 
 ---
 
-### Step 5: Stack Spatial Clipping (`1_Sentinel-1_preprocessor/3_AIML_S1_stack_clip.py`)
+### Step 5: Stack Spatial Clipping (`1_Sentinel-1_preprocessor/3_stack_clip.py`)
 * **Description & Logic**: Converts the coregistered time-series SNAP stacks into standard multiband GeoTIFF format and clips them to the exact NUTS2 country boundary shapefile. It executes warping and DEFLATE compression in parallel across all CPU cores (`NUM_THREADS=ALL_CPUS`) and automatically builds overview pyramids (`BuildOverviews`) for instant visual rendering in QGIS.
 * **Prerequisites & Config**: Requires NUTS2 shapefiles (from Step 1) and coregistered stacks (from Step 4).
 * **Launch Command**:
   ```bash
-  python 1_Sentinel-1_preprocessor/3_AIML_S1_stack_clip.py -t PL/orbit_12 PL/orbit_88
+  python 1_Sentinel-1_preprocessor/3_stack_clip.py -t PL/orbit_12 PL/orbit_88
   ```
 * **Produced Outputs**:
   - Clipped Multiband GeoTIFF: `workingDir/{COUNTRY}/orbit_{ORBIT}/processed_raster/{COUNTRY}_orbit_{ORBIT}_VH_VV.tif` (along with a `.vrt` header file).
 
 ---
 
-### Step 6: Object-Based Classification (`2_OBIA_classifier/` scripts)
+### Step 6: Object-Based Classification (`2_classifier/` scripts)
 * **Description & Logic**: Splits the clipped image stack into homogeneous agricultural parcel objects, extracts statistical or deep learning features for each object over the Sentinel-1 timeline, trains a neural network classifier, and performs tiled prediction across the entire track.
 * **Algorithm Options**:
-  - **Option A (Felzenszwalb ANN)** - `1_OBIA_vector_classifier_modular_ANN.py`: Performs Felzenszwalb segmentation on CPU. Extracts zonal statistics (mean backscatter, standard deviation, and temporal ratios) per parcel object to train a scikit-learn MLP Classifier.
-  - **Option B (SAM ANN)** - `1_OBIA_vector_classifier_modular_ANN_SAM.py`: Employs Meta AI's Segment Anything Model (SAM) for deep learning-based boundary delineation (requires GPU / PyTorch).
-  - **Option C (Prithvi-SAR)** - `1_OBIA_vector_classifier_Prithvi_SAR.py`: Leverages the NASA-IBM geospatial foundation model to extract `768`-dimensional temporal-spectral token embeddings from segmented image patches. It includes its own built-in Segment Anything Model (SAM) segmentation stage, making the entire pipeline completely self-contained.
+  - **Option A (Felzenszwalb ANN)** - `1_classify_ann.py`: Performs Felzenszwalb segmentation on CPU. Extracts zonal statistics (mean backscatter, standard deviation, and temporal ratios) per parcel object to train a scikit-learn MLP Classifier.
+  - **Option B (SAM ANN)** - `1_classify_ann_sam.py`: Employs Meta AI's Segment Anything Model (SAM) for deep learning-based boundary delineation (requires GPU / PyTorch).
+  - **Option C (Prithvi-SAR)** - `1_classify_prithvi_sar.py`: Leverages the NASA-IBM geospatial foundation model to extract `768`-dimensional temporal-spectral token embeddings from segmented image patches. It includes its own built-in Segment Anything Model (SAM) segmentation stage, making the entire pipeline completely self-contained.
 * **Prerequisites & Config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, and model checkpoints (`sam_vit_h_4b8939.pth` or `Prithvi_100M.pt`).
 * **Launch Command**:
   ```bash
   # Run Felzenszwalb ANN Classifier:
-  python 2_OBIA_classifier/1_OBIA_vector_classifier_modular_ANN.py --track PL/orbit_12
+  python 2_classifier/1_classify_ann.py --track PL/orbit_12
 
   # Run SAM Deep-Learning Classifier:
-  python 2_OBIA_classifier/1_OBIA_vector_classifier_modular_ANN_SAM.py --track PL/orbit_12
+  python 2_classifier/1_classify_ann_sam.py --track PL/orbit_12
 
   # Run NASA-IBM Prithvi-SAR Classifier:
-  python 2_OBIA_classifier/1_OBIA_vector_classifier_Prithvi_SAR.py --track PL/orbit_12
+  python 2_classifier/1_classify_prithvi_sar.py --track PL/orbit_12
   ```
 * **Produced Outputs**:
   - Segmentation Map: `workingDir/{track}/classification_results/segmentation/{file_prefix}_segmentation.tif`
@@ -405,16 +405,16 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 7: Classification Merge (`2_OBIA_merge_classifications.py`)
+### Step 7: Classification Merge (`2_classifier/2_merge_classifications.py`)
 * **Description & Logic**: Mosaics and merges the classification results from all individual orbits into a single country-wide map. For overlapping zones between different orbits, the script compares confidence scores at the pixel level and selects the prediction with the **highest confidence score**. Finally, it applies a morphological **sieve filter** to dissolve small isolated pixels (slivers) and validates the merged dataset against validation points (`control.shp`).
 * **Prerequisites & Config**: Requires masked rasters and `control.shp` from Step 6.
 * **Launch Command**:
   ```bash
   # Merge standard ANN classifications (Felzenszwalb / SAM):
-  python 2_OBIA_classifier/2_OBIA_merge_classifications.py --track PL
+  python 2_classifier/2_merge_classifications.py --track PL
 
   # Merge Prithvi-SAR classifications:
-  python 2_OBIA_classifier/2_OBIA_merge_classifications.py --track PL --suffix _prithvi
+  python 2_classifier/2_merge_classifications.py --track PL --suffix _prithvi
   ```
 * **Produced Outputs**:
   - Merged Classification Raster: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_classification[_prithvi].tif`

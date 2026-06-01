@@ -56,7 +56,7 @@ base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
 aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
 
 # OTB Installation Path (Still used for some auxiliary tasks if needed, but main flow is Python)
-otb_dir = Path("D:/AIML_CropMapper_Cloud/2_OBIA_classifier/OTB-6.2.0-Win64")
+otb_dir = Path("D:/AIML_CropMapper_Cloud/bin/OTB-6.2.0-Win64")
 
 # Track to Country Mapping
 track_regions = {
