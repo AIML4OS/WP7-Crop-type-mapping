@@ -23,10 +23,10 @@ TRACK_REGIONS = {
     # add more as you create new tracks…
 }
 
-def find_masked_files(base_dir: Path, tr: str, country: str):
+def find_masked_files(base_dir: Path, tr: str, country: str, suffix: str = ""):
     """
-    Look for [{country}_{tr}_classified_masked.tif,
-              {country}_{tr}_confidence_masked.tif]
+    Look for [{country}_{tr}_classified_masked{suffix}.tif,
+              {country}_{tr}_confidence_masked{suffix}.tif]
     in either:
       - classification_results/classification/
       - classification_results/
@@ -36,8 +36,8 @@ def find_masked_files(base_dir: Path, tr: str, country: str):
         base_dir / tr / 'classification_results' / 'classification',
         base_dir / tr / 'classification_results'
     ]
-    cls_name  = f"{country}_{tr}_classified_masked.tif"
-    conf_name = f"{country}_{tr}_confidence_masked.tif"
+    cls_name  = f"{country}_{tr}_classified_masked{suffix}.tif"
+    conf_name = f"{country}_{tr}_confidence_masked{suffix}.tif"
     for folder in candidates:
         cls_fp  = folder / cls_name
         conf_fp = folder / conf_name
@@ -45,7 +45,7 @@ def find_masked_files(base_dir: Path, tr: str, country: str):
             return cls_fp, conf_fp
     return None, None
 
-def discover_tracks(base_dir: Path, prefix: str):
+def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
     """
     Discovers track folders and their classification/confidence files.
     Supports both:
@@ -53,7 +53,7 @@ def discover_tracks(base_dir: Path, prefix: str):
          We scan base_dir/prefix/ for orbit_* folders.
       2. Legacy tracks: Prefix is a track prefix (e.g. P1, P2).
          We scan base_dir/ for folders starting with prefix.
-    Returns list of (tr, country, cls_fp, conf_fp).
+     Returns list of (tr, country, cls_fp, conf_fp).
     """
     tracks = []
     prefix_upper = prefix.upper()
@@ -69,9 +69,9 @@ def discover_tracks(base_dir: Path, prefix: str):
                 tr = f"{country}/{sub.name}"
                 sanitized = tr.replace('/', '_').replace('\\', '_')
                 
-                prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
-                cls_name  = f"{prefix}_classified_masked.tif"
-                conf_name = f"{prefix}_confidence_masked.tif"
+                track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
+                cls_name  = f"{track_prefix}_classified_masked{suffix}.tif"
+                conf_name = f"{track_prefix}_confidence_masked{suffix}.tif"
                 
                 candidates = [
                     sub / 'classification_results' / 'classification',
@@ -103,9 +103,9 @@ def discover_tracks(base_dir: Path, prefix: str):
                     continue
             
             sanitized = tr.replace('/', '_').replace('\\', '_')
-            prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
-            cls_name  = f"{prefix}_classified_masked.tif"
-            conf_name = f"{prefix}_confidence_masked.tif"
+            track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
+            cls_name  = f"{track_prefix}_classified_masked{suffix}.tif"
+            conf_name = f"{track_prefix}_confidence_masked{suffix}.tif"
             
             candidates = [
                 base_dir / tr / 'classification_results' / 'classification',
@@ -124,11 +124,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--track', required=True,
                         help='Base track prefix or country code (e.g. P1, PL, FR)')
+    parser.add_argument('--suffix', default='',
+                        help='Optional suffix of classification files (e.g. _prithvi)')
     args = parser.parse_args()
     prefix = args.track
+    suffix = args.suffix
 
     base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:\AIML_CropMapper_Cloud\workingDir"))
-    tracks   = discover_tracks(base_dir, prefix)
+    tracks   = discover_tracks(base_dir, prefix, suffix=suffix)
     if not tracks:
         raise FileNotFoundError(
             f"No valid classification/confidence files for tracks starting with {prefix}"
@@ -198,7 +201,7 @@ def main():
     else:
         out_dir = base_dir / base_tr / 'classification_results'
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_tif = out_dir / f"{base_country}_final_classification.tif"
+    out_tif = out_dir / f"{base_country}_final_classification{suffix}.tif"
     
     drv = gdal.GetDriverByName('GTiff')
     ds_out = drv.Create(str(out_tif), cols, rows, 1, gdal.GDT_Int32, 
@@ -322,7 +325,7 @@ def main():
     } for c in labels]
 
     # --- write Excel report -------------------------------------------------
-    xlsx = out_dir / f"{base_country}_final_metrics.xlsx"
+    xlsx = out_dir / f"{base_country}_final_metrics{suffix}.xlsx"
     wb   = openpyxl.Workbook()
     sh   = wb.active
     sh.title = 'Results'

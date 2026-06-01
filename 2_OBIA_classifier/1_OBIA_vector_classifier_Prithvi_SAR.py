@@ -269,16 +269,16 @@ class ProcessingPipeline:
         # Output paths
         self.learn_shp = self.samples_dir / 'learn.shp'
         self.control_shp = self.samples_dir / 'control.shp'
-        self.sel_csv = self.samples_dir / f"{self.file_prefix}_learn_features.csv"
+        self.sel_csv = self.samples_dir / f"{self.file_prefix}_prithvi_learn_features.csv"
 
         # Classification outputs
-        self.class_tif = self.class_dir / f"{self.file_prefix}_classified.tif"
-        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence_map.tif"
+        self.class_tif = self.class_dir / f"{self.file_prefix}_prithvi_classified.tif"
+        self.conf_tif = self.class_dir / f"{self.file_prefix}_prithvi_confidence_map.tif"
 
         self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
-        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked.tif"
-        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked.tif"
-        self.metrics_fp = self.class_dir / f"{self.file_prefix}_metrics.xlsx"
+        self.masked_class = self.class_dir / f"{self.file_prefix}_prithvi_classified_masked.tif"
+        self.masked_conf = self.class_dir / f"{self.file_prefix}_prithvi_confidence_masked.tif"
+        self.metrics_fp = self.class_dir / f"{self.file_prefix}_prithvi_metrics.xlsx"
 
         self.agri_mask = self._resolve_agri_mask()
         self.stage4_params = {
@@ -527,7 +527,7 @@ class ProcessingPipeline:
             print("ERROR: Feature CSV not found.")
             return
 
-        model_fn = self.model_dir / f"{self.file_prefix}_model.pkl"
+        model_fn = self.model_dir / f"{self.file_prefix}_prithvi_model.pkl"
         print(f"[Stage {stage}/{self.total_stages}] Training Classifier (ANN) on Prithvi-SAR Embeddings...")
 
         df = pd.read_csv(self.sel_csv)
@@ -583,7 +583,7 @@ class ProcessingPipeline:
         self._ensure_directories()
         stage = 5
 
-        model_file = self.model_dir / f"{self.file_prefix}_model.pkl"
+        model_file = self.model_dir / f"{self.file_prefix}_prithvi_model.pkl"
         if not model_file.exists():
             print("ERROR: Model not found.")
             return
