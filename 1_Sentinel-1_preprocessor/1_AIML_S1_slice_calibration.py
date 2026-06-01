@@ -230,7 +230,7 @@ class CountryOrbitOptimizer:
         self.country_geom = country_geom
         self.finder = LocalSentinel1Finder(repo_path)
 
-    def _solve_set_cover(self, discovered_orbits):
+    def _solve_set_cover(self, discovered_orbits, min_coverage_pct=0.005):
         if not discovered_orbits:
             return [], 0.0
 
@@ -280,12 +280,14 @@ class CountryOrbitOptimizer:
                         best_new_area = new_area
                         best_orbit = orbit_num
 
-            # Stop if the best candidate adds no new coverage
-            if best_orbit is None or best_new_area <= 0.0:
+            # Stop if the best candidate adds no significant new coverage (e.g. less than 0.5%)
+            min_significant_area = min_coverage_pct * total_target_area
+            if best_orbit is None or best_new_area < min_significant_area:
                 break
 
             selected_orbits.append(best_orbit)
             remaining_target = remaining_target.Difference(orbit_intersections[best_orbit]['geom'])
+
 
         # Calculate final coverage area
         final_coverage_geom = None
@@ -299,7 +301,7 @@ class CountryOrbitOptimizer:
         final_coverage_area = final_coverage_geom.GetArea() if final_coverage_geom else 0.0
         return selected_orbits, final_coverage_area
 
-    def discover_and_optimize(self, start_date: datetime.date, search_days=12, country_code=None):
+    def discover_and_optimize(self, start_date: datetime.date, search_days=12, country_code=None, min_coverage_pct=0.005):
         """Scans a period in the S1 repository to separate ascending/descending orbits,
            optimizes both using Set Cover, and selects the direction with the best coverage and minimal orbits."""
         logging.info(f"Starting orbit discovery for a {search_days}-day window starting from {start_date}...")
@@ -355,11 +357,11 @@ class CountryOrbitOptimizer:
         logging.info(f"Discovered orbits: {len(discovered_asc)} ASCENDING, {len(discovered_dsc)} DESCENDING.")
 
         logging.info("Optimizing coverage for ASCENDING passes...")
-        selected_asc, area_asc = self._solve_set_cover(discovered_asc)
+        selected_asc, area_asc = self._solve_set_cover(discovered_asc, min_coverage_pct=min_coverage_pct)
         logging.info(f"  ASCENDING: Selected {len(selected_asc)} orbits covering {area_asc:.4f} sq. degrees.")
 
         logging.info("Optimizing coverage for DESCENDING passes...")
-        selected_dsc, area_dsc = self._solve_set_cover(discovered_dsc)
+        selected_dsc, area_dsc = self._solve_set_cover(discovered_dsc, min_coverage_pct=min_coverage_pct)
         logging.info(f"  DESCENDING: Selected {len(selected_dsc)} orbits covering {area_dsc:.4f} sq. degrees.")
 
         # Choose the best direction based on coverage first, then minimal orbits
