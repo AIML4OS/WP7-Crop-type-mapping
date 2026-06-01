@@ -13,8 +13,8 @@ import os
 
 # ================= CONFIGURATION =================
 # Jak uruchomić skrypt dla wybranego kraju (np. Polski - PL, Francji - FR, Austrii - AT):
-# python 1_AIML_S1_slice_calibration_COG.py -s 2024-10-15 -e 2024-11-30 -c PL
-# python 1_AIML_S1_slice_calibration_COG.py -s 2024-10-15 -e 2024-11-30 -c FR
+# python 1b_slice_calibration_cog.py -s 2024-10-15 -e 2024-11-30 -c PL
+# python 1b_slice_calibration_cog.py -s 2024-10-15 -e 2024-11-30 -c FR
 
 GPT_EXE = os.environ.get("SNAP_GPT_EXE", r"D:/Program Files/esa-snap/bin/gpt.exe")
 

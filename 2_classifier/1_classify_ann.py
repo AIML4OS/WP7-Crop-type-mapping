@@ -37,8 +37,8 @@ except ImportError:
 # --- Configuration (Global) ---
 
 # Jak uruchomić skrypt:
-# python 1_OBIA_vector_classifier_modular_ANN.py --track PL/orbit_12
-# python 1_OBIA_vector_classifier_modular_ANN.py --track FR/orbit_8
+# python 1_classify_ann.py --track PL/orbit_12
+# python 1_classify_ann.py --track FR/orbit_8
 
 # Base Paths provided by user
 base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")

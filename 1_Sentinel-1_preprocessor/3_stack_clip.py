@@ -7,8 +7,8 @@ from datetime import datetime
 from osgeo import gdal, gdalconst, ogr, osr
 
 # Jak uruchomić skrypt:
-# python 3_AIML_S1_stack_clip.py -t PL/orbit_12
-# python 3_AIML_S1_stack_clip.py -t FR/orbit_8 FR/orbit_81 FR/orbit_110
+# python 3_stack_clip.py -t PL/orbit_12
+# python 3_stack_clip.py -t FR/orbit_8 FR/orbit_81 FR/orbit_110
 
 # ================= CONFIGURATION =================
 # Update these paths to match your system

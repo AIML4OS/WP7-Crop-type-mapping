@@ -1,7 +1,7 @@
 # Jak uruchomić skrypt:
-# python 2_OBIA_merge_classifications.py --track PL
-# python 2_OBIA_merge_classifications.py --track FR
-# python 2_OBIA_merge_classifications.py --track P1
+# python 2_merge_classifications.py --track PL
+# python 2_merge_classifications.py --track FR
+# python 2_merge_classifications.py --track P1
 
 import argparse
 import os

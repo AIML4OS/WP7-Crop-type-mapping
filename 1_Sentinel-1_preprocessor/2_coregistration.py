@@ -10,8 +10,8 @@ import sys
 from datetime import datetime
 
 # Jak uruchomić skrypt:
-# python 2_AIML_S1_coregistration.py -t PL/orbit_12
-# python 2_AIML_S1_coregistration.py -t FR/orbit_8 FR/orbit_81 FR/orbit_110
+# python 2_coregistration.py -t PL/orbit_12
+# python 2_coregistration.py -t FR/orbit_8 FR/orbit_81 FR/orbit_110
 
 
 # ================= CONFIGURATION =================

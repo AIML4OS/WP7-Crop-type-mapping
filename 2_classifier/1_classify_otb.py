@@ -15,7 +15,7 @@ from openpyxl.styles import Font
 
 # --- Configuration (Global) ---
 
-# python 1_OBIA_vector_classifier_modular.py -track P1a
+# python 1_classify_otb.py --track P1a
 
 # Base Paths provided by user
 base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")

@@ -28,10 +28,10 @@ UWAGA: Obie maski sa BINARNE (0/1). Wartosc 0 NIE jest tagowana jako NoData.
        NoData = 255 (obszar poza zakresem danych zrodlowych).
 
 Uzycie:
-  python build_agri_mask.py --country IE
-  python build_agri_mask.py --country IE --target_crs EPSG:3857
-  python build_agri_mask.py --country IE --clip_shp sciezka/do/granicy.shp
-  python build_agri_mask.py --country IE --no_clip
+  python tools/build_agri_mask.py --country IE
+  python tools/build_agri_mask.py --country IE --target_crs EPSG:3857
+  python tools/build_agri_mask.py --country IE --clip_shp sciezka/do/granicy.shp
+  python tools/build_agri_mask.py --country IE --no_clip
 
 Struktura katalogow (dane wejsciowe):
   auxiliary_files/
@@ -64,9 +64,9 @@ from pathlib import Path
 
 # -----------------------------------------------------------------------
 # KONFIGURACJA SCIEZEK BAZOWYCH
-# Skrypt jest w: D:/AIML_CropMapper_Cloud/2_OBIA_classifier/
+# Skrypt jest w: D:/AIML_CropMapper_Cloud/tools/
 # -----------------------------------------------------------------------
-SCRIPT_DIR   = Path(__file__).parent                          # 2_OBIA_classifier/
+SCRIPT_DIR   = Path(__file__).parent                          # tools/
 PROJECT_ROOT = SCRIPT_DIR.parent                              # D:/AIML_CropMapper_Cloud/
 AUX_DIR      = PROJECT_ROOT / 'auxiliary_files'
 AGRIMASKS_DIR = AUX_DIR / 'raster_files' / 'AgriMasks'
@@ -394,11 +394,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Przyklady:
-  python build_agri_mask.py --country IE
-  python build_agri_mask.py --country IE --target_crs EPSG:3857
-  python build_agri_mask.py --country IE --no_clip
-  python build_agri_mask.py --country IE --clip_shp D:/moja/granica.shp
-  python build_agri_mask.py --country PL --force
+  python tools/build_agri_mask.py --country IE
+  python tools/build_agri_mask.py --country IE --target_crs EPSG:3857
+  python tools/build_agri_mask.py --country IE --no_clip
+  python tools/build_agri_mask.py --country IE --clip_shp D:/moja/granica.shp
+  python tools/build_agri_mask.py --country PL --force
         """
     )
     parser.add_argument('--country', '-c', required=True,

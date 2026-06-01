@@ -179,7 +179,7 @@ In Stage 2, the pipeline automatically splits your `samples.shp` dataset:
 
 ## Interactive Menu & Stages Selector (ANN / SAM)
 
-When you execute the classifier script (`1_OBIA_vector_classifier_modular_ANN.py` or the SAM version), the program starts an interactive text menu in your terminal. This gives you absolute control over execution, allowing you to run everything in one go or step-by-step while adjusting hyperparameters.
+When you execute the classifier script (`1_classify_ann.py` or the SAM version), the program starts an interactive text menu in your terminal. This gives you absolute control over execution, allowing you to run everything in one go or step-by-step while adjusting hyperparameters.
 
 ### The Pipeline Menu Layout
 Upon launching the script, the following menu is displayed:
@@ -258,7 +258,7 @@ You can select individual numbers to execute specific parts of the pipeline and 
 
 ## Segment Anything (SAM) Model Setup & Parameters
 
-If you choose to run `1_OBIA_vector_classifier_modular_ANN_SAM.py`, the segmentation stage uses Meta AI's Segment Anything Model (SAM) instead of traditional algorithms. This requires downloading a model checkpoint.
+If you choose to run `1_classify_ann_sam.py`, the segmentation stage uses Meta AI's Segment Anything Model (SAM) instead of traditional algorithms. This requires downloading a model checkpoint.
 
 ### 1. Download SAM Checkpoint File
 1. Download the high-quality **ViT-H SAM model checkpoint** (`sam_vit_h_4b8939.pth`) from the official Facebook Research repository:
@@ -282,7 +282,7 @@ When running the SAM-based classifier script, select option `1` (Stage 1) to con
 
 ## NASA-IBM Prithvi-SAR Model Setup & Parameters
 
-The Prithvi-SAR crop classifier (`1_OBIA_vector_classifier_Prithvi_SAR.py`) utilizes the pre-trained NASA-IBM Prithvi-EO-1.0-100M geospatial foundation model for extracting deep temporal-spectral representations from multi-date Sentinel-1 SAR stacks.
+The Prithvi-SAR crop classifier (`1_classify_prithvi_sar.py`) utilizes the pre-trained NASA-IBM Prithvi-EO-1.0-100M geospatial foundation model for extracting deep temporal-spectral representations from multi-date Sentinel-1 SAR stacks.
 
 ### 1. Auto-Download Architecture
 The script is designed to **automatically download** all required model components from the official HuggingFace repository (`ibm-nasa-geospatial/Prithvi-EO-1.0-100M`) on the first run:
