@@ -1,6 +1,12 @@
 # Sentinel-1 OBIA Crop Type Mapping Pipeline (v2.0)
 
-An automated, object-based image analysis (OBIA) pipeline designed to process Sentinel-1 SAR time series and perform crop type classification using Artificial Neural Networks (ANN) and Segment Anything (SAM).
+An automated, object-based image analysis (OBIA) pipeline designed to process Sentinel-1 SAR time series and perform crop type classification. It integrates state-of-the-art **Geospatial Foundation Models** and classical **machine learning classifiers** to handle large-scale country-wide cropland mapping.
+
+### Key Technologies & Models:
+1. **IBM-NASA Prithvi-EO-1.0-100M Foundation Model**: Used to extract deep, robust temporal-spectral embeddings from Sentinel-1 SAR stacks to represent agricultural fields.
+2. **Meta AI Segment Anything Model (SAM)**: Used for precise deep-learning-based field boundary delineation (segmentation) under challenging backscatter conditions.
+3. **Orfeo ToolBox (OTB) Classifier**: Integrates OTB's high-performance machine learning suite (Random Forest, Support Vector Machines - SVM) for lightning-fast training and pixel/object classification on large spatial grids.
+4. **Multi-Layer Perceptron (MLP/ANN)**: A classical artificial neural network (scikit-learn and custom architectures) optimized for object-based class prediction.
 
 This version (v2.0) introduces dynamic country-level orbit optimization (using the Set Cover algorithm), separate processing of Ascending/Descending tracks, and automatic country-wide classification merging.
 
@@ -377,12 +383,13 @@ This guide details each script in the pipeline, explaining its functionality, re
 ---
 
 ### Step 6: Object-Based Classification (`2_classifier/` scripts)
-* **Description & Logic**: Splits the clipped image stack into homogeneous agricultural parcel objects, extracts statistical or deep learning features for each object over the Sentinel-1 timeline, trains a neural network classifier, and performs tiled prediction across the entire track.
+* **Description & Logic**: Splits the clipped image stack into homogeneous agricultural parcel objects, extracts statistical or deep learning features for each object over the Sentinel-1 timeline, trains a machine learning or deep learning classifier, and performs tiled prediction across the entire track.
 * **Algorithm Options**:
   - **Option A (Felzenszwalb ANN)** - `1_classify_ann.py`: Performs Felzenszwalb segmentation on CPU. Extracts zonal statistics (mean backscatter, standard deviation, and temporal ratios) per parcel object to train a scikit-learn MLP Classifier.
   - **Option B (SAM ANN)** - `1_classify_ann_sam.py`: Employs Meta AI's Segment Anything Model (SAM) for deep learning-based boundary delineation (requires GPU / PyTorch).
   - **Option C (Prithvi-SAR)** - `1_classify_prithvi_sar.py`: Leverages the NASA-IBM geospatial foundation model to extract `768`-dimensional temporal-spectral token embeddings from segmented image patches. It includes its own built-in Segment Anything Model (SAM) segmentation stage, making the entire pipeline completely self-contained.
-* **Prerequisites & Config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, and model checkpoints (`sam_vit_h_4b8939.pth` or `Prithvi_100M.pt`).
+  - **Option D (OTB RF/SVM)** - `1_classify_otb.py`: Integrates Orfeo ToolBox (OTB) CLI tools. Performs OTB Mean-Shift segmentation on the time-series stack, extracts statistical object features, trains an OTB Random Forest or SVM classifier, and outputs classified shapefiles and rasters.
+* **Prerequisites & Config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, model checkpoints if running SAM/Prithvi, and OTB binary installation in `bin/OTB-6.2.0-Win64/` if running OTB classification.
 * **Launch Command**:
   ```bash
   # Run Felzenszwalb ANN Classifier:
@@ -393,6 +400,9 @@ This guide details each script in the pipeline, explaining its functionality, re
 
   # Run NASA-IBM Prithvi-SAR Classifier:
   python 2_classifier/1_classify_prithvi_sar.py --track PL/orbit_12
+
+  # Run OTB Random Forest/SVM Classifier:
+  python 2_classifier/1_classify_otb.py --track PL/orbit_12
   ```
 * **Produced Outputs**:
   - Segmentation Map: `workingDir/{track}/classification_results/segmentation/{file_prefix}_segmentation.tif`
