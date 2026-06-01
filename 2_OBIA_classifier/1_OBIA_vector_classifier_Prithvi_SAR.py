@@ -23,6 +23,14 @@ from openpyxl.styles import Font
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+# Try importing skimage for segmentation
+try:
+    from skimage.segmentation import felzenszwalb
+    from skimage.util import img_as_float
+    HAS_SKIMAGE = True
+except ImportError:
+    HAS_SKIMAGE = False
+
 # Try importing PyTorch & Transformers for Prithvi-SAR
 try:
     import torch
@@ -285,6 +293,14 @@ class ProcessingPipeline:
         self.metrics_fp = self.class_dir / f"{self.file_prefix}_prithvi_metrics.xlsx"
 
         self.agri_mask = self._resolve_agri_mask()
+        self.stage1_params = {
+            'method': 'python_felzenszwalb',
+            'scale': 50.0,
+            'sigma': 0.5,
+            'min_size': 15,
+            'tile_size': 4096,
+            'buffer': 256
+        }
         self.stage4_params = {
             'sk_hidden_sizes': '128,64',
             'sk_activation': 'relu',
@@ -356,7 +372,117 @@ class ProcessingPipeline:
         ds = None
         print(f"    Footprint mask saved to {self.footprint_mask}\n")
 
-    # --- Stage 1 & 2: Reuse points from samples.shp ---
+    # --- Stage 1: Segmentation (Felzenszwalb) ---
+    def stage_1_segmentation(self, force_recompute=False):
+        stage = 1
+        if self.seg_tif.exists() and not force_recompute:
+            print(f"[Stage {stage}/{self.total_stages}] Segmentation Raster already exists, skipping.\n")
+            return
+
+        print(f"[Stage {stage}/{self.total_stages}] Generating object segmentation...")
+        if not HAS_SKIMAGE:
+            print("ERROR: scikit-image is not installed. Standalone segmentation requires it.")
+            return
+
+        self._ensure_directories()
+        self._run_python_segmentation_tiled(self.stage1_params, stage, 'python_felzenszwalb')
+
+    def _run_python_segmentation_tiled(self, params, stage, method):
+        print(f"    Running Tiled Python Segmentation ({method})...")
+        try:
+            ds = gdal.Open(str(self.ras))
+            if not ds:
+                raise RuntimeError("Could not open raster")
+
+            cols = ds.RasterXSize
+            rows = ds.RasterYSize
+            nbands = ds.RasterCount
+            gt = ds.GetGeoTransform()
+            proj = ds.GetProjection()
+
+            driver = gdal.GetDriverByName('GTiff')
+            out_ds = driver.Create(str(self.seg_tif), cols, rows, 1, gdal.GDT_Int32,
+                                   options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+            out_ds.SetGeoTransform(gt)
+            out_ds.SetProjection(proj)
+            out_band = out_ds.GetRasterBand(1)
+            out_band.SetNoDataValue(0)
+
+            tile_size = params.get('tile_size', 4096)
+            buffer = params.get('buffer', 256)
+            global_seg_id = 1
+
+            for y in range(0, rows, tile_size):
+                for x in range(0, cols, tile_size):
+                    xsize_valid = min(tile_size, cols - x)
+                    ysize_valid = min(tile_size, rows - y)
+
+                    x_start_buf = max(0, x - buffer)
+                    y_start_buf = max(0, y - buffer)
+                    x_end_buf = min(cols, x + xsize_valid + buffer)
+                    y_end_buf = min(rows, y + ysize_valid + buffer)
+
+                    xsize_buf = x_end_buf - x_start_buf
+                    ysize_buf = y_end_buf - y_start_buf
+
+                    img_list = []
+                    for b in range(1, nbands + 1):
+                        band = ds.GetRasterBand(b)
+                        arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                        arr = np.nan_to_num(arr)
+                        img_list.append(arr)
+
+                    img = np.dstack(img_list)
+                    if np.all(img == 0):
+                        continue
+
+                    # Check footprint mask if it exists
+                    if self.footprint_mask.exists():
+                        ds_foot = gdal.Open(str(self.footprint_mask))
+                        valid_mask = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf) > 0
+                        ds_foot = None
+                    else:
+                        valid_mask = np.sum(np.abs(img), axis=2) > 0
+
+                    if not np.any(valid_mask):
+                        continue
+
+                    img_norm = img_as_float(img)
+
+                    if method == 'python_felzenszwalb':
+                        segments_buf = felzenszwalb(img_norm, scale=params['scale'], sigma=params['sigma'],
+                                                    min_size=params['min_size'])
+
+                    y_offset = y - y_start_buf
+                    x_offset = x - x_start_buf
+                    segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+                    valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+
+                    seg_valid_mask = segments > 0
+                    
+                    unique_segs = np.unique(segments[seg_valid_mask])
+                    if len(unique_segs) > 0:
+                        max_seg = segments.max()
+                        mapping = np.zeros(max_seg + 1, dtype=np.int32)
+                        mapping[unique_segs] = np.arange(global_seg_id, global_seg_id + len(unique_segs))
+                        
+                        segments = mapping[segments]
+                        segments[~valid_mask_crop] = 0
+                        global_seg_id += len(unique_segs)
+                    else:
+                        segments[~valid_mask_crop] = 0
+
+                    out_band.WriteArray(segments.astype(np.int32), x, y)
+
+            out_ds.FlushCache()
+            out_ds = None
+            print(f"    Segmentation Raster saved to {self.seg_tif}\n")
+
+        except Exception as e:
+            print(f"ERROR in Python segmentation: {e}")
+            raise
+
+    # --- Stage 2: Prepare Point Split ---
     def stage_2_prepare_points(self, force_recompute=False):
         stage = 2
         if self.learn_shp.exists() and self.control_shp.exists() and not force_recompute:
@@ -924,16 +1050,18 @@ def main():
     print("\n--- PRITHVI-SAR CLASSIFICATION MENU ---")
     print("  [1] Run Full Classification Pipeline (Stages 0-7)")
     print("  [2] Stage 0: Generate Data Footprint")
-    print("  [3] Stage 2: Prepare Point Split")
-    print("  [4] Stage 3: Extract Prithvi-SAR Features")
-    print("  [5] Stage 4: Train ANN Classifier")
-    print("  [6] Stage 5: Run Inference (Object-based)")
-    print("  [7] Stage 6: Apply Agricultural Mask")
-    print("  [8] Stage 7: Calculate Validation Metrics")
+    print("  [3] Stage 1: Segmentation (Felzenszwalb)")
+    print("  [4] Stage 2: Prepare Point Split")
+    print("  [5] Stage 3: Extract Prithvi-SAR Features")
+    print("  [6] Stage 4: Train ANN Classifier")
+    print("  [7] Stage 5: Run Inference (Object-based)")
+    print("  [8] Stage 6: Apply Agricultural Mask")
+    print("  [9] Stage 7: Calculate Validation Metrics")
     
-    choice = input("\nEnter choice (1-8): ").strip()
+    choice = input("\nEnter choice (1-9): ").strip()
     if choice == '1':
         pipeline.stage_0_generate_footprint()
+        pipeline.stage_1_segmentation()
         pipeline.stage_2_prepare_points()
         pipeline.stage_3_selection()
         pipeline.stage_4_train_classifier()
@@ -943,16 +1071,18 @@ def main():
     elif choice == '2':
         pipeline.stage_0_generate_footprint(force_recompute=True)
     elif choice == '3':
-        pipeline.stage_2_prepare_points(force_recompute=True)
+        pipeline.stage_1_segmentation(force_recompute=True)
     elif choice == '4':
-        pipeline.stage_3_selection()
+        pipeline.stage_2_prepare_points(force_recompute=True)
     elif choice == '5':
-        pipeline.stage_4_train_classifier()
+        pipeline.stage_3_selection()
     elif choice == '6':
-        pipeline.stage_5_classify_vector(force_recompute=True)
+        pipeline.stage_4_train_classifier()
     elif choice == '7':
-        pipeline.stage_6_mask_classification(force_recompute=True)
+        pipeline.stage_5_classify_vector(force_recompute=True)
     elif choice == '8':
+        pipeline.stage_6_mask_classification(force_recompute=True)
+    elif choice == '9':
         pipeline.stage_7_calculate_metrics()
     else:
         print("Invalid choice. Exiting.")
