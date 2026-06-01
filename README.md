@@ -300,98 +300,125 @@ Prithvi expects 6 spectral bands across 3 temporal frames (total size `[6, 3, 22
 
 ---
 
-## Step-by-Step Execution Guide
+### Step-by-Step Execution Guide
 
-### Step 1: Download NUTS2 Boundaries
-Automated script to build country shapefiles.
-- **What it does**: Connects to Eurostat, downloads European NUTS administrative boundary shapefiles, filters them to NUTS2 level, and saves them per country.
-- **Command**:
+This guide details each script in the pipeline, explaining its functionality, requirements, execution commands, and output products.
+
+---
+
+### Step 1: NUTS2 Boundary Database Builder (`download_nuts_shapefiles.py`)
+* **Description & Logic**: Automatically downloads the official GISCO Eurostat administrative boundary dataset (1:1 Million high-resolution shapefiles) and extracts boundary polygons for 37 European countries. It builds a local GIS database of national boundaries at the NUTS2 level, which is used for spatial subsetting of the satellite data. It also duplicates boundaries for Greece under both `EL` and `GR` codes to handle standardized data querying.
+* **Prerequisites & Config**: Requires `geopandas` and `pyogrio` python packages. No environment variables are needed.
+* **Launch Command**:
   ```bash
   python download_nuts_shapefiles.py
   ```
-- **Where files go**: `auxiliary_files/shapefiles_nuts/{COUNTRY}/NUTS2_{COUNTRY}.shp`
+* **Produced Outputs**:
+  - National boundary shapefiles saved to: `auxiliary_files/shapefiles_nuts/{COUNTRY}/NUTS2_{COUNTRY}.shp`
 
 ---
 
-### Step 2: Prepare Copernicus HRL Crop Mask
-Masks out non-agricultural areas (forests, cities, water) to focus classification only on cropland.
-
-1. **Manual Download**:
-   - Go to [Copernicus CLMS Portal](https://land.copernicus.eu/).
-   - Download the **High Resolution Layer: Crop Type 2023** zip files covering your target country.
-   - Save the ZIP files into: `auxiliary_files/raster_files/AgriMasks/<COUNTRY>/Results/`
-     *(e.g., `auxiliary_files/raster_files/AgriMasks/PL/Results/` for Poland)*.
-
-2. **Generate Binary Mask**:
-   Run the processing script to mosaic, reproject, and clip the mask to the country:
-   ```bash
-   python 2_OBIA_classifier/build_agri_mask.py --country PL
-   ```
-
----
-
-### Step 3: SAR Slice Calibration & Assembly
-Scans your local database of raw Sentinel-1 SAFE files, resolves which orbits and flight direction cover the country, and starts SNAP calibration.
-- **Command**:
+### Step 2: Crop Mask Preparation (`2_OBIA_classifier/build_agri_mask.py`)
+* **Description & Logic**: Mosaics and clips the Copernicus High Resolution Layer (HRL) Crop Type raster files to the exact boundary of the target country. It aligns the final raster to the Web Mercator projection (`EPSG:3857`) at a 10-meter resolution grid. Non-agricultural pixels are masked out to focus object segmentation and neural network predictions strictly on active croplands.
+* **Prerequisites & Config**: The HRL ZIP files must be manually downloaded from the Copernicus CLMS portal and placed in `auxiliary_files/raster_files/AgriMasks/{COUNTRY}/Results/` (e.g. `PL/Results/`).
+* **Launch Command**:
   ```bash
-  python 1_Sentinel-1_preprocessor/1_AIML_S1_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -c PL
+  python 2_OBIA_classifier/build_agri_mask.py --country PL
   ```
-  *(Change `PL` to your country code and set your target date range).*
-- **COG Alternative**: For Cloud-Optimized GeoTIFF outputs, run `1_AIML_S1_slice_calibration_COG.py` instead.
-- **Where files go**: Sliced BEAM-DIMAP outputs go to `workingDir/<COUNTRY>/orbit_<ORBIT>/slice_assembly/`.
+* **Produced Outputs**:
+  - Arable Crops Mask (Cereals, Rape, Maize, Vegetables): `auxiliary_files/raster_files/AgriMasks/{COUNTRY}/{COUNTRY}_agri_mask_3class_epsg3857.tif`
+  - All Crops Mask (Arable + Permanent Crops and Grasslands): `auxiliary_files/raster_files/AgriMasks/{COUNTRY}/{COUNTRY}_agri_mask_allcrops_epsg3857.tif`
 
 ---
 
-### Step 4: Stack Coregistration
-Aligns the time-series stack of images for each orbit so they match pixel-for-pixel.
-- **Command**:
+### Step 3: Sentinel-1 Slice Calibration & Assembly (`1_Sentinel-1_preprocessor/1_AIML_S1_slice_calibration.py`)
+* **Description & Logic**: Scans the local Sentinel-1 IW GRD repository and reads spatial geometries of available `.SAFE` directories. It solves a Set Cover mathematical optimization problem (`CountryOrbitOptimizer`) to find the minimal set of relative orbits required to fully cover the country's geometry. For each orbit, it runs SNAP's Graph Processing Tool (`gpt.exe`) to perform:
+  1. Radiometric Calibration (converting raw signals to Sigma0 backscatter values).
+  2. Precise Orbit File Application (for exact spatial alignment).
+  3. Thermal Noise Removal.
+  4. Range Doppler Terrain Correction (using SRTM 3 Sec DEM).
+  5. Assembly (mosaicing) of separate slices acquired on the same orbit flight pass.
+* **Prerequisites & Config**: Requires SNAP GPT executable path and environment variables (`SNAP_GPT_EXE`, `S1_REPO_PATH`, `AIML_WORKING_DIR`, `AIML_AUX_DIR`) set in the active terminal.
+* **Launch Command**:
+  ```bash
+  # Standard Calibration (BEAM-DIMAP outputs):
+  python 1_Sentinel-1_preprocessor/1_AIML_S1_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -c PL
+
+  # Cloud-Optimized GeoTIFF (COG) Alternative (Highly optimized for cloud run):
+  python 1_Sentinel-1_preprocessor/1_AIML_S1_slice_calibration_COG.py -s 2024-10-15 -e 2024-11-30 -c PL
+  ```
+* **Produced Outputs**:
+  - Calibrated daily SAR scenes saved in: `workingDir/{COUNTRY}/orbit_{ORBIT}/slice_assembly/` as `.dim` / `.data` pairs (or `.tif` for COG).
+
+---
+
+### Step 4: Multi-Temporal Stack Coregistration (`1_Sentinel-1_preprocessor/2_AIML_S1_coregistration.py`)
+* **Description & Logic**: Aligns the multi-temporal time-series of assembled Sentinel-1 scenes for each orbit. It dynamically parses the band ordering (VH/VV) from the `.dim` XML files, sorts the dates chronologically, and registers all dates to a common master scene. It then applies a multi-temporal Lee Sigma speckle filter to suppress radar noise while preserving field boundaries.
+* **Prerequisites & Config**: Requires calibrated outputs from Step 3.
+* **Launch Command**:
   ```bash
   python 1_Sentinel-1_preprocessor/2_AIML_S1_coregistration.py -t PL/orbit_12 PL/orbit_88
   ```
-  *(Pass all orbit directories created in Step 3).*
+* **Produced Outputs**:
+  - Aligned time-series stack saved to: `workingDir/{COUNTRY}/orbit_{ORBIT}/coregistration/` (as `.dim` and `.data` folders).
 
 ---
 
-### Step 5: Stack Clipping
-Converts the aligned SNAP Dimap stacks into standard GeoTIFF format and crops them to the exact NUTS2 boundary of the country.
-- **Command**:
+### Step 5: Stack Spatial Clipping (`1_Sentinel-1_preprocessor/3_AIML_S1_stack_clip.py`)
+* **Description & Logic**: Converts the coregistered time-series SNAP stacks into standard multiband GeoTIFF format and clips them to the exact NUTS2 country boundary shapefile. It executes warping and DEFLATE compression in parallel across all CPU cores (`NUM_THREADS=ALL_CPUS`) and automatically builds overview pyramids (`BuildOverviews`) for instant visual rendering in QGIS.
+* **Prerequisites & Config**: Requires NUTS2 shapefiles (from Step 1) and coregistered stacks (from Step 4).
+* **Launch Command**:
   ```bash
   python 1_Sentinel-1_preprocessor/3_AIML_S1_stack_clip.py -t PL/orbit_12 PL/orbit_88
   ```
+* **Produced Outputs**:
+  - Clipped Multiband GeoTIFF: `workingDir/{COUNTRY}/orbit_{ORBIT}/processed_raster/{COUNTRY}_orbit_{ORBIT}_VH_VV.tif` (along with a `.vrt` header file).
 
 ---
 
-### Step 6: Object-Based Classification
-Splits the image stack into objects/fields, extracts radar metrics (mean, std dev, ratios) or deep foundation features for each object over the time-series dates, and performs classification.
-- **Option A (ANN with Felzenszwalb segmentation - Faster/Recommended)**:
+### Step 6: Object-Based Classification (`2_OBIA_classifier/` scripts)
+* **Description & Logic**: Splits the clipped image stack into homogeneous agricultural parcel objects, extracts statistical or deep learning features for each object over the Sentinel-1 timeline, trains a neural network classifier, and performs tiled prediction across the entire track.
+* **Algorithm Options**:
+  - **Option A (Felzenszwalb ANN)** - `1_OBIA_vector_classifier_modular_ANN.py`: Performs Felzenszwalb segmentation on CPU. Extracts zonal statistics (mean backscatter, standard deviation, and temporal ratios) per parcel object to train a scikit-learn MLP Classifier.
+  - **Option B (SAM ANN)** - `1_OBIA_vector_classifier_modular_ANN_SAM.py`: Employs Meta AI's Segment Anything Model (SAM) for deep learning-based boundary delineation (requires GPU / PyTorch).
+  - **Option C (Prithvi-SAR)** - `1_OBIA_vector_classifier_Prithvi_SAR.py`: Leverages the NASA-IBM geospatial foundation model to extract `768`-dimensional temporal-spectral token embeddings from segmented image patches, training the ANN on these embeddings.
+* **Prerequisites & Config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, and model checkpoints (`sam_vit_h_4b8939.pth` or `Prithvi_100M.pt`).
+* **Launch Command**:
   ```bash
+  # Run Felzenszwalb ANN Classifier:
   python 2_OBIA_classifier/1_OBIA_vector_classifier_modular_ANN.py --track PL/orbit_12
-  ```
-- **Option B (ANN with SAM deep-learning segmentation - Resource Intensive)**:
-  ```bash
+
+  # Run SAM Deep-Learning Classifier:
   python 2_OBIA_classifier/1_OBIA_vector_classifier_modular_ANN_SAM.py --track PL/orbit_12
-  ```
-- **Option C (Prithvi-SAR foundation model with ANN classifier)**:
-  ```bash
+
+  # Run NASA-IBM Prithvi-SAR Classifier:
   python 2_OBIA_classifier/1_OBIA_vector_classifier_Prithvi_SAR.py --track PL/orbit_12
   ```
-  *(Execute this sequentially for each orbit directory).*
+* **Produced Outputs**:
+  - Segmentation Map: `workingDir/{track}/classification_results/segmentation/{file_prefix}_segmentation.tif`
+  - Training/Validation Split Points: `.../samples/learn.shp` & `.../samples/control.shp`
+  - Extracted Features: `.../samples/{file_prefix}_[prithvi_]learn_features.csv`
+  - Trained Classifier: `.../train_model/{file_prefix}_[prithvi_]model.pkl`
+  - Raw Outputs: `.../classification/{file_prefix}_[prithvi_]classified.tif` & `..._confidence_map.tif`
+  - Masked Outputs: `.../classification/{file_prefix}_[prithvi_]classified_masked.tif` & `..._confidence_masked.tif`
+  - Classification Accuracy Report: `.../classification/{file_prefix}_[prithvi_]metrics.xlsx`
 
 ---
 
-### Step 7: Merge Country Classification
-Combines the classification results from all individual orbits into a single country-wide map.
-- **For standard classifications (Felzenszwalb / SAM ANN)**:
+### Step 7: Classification Merge (`2_OBIA_merge_classifications.py`)
+* **Description & Logic**: Mosaics and merges the classification results from all individual orbits into a single country-wide map. For overlapping zones between different orbits, the script compares confidence scores at the pixel level and selects the prediction with the **highest confidence score**. Finally, it applies a morphological **sieve filter** to dissolve small isolated pixels (slivers) and validates the merged dataset against validation points (`control.shp`).
+* **Prerequisites & Config**: Requires masked rasters and `control.shp` from Step 6.
+* **Launch Command**:
   ```bash
+  # Merge standard ANN classifications (Felzenszwalb / SAM):
   python 2_OBIA_classifier/2_OBIA_merge_classifications.py --track PL
-  ```
-- **For Prithvi-SAR classification**:
-  ```bash
+
+  # Merge Prithvi-SAR classifications:
   python 2_OBIA_classifier/2_OBIA_merge_classifications.py --track PL --suffix _prithvi
   ```
-- **Output**: The finalized merged classification raster is saved as:
-  - Standard: `workingDir/PL/classification_results/PL_final_classification.tif`
-  - Prithvi: `workingDir/PL/classification_results/PL_final_classification_prithvi.tif`
+* **Produced Outputs**:
+  - Merged Classification Raster: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_classification[_prithvi].tif`
+  - Country Accuracy Report: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_metrics[_prithvi].xlsx`
 
 ---
 
