@@ -48,19 +48,21 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
 
 1. **Install Python via Miniforge**:
    - Download and install [Miniforge3](https://github.com/conda-forge/miniforge) for Windows.
-   - Open **Miniforge Prompt** and create your conda environment:
+   - Open **Miniforge Prompt** and create your conda environment. 
+     > [!IMPORTANT]
+     > The pipeline requires standard Python libraries for processing geospatial data, machine learning, and report generation:
+     > - **Geospatial Processing**: `gdal`, `geopandas`, `rasterio`, `numpy` (for grid manipulation), and `pyogrio` (for accelerated vector database reading).
+     > - **Machine Learning**: `scikit-learn` (for MLP ANN classifier).
+     > - **Report & Data Handling**: `pandas`, `openpyxl` (for writing Excel metric reports), and `joblib` (for model saving/loading).
+     > - **Image Processing**: `scikit-image` (required for Felzenszwalb, SLIC, and Multi-Resolution segmentation).
      ```bash
-     conda create -n satmirol_env python=3.10 gdal geopandas scikit-learn pandas openpyxl joblib -y
-     conda activate satmirol_env
+     conda create -n your_env python=3.10 gdal geopandas rasterio numpy pandas scikit-learn scikit-image openpyxl joblib pyogrio -y
+     conda activate your_env
      ```
-   - *Optional (for SAM GPU acceleration & Prithvi-SAR foundation model)*: Install PyTorch with CUDA:
+   - *Optional (for SAM GPU acceleration & Prithvi-SAR foundation model)*: Install PyTorch with CUDA, Segment Anything (SAM), and HuggingFace dependencies:
      ```bash
      conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia -y
-     pip install segment-anything
-     ```
-   - *Required for Prithvi-SAR*: Install HuggingFace Hub, Transformers, timm, and einops:
-     ```bash
-     pip install huggingface_hub transformers timm einops
+     pip install segment-anything segment-geospatial huggingface_hub transformers timm einops
      ```
 
 2. **Install ESA SNAP**:
@@ -88,15 +90,15 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
      bash Miniforge3-Linux-x86_64.sh -b
      source ~/miniforge3/bin/activate
      ```
-   - Create the Conda environment:
+   - Create the Conda environment with standard geospatial and data processing dependencies (`gdal`, `geopandas`, `rasterio`, `numpy`, `pandas`, `scikit-learn`, `scikit-image`, `openpyxl`, `joblib`, `pyogrio`):
      ```bash
-     conda create -n satmirol_env python=3.10 gdal geopandas scikit-learn pandas openpyxl joblib -y
-     conda activate satmirol_env
+     conda create -n your_env python=3.10 gdal geopandas rasterio numpy pandas scikit-learn scikit-image openpyxl joblib pyogrio -y
+     conda activate your_env
      ```
-   - *Optional (for SAM & Prithvi-SAR)*:
+   - *Optional (for SAM & Prithvi-SAR)*: Install deep learning frameworks and foundation model libraries:
      ```bash
      conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia -y
-     pip install segment-anything huggingface_hub transformers timm einops
+     pip install segment-anything segment-geospatial huggingface_hub transformers timm einops
      ```
 
 3. **Install ESA SNAP**:
