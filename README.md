@@ -1,8 +1,8 @@
-# Sentinel-1 OBIA Crop Type Mapping Pipeline (v2.0)
+# Sentinel-1 OBIA crop type mapping pipeline (v2.0)
 
 An automated, object-based image analysis (OBIA) pipeline designed to process Sentinel-1 SAR time series and perform crop type classification. It integrates state-of-the-art **Geospatial Foundation Models** and classical **machine learning classifiers** to handle large-scale country-wide cropland mapping.
 
-### Key Technologies & Models:
+### Key technologies & models:
 1. **IBM-NASA Prithvi-EO-1.0-100M Foundation Model**: Used to extract deep, robust temporal-spectral embeddings from Sentinel-1 SAR stacks to represent agricultural fields.
 2. **Meta AI Segment Anything Model (SAM)**: Used for precise deep-learning-based field boundary delineation (segmentation) under challenging backscatter conditions.
 3. **Orfeo ToolBox (OTB) Classifier**: Integrates OTB's high-performance machine learning suite (Random Forest, Support Vector Machines - SVM) for lightning-fast training and pixel/object classification on large spatial grids.
@@ -12,29 +12,29 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
 
 ---
 
-## Table of Contents
-1. [Overview for Non-Experts](#overview-for-non-experts)
-2. [Prerequisites & System Installation](#prerequisites--system-installation)
-   - [Windows Setup](#windows-setup)
-   - [Linux Setup](#linux-setup)
-3. [Environment Configuration](#environment-configuration)
-4. [Training Samples Specification (samples.shp)](#training-samples-specification-samplesshp)
-5. [Interactive Menu & Stages Selector (ANN / SAM)](#interactive-menu--stages-selector-ann--sam)
-6. [Segment Anything (SAM) Model Setup & Parameters](#segment-anything-sam-model-setup--parameters)
-7. [NASA-IBM Prithvi-SAR Model Setup & Parameters](#nasa-ibm-prithvi-sar-model-setup--parameters)
-8. [Step-by-Step Execution Guide](#step-by-step-execution-guide)
-   - [Step 1: Download NUTS2 Boundaries](#step-1-download-nuts2-boundaries)
-   - [Step 2: Prepare Copernicus HRL Crop Mask](#step-2-prepare-copernicus-hrl-crop-mask)
-   - [Step 3: SAR Slice Calibration & Assembly](#step-3-sar-slice-calibration--assembly)
-   - [Step 4: Stack Coregistration](#step-4-stack-coregistration)
-   - [Step 5: Stack Clipping](#step-5-stack-clipping)
-   - [Step 6: Object-Based Classification](#step-6-object-based-classification)
-   - [Step 7: Merge Country Classification](#step-7-merge-country-classification)
-8. [Troubleshooting & Performance Tuning](#troubleshooting--performance-tuning)
+## Table of contents
+1. [Overview for non-experts](#overview-for-non-experts)
+2. [Prerequisites & system installation](#prerequisites--system-installation)
+   - [Windows setup](#windows-setup)
+   - [Linux setup](#linux-setup)
+3. [Environment configuration](#environment-configuration)
+4. [Training samples specification (samples.shp)](#training-samples-specification-samplesshp)
+5. [Interactive menu & stages selector (ANN / SAM)](#interactive-menu--stages-selector-ann--sam)
+6. [Segment Anything (SAM) model setup & parameters](#segment-anything-sam-model-setup--parameters)
+7. [NASA-IBM Prithvi-SAR model setup & parameters](#nasa-ibm-prithvi-sar-model-setup--parameters)
+8. [Step-by-step execution guide](#step-by-step-execution-guide)
+   - [Step 1: Download NUTS2 boundaries](#step-1-download-nuts2-boundaries)
+   - [Step 2: Prepare Copernicus HRL crop mask](#step-2-prepare-copernicus-hrl-crop-mask)
+   - [Step 3: SAR slice calibration & assembly](#step-3-sar-slice-calibration--assembly)
+   - [Step 4: Stack coregistration](#step-4-stack-coregistration)
+   - [Step 5: Stack clipping](#step-5-stack-clipping)
+   - [Step 6: Object-based classification](#step-6-object-based-classification)
+   - [Step 7: Merge country classification](#step-7-merge-country-classification)
+8. [Troubleshooting & performance tuning](#troubleshooting--performance-tuning)
 
 ---
 
-## Overview for Non-Experts
+## Overview for non-experts
 Processing radar satellite data (Sentinel-1) usually involves many complicated manual steps. This toolbox automates the entire process:
 1. **Calibration & Slicing**: Converts raw radar backscatter signals (recorded as `.SAFE` directories) into physically meaningful values, merges slices of the same day, and clips them to your country's bounding box.
 2. **Coregistration**: Aligns a time-series stack of images taken over several weeks/months so that pixels from different dates match perfectly.
@@ -42,9 +42,9 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
 
 ---
 
-## Prerequisites & System Installation
+## Prerequisites & system installation
 
-### Windows Setup
+### Windows setup
 
 1. **Install Python via Miniforge**:
    - Download and install [Miniforge3](https://github.com/conda-forge/miniforge) for Windows.
@@ -80,7 +80,7 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
 
 ---
 
-### Linux Setup
+### Linux setup
 
 1. **Install System Dependencies (Ubuntu/Debian)**:
    ```bash
@@ -120,7 +120,7 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
 
 ---
 
-## Environment Configuration
+## Environment configuration
 
 Before running any script, you must configure the following environment variables in your terminal shell. Make sure all paths align with your actual system installation.
 
@@ -173,22 +173,22 @@ export CDSE_PASSWORD="your_password"
 
 ---
 
-## Training Samples Specification (samples.shp)
+## Training samples specification (samples.shp)
 
 To train the machine learning classifier, you must supply a point vector dataset containing crop reference points.
 
-### 1. File Format & Geometry
+### 1. File format & geometry
 - **Format**: ESRI Shapefile or SQLite database.
 - **Geometry Type**: **Point** (`OGRPoint`). Polygons are not supported; reference points should lie inside the fields.
 - **Coordinate System (CRS)**: Any standard coordinate reference system (e.g. `EPSG:4326` or `EPSG:3857`). The pipeline automatically reprojects the points to match the raster coordinate system.
 
-### 2. Required Attribute Fields
+### 2. Required attribute fields
 The shapefile attributes table **must** contain an integer column representing the crop classes:
 - **`crop_id`** (Integer): Numeric code corresponding to the crop type or land-cover class.
   - *Note*: Positive values are parsed as training samples (e.g., `11` = Winter Wheat, `12` = Maize, `1430` = Rapeseed).
   - *Note*: Value `0` is reserved for background/ignored areas.
 
-### 3. File Directory Hierarchy (Input Paths)
+### 3. File directory hierarchy (input paths)
 The classifier searches for your reference shapefile in the `shapefiles_samples` directory using the following hierarchy (matching the Python code search paths):
 1. `auxiliary_files/shapefiles_samples/{FILE_PREFIX}/samples.shp` (e.g. `PL_orbit_12/samples.shp` or `AT_P1a/samples.shp`)
 2. `auxiliary_files/shapefiles_samples/{SAN_TRACK}/samples.shp` (e.g. `PL_orbit_12/samples.shp` or `P1a/samples.shp`)
@@ -196,18 +196,18 @@ The classifier searches for your reference shapefile in the `shapefiles_samples`
 4. `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp` (e.g. `PL/samples.shp` or `AT/samples.shp` - country fallback)
 5. `auxiliary_files/shapefiles_samples/samples.shp` (global fallback)
 
-### 4. Automatic Sample Splitting
+### 4. Automatic sample splitting
 In Stage 2, the pipeline automatically splits your `samples.shp` dataset:
 - **70%** of the points are randomly selected and saved as `learn.shp` (for model training).
 - **30%** of the points are saved as `control.shp` (for independent model validation and confusion matrix generation).
 
 ---
 
-## Interactive Menu & Stages Selector (ANN / SAM)
+## Interactive menu & stages selector (ANN / SAM)
 
 When you execute the classifier script (`1_classify_ann.py` or the SAM version), the program starts an interactive text menu in your terminal. This gives you absolute control over execution, allowing you to run everything in one go or step-by-step while adjusting hyperparameters.
 
-### The Pipeline Menu Layout
+### The pipeline menu layout
 Upon launching the script, the following menu is displayed:
 ```text
     --- Raster-Based OBIA Pipeline (ANN) ---
@@ -228,14 +228,14 @@ Upon launching the script, the following menu is displayed:
     Enter your choice:
 ```
 
-### Detailed Execution Options
+### Detailed execution options
 
-#### Option `A`: Run All Stages (All-in-One Execution)
+#### Option `A`: Run all stages (all-in-one execution)
 - Recommended for standard runs. 
 - Automatically executes all 8 stages sequentially.
 - Forces overwrite of the inference outputs (`Stage 5` to `8`) to ensure no corrupted files or caching issues are present.
 
-#### Single-Stage Execution & Parameter Tuning
+#### Single-stage execution & parameter tuning
 You can select individual numbers to execute specific parts of the pipeline and dynamically adjust their parameters:
 
 - **Choice `1` (Stage 1: Segmentation)**:
@@ -282,18 +282,18 @@ You can select individual numbers to execute specific parts of the pipeline and 
 
 ---
 
-## Segment Anything (SAM) Model Setup & Parameters
+## Segment Anything (SAM) model setup & parameters
 
 If you choose to run `1_classify_ann_sam.py`, the segmentation stage uses Meta AI's Segment Anything Model (SAM) instead of traditional algorithms. This requires downloading a model checkpoint.
 
-### 1. Download SAM Checkpoint File
+### 1. Download SAM checkpoint file
 1. Download the high-quality **ViT-H SAM model checkpoint** (`sam_vit_h_4b8939.pth`) from the official Facebook Research repository:
    [sam_vit_h_4b8939.pth (Download Link)](https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth)
 2. Create the directory `auxiliary_files/SAM_models/` (if it does not exist).
 3. Save the downloaded `.pth` file directly as:
    `auxiliary_files/SAM_models/sam_vit_h_4b8939.pth`
 
-### 2. Tuning SAM Segmentation Parameters
+### 2. Tuning SAM segmentation parameters
 When running the SAM-based classifier script, select option `1` (Stage 1) to configure the SAM parameters:
 
 - **`sam_checkpoint`** (String): Path to your downloaded `.pth` checkpoint. Defaults to `auxiliary_files/SAM_models/sam_vit_h_4b8939.pth`.
@@ -306,18 +306,18 @@ When running the SAM-based classifier script, select option `1` (Stage 1) to con
 
 ---
 
-## NASA-IBM Prithvi-SAR Model Setup & Parameters
+## NASA-IBM Prithvi-SAR model setup & parameters
 
 The Prithvi-SAR crop classifier (`1_classify_prithvi_sar.py`) utilizes the pre-trained NASA-IBM Prithvi-EO-1.0-100M geospatial foundation model for extracting deep temporal-spectral representations from multi-date Sentinel-1 SAR stacks.
 
-### 1. Auto-Download Architecture
+### 1. Auto-download architecture
 The script is designed to **automatically download** all required model components from the official HuggingFace repository (`ibm-nasa-geospatial/Prithvi-EO-1.0-100M`) on the first run:
 - **Architecture definition**: `prithvi_mae.py` (downloaded and saved to `auxiliary_files/Prithvi_models/`)
 - **Model weights**: `Prithvi_100M.pt` (downloaded and saved to `auxiliary_files/Prithvi_models/`)
 
 If your processing machine lacks internet access, you can manually download these two files and place them inside the `auxiliary_files/Prithvi_models/` directory prior to running the script.
 
-### 2. Temporal Stacking Logic
+### 2. Temporal stacking logic
 Prithvi expects 6 spectral bands across 3 temporal frames (total size `[6, 3, 224, 224]`). The script automatically:
 1. Groups Sentinel-1 VV/VH bands into three seasonal frames (early, mid, and late season).
 2. Duplicates the 2 polarization bands to construct the 6-band input expected by the model.
@@ -326,7 +326,7 @@ Prithvi expects 6 spectral bands across 3 temporal frames (total size `[6, 3, 22
 
 ---
 
-### Step-by-Step Execution Guide
+### Step-by-step execution guide
 
 This guide details each script in the pipeline, explaining its functionality, requirements, execution commands, and output products.
 
@@ -340,7 +340,7 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 1: NUTS2 Boundary Database Builder (`download_nuts_shapefiles.py`)
+### Step 1: NUTS2 boundary database builder (`download_nuts_shapefiles.py`)
 * **Description & Logic**: Automatically downloads the official GISCO Eurostat administrative boundary dataset (1:1 Million high-resolution shapefiles) and extracts boundary polygons for 37 European countries. It builds a local GIS database of national boundaries at the NUTS2 level, which is used for spatial subsetting of the satellite data. It also duplicates boundaries for Greece under both `EL` and `GR` codes to handle standardized data querying.
 * **Prerequisites & Config**: Requires `geopandas` and `pyogrio` python packages. No environment variables are needed.
 * **Launch Command**:
@@ -352,7 +352,7 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 2: Crop Mask Preparation (`tools/build_agri_mask.py`)
+### Step 2: Crop mask preparation (`tools/build_agri_mask.py`)
 * **Description & Logic**: Mosaics and clips the Copernicus High Resolution Layer (HRL) Crop Type raster files to the exact boundary of the target country. It aligns the final raster to the Web Mercator projection (`EPSG:3857`) at a 10-meter resolution grid. Non-agricultural pixels are masked out to focus object segmentation and neural network predictions strictly on active croplands.
 * **Prerequisites & Config**: The HRL ZIP files must be manually downloaded from the Copernicus CLMS portal and placed in `auxiliary_files/raster_files/AgriMasks/{COUNTRY}/Results/` (e.g. `PL/Results/`).
 * **Launch Command**:
@@ -365,17 +365,17 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 3: Sentinel-1 Slice Calibration & Assembly (`1_Sentinel-1_preprocessor/1a_slice_calibration.py` / `1b_slice_calibration_cog.py` [PREFERRED] / `1c_slice_calibration_cdse.py`)
+### Step 3: Sentinel-1 slice calibration & assembly (`1_Sentinel-1_preprocessor/1a_slice_calibration.py` / `1b_slice_calibration_cog.py` [PREFERRED] / `1c_slice_calibration_cdse.py`)
 * **Description & Logic**: Scans available Sentinel-1 spatial geometries and solves a Set Cover mathematical optimization problem (`CountryOrbitOptimizer` / `CDSECountryOrbitOptimizer`) to find the minimal set of relative orbits required to fully cover the country's geometry. For each orbit, it runs SNAP's Graph Processing Tool (`gpt.exe`) to perform calibration.
 * **Calibration Alternatives**:
-  - **Standard Calibration (Local Y: Drive)** (`1a_slice_calibration.py`): Scans the local directory, performs radiometric calibration, orbit application, thermal noise removal, terrain correction, and slice assembly, saving intermediate and final outputs as raw SNAP `.dim` / `.data` BEAM-DIMAP pairs.
-  - **Cloud-Optimized GeoTIFF (COG) Calibration (Local Y: Drive)** (`1b_slice_calibration_cog.py` [**RECOMMENDED FOR LOCAL DISK**]): Executes the same calibration steps but writes outputs directly as Cloud-Optimized GeoTIFFs (`.tif`) utilizing DEFLATE compression. 
+  - **Standard calibration (local Y: drive)** (`1a_slice_calibration.py`): Scans the local directory, performs radiometric calibration, orbit application, thermal noise removal, terrain correction, and slice assembly, saving intermediate and final outputs as raw SNAP `.dim` / `.data` BEAM-DIMAP pairs.
+  - **Cloud-Optimized GeoTIFF (COG) calibration (local Y: drive)** (`1b_slice_calibration_cog.py` [**RECOMMENDED FOR LOCAL DISK**]): Executes the same calibration steps but writes outputs directly as Cloud-Optimized GeoTIFFs (`.tif`) utilizing DEFLATE compression. 
     > [!TIP]
     > **Why the COG version is preferred for local repositories:**
     > 1. **Massive Disk Space Savings**: Uses up to 5x less disk space compared to uncompressed raw BEAM-DIMAP files.
     > 2. **Cloud/Network Optimization**: Supports HTTP range requests, making it highly optimized for remote storage, virtual file systems, and cloud deployments.
     > 3. **Reduced I/O Bottlenecks**: Faster reading/writing during downstream coregistration and clipping steps.
-  - **CDSE Calibration & Downloader (Local Server Run)** (`1c_slice_calibration_cdse.py` [**FOR LOCAL RUNS WITHOUT CLOUD/Y: DRIVE**]): Designed for downloading and processing Sentinel-1 data on a local server or machine rather than using a cloud-mounted repository. It automatically **discovers, downloads, and extracts the required Sentinel-1 raw ZIP files directly from the Copernicus Data Space Ecosystem (CDSE)**. Raw S1 files are cached in `workingDir/S1_downloads` for future runs, while calibrated and assembled outputs are saved directly to the country and orbit directories (`workingDir/{COUNTRY}/orbit_{ORBIT}/slice_assembly/`).
+  - **CDSE calibration & downloader (local server run)** (`1c_slice_calibration_cdse.py` [**FOR LOCAL RUNS WITHOUT CLOUD/Y: DRIVE**]): Designed for downloading and processing Sentinel-1 data on a local server or machine rather than using a cloud-mounted repository. It automatically **discovers, downloads, and extracts the required Sentinel-1 raw ZIP files directly from the Copernicus Data Space Ecosystem (CDSE)**. Raw S1 files are cached in `workingDir/S1_downloads` for future runs, while calibrated and assembled outputs are saved directly to the country and orbit directories (`workingDir/{COUNTRY}/orbit_{ORBIT}/slice_assembly/`).
 * **Prerequisites & Config**: 
   - For local runs: Requires SNAP GPT executable path and environment variables (`SNAP_GPT_EXE`, `S1_REPO_PATH`, `AIML_WORKING_DIR`, `AIML_AUX_DIR`).
   - For CDSE downloader (`1c_slice_calibration_cdse.py`): Also requires `CDSE_USERNAME` and `CDSE_PASSWORD` environment variables set in your shell (e.g. by configuring them in `tools/set_env.bat` or `tools/set_env.sh`).
@@ -402,7 +402,7 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 4: Multi-Temporal Stack Coregistration (`1_Sentinel-1_preprocessor/2_coregistration.py`)
+### Step 4: Multi-temporal stack coregistration (`1_Sentinel-1_preprocessor/2_coregistration.py`)
 * **Description & Logic**: Aligns the multi-temporal time-series of assembled Sentinel-1 scenes for each orbit. It dynamically parses the band ordering (VH/VV) from the `.dim` XML files, sorts the dates chronologically, and registers all dates to a common master scene. It then applies a multi-temporal Lee Sigma speckle filter to suppress radar noise while preserving field boundaries.
 * **Prerequisites & Config**: Requires calibrated outputs from Step 3.
 * **Launch Command**:
@@ -417,7 +417,7 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 5: Stack Spatial Clipping (`1_Sentinel-1_preprocessor/3_stack_clip.py`)
+### Step 5: Stack spatial clipping (`1_Sentinel-1_preprocessor/3_stack_clip.py`)
 * **Description & Logic**: Converts the coregistered time-series SNAP stacks into standard multiband GeoTIFF format and clips them to the exact NUTS2 country boundary shapefile. It executes warping and DEFLATE compression in parallel across all CPU cores (`NUM_THREADS=ALL_CPUS`) and automatically builds overview pyramids (`BuildOverviews`) for instant visual rendering in QGIS.
 * **Prerequisites & Config**: Requires NUTS2 shapefiles (from Step 1) and coregistered stacks (from Step 4).
 * **Launch Command**:
@@ -429,7 +429,7 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 6: Object-Based Classification (`2_classifier/` scripts)
+### Step 6: Object-based classification (`2_classifier/` scripts)
 * **Description & Logic**: Splits the clipped image stack into homogeneous agricultural parcel objects, extracts statistical or deep learning features for each object over the Sentinel-1 timeline, trains a machine learning or deep learning classifier, and performs tiled prediction across the entire track.
 * **Algorithm Options**:
   - **Option A (Felzenszwalb ANN)** - `1_classify_ann.py`: Performs Felzenszwalb segmentation on CPU. Extracts zonal statistics (mean backscatter, standard deviation, and temporal ratios) per parcel object to train a scikit-learn MLP Classifier.
@@ -462,7 +462,7 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 7: Classification Merge (`2_classifier/2_merge_classifications.py`)
+### Step 7: Classification merge (`2_classifier/2_merge_classifications.py`)
 * **Description & Logic**: Mosaics and merges the classification results from all individual orbits into a single country-wide map. For overlapping zones between different orbits, the script compares confidence scores at the pixel level and selects the prediction with the **highest confidence score**. Finally, it applies a morphological **sieve filter** to dissolve small isolated pixels (slivers) and validates the merged dataset against validation points (`control.shp`).
 * **Prerequisites & Config**: Requires masked rasters and `control.shp` from Step 6.
 * **Launch Command**:
@@ -479,9 +479,9 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-## Troubleshooting & Performance Tuning
+## Troubleshooting & performance tuning
 
-### SNAP Memory and Cache Issues (OOM)
+### SNAP memory and cache issues (OOM)
 SNAP can consume huge amounts of RAM. If you face Java Heap Space/OOM crashes:
 1. Locate SNAP's config: `gpt.vmoptions` (located in the SNAP `bin/` directory).
 2. Edit the VM options (e.g. increase `-Xmx` memory threshold):
@@ -491,14 +491,14 @@ SNAP can consume huge amounts of RAM. If you face Java Heap Space/OOM crashes:
    ```
 3. The scripts pass `-q 4` to GPT to limit it to 4 parallel threads. You can decrease this to `-q 2` in the scripts (`run_calibration_stage`, etc.) if memory usage is still too high.
 
-### Orbit Files Download Failures
+### Orbit files download failures
 During step 3/4, SNAP will attempt to download Precise Orbit files. If this fails due to ESA server downtimes:
 - Ensure you have an internet connection.
 - In SNAP's `Apply-Orbit-File` XML node, the code sets `continueOnFail` to `true`, which allows processing to continue with lower precision orbit files if the precise files are unavailable.
 
 ---
 
-## How to Cite
+## How to cite
 
 If you use this software in your research, publications, reports, or any derivative work, you are required under the Apache 2.0 license terms to acknowledge and cite the authors.
 
