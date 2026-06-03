@@ -43,6 +43,12 @@ authors:
     email: "marek.mroz@uwm.edu.pl"
     affiliation: "University of Warmia and Mazury in Olsztyn"
 
+  - family-names: "Mleczko"
+    given-names: "Magdalena"
+    name-particle: "dr inż."
+    email: "magdalena.mleczko@uwm.edu.pl"
+    affiliation: "University of Warmia and Mazury in Olsztyn"
+
 
 keywords:
   - "Sentinel-1"
