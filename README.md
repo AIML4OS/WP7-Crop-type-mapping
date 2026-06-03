@@ -340,6 +340,14 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
+### Project directory structure
+
+To set up a new project on a new computer, establish the following folder hierarchy (matching the structure automatically populated during the step-by-step pipeline execution):
+
+![Project Directory Structure](auxiliary_files/images/directory_structure.png)
+
+---
+
 ### Step 1: NUTS2 boundary database builder (`download_nuts_shapefiles.py`)
 * **Description and Logic**: Automatically downloads the official GISCO Eurostat administrative boundary dataset (1:1 Million high-resolution shapefiles) and extracts boundary polygons for 37 European countries. It builds a local GIS database of national boundaries at the NUTS2 level, which is used for spatial subsetting of the satellite data. It also duplicates boundaries for Greece under both `EL` and `GR` codes to handle standardized data querying.
 * **Prerequisites and Config**: Requires `geopandas` and `pyogrio` python packages. No environment variables are needed.
