@@ -15,16 +15,7 @@ from osgeo import gdal, gdalconst, ogr, osr
 BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", "D:/AIML_CropMapper_Cloud/workingDir"))
 SHAPEFILES_DIR = Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files")) / "shapefiles_nuts"
 
-# Mapping for automatic sub-track selection
-GROUP_MAP = {"P1": "P1a", "P4": "P4a", "P2": "P2a"}
 
-# Regions to clip for each track
-TRACK_REGIONS_MAP = {
-    'P1': ['AT'], 'P1a': ['AT'],
-    'P2': ['IE'], 'P2a': ['IE'],
-    'P3': ['NL'],
-    'P4': ['PT'], 'P4a': ['PT']
-}
 
 STRIP_PATTERN = re.compile(r"_(mst|slv\d+)_")
 
@@ -168,15 +159,11 @@ def stack_and_clip(track: str):
     if '/' in track or '\\' in track:
         normalized_track = track.replace('\\', '/')
         regions = [normalized_track.split('/')[0].upper()]
+    elif len(track) == 2:
+        regions = [track.upper()]
     else:
-        regions = TRACK_REGIONS_MAP.get(track, [])
-    
-    if not regions:
-        if len(track) == 2:
-            regions = [track.upper()]
-        else:
-            print(f"No regions defined for {track}, skipping clip.")
-            return
+        print(f"Cannot resolve region for track '{track}', skipping clip.")
+        return
 
     # CHANGED: Removed PREDICTOR=2 to fix SNAP compatibility, added NUM_THREADS for parallel compression
     creation_options = ['COMPRESS=DEFLATE', 'BIGTIFF=YES', 'TILED=YES', 'NUM_THREADS=ALL_CPUS']
@@ -244,13 +231,8 @@ def main():
     parser.add_argument('-t', '--track', nargs='+', required=True, help="Track path(s) to process, e.g. PL/orbit_12")
     args = parser.parse_args()
 
-    sel = set(args.track)
-    for t in list(sel):
-        if t in GROUP_MAP:
-            sel.add(GROUP_MAP[t])
-
     # Process all requested tracks dynamically
-    for track in sorted(list(sel)):
+    for track in sorted(list(set(args.track))):
         print(f"\n=== Processing {track} ===")
         stack_and_clip(track)
 

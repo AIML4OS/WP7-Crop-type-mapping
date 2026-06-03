@@ -25,12 +25,6 @@ aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
 otb_dir = Path("D:/AIML_CropMapper_Cloud/bin/OTB-6.2.0-Win64")
 
 # Track to Country Mapping
-track_regions = {
-    'P1': 'AT', 'P1a': 'AT',
-    'P2': 'IE', 'P2a': 'IE',
-    'P3': 'NL',
-    'P4': 'PT', 'P4a': 'PT'
-}
 TOTAL_STAGES = 11
 
 
@@ -39,11 +33,20 @@ TOTAL_STAGES = 11
 class ProcessingPipeline:
     def __init__(self, track):
         self.track = track
-        try:
-            self.country = track_regions[track]
-        except KeyError:
-            print(f"Error: Track '{track}' not defined in track_regions configuration.")
+        if '/' in track or '\\' in track:
+            normalized_track = track.replace('\\', '/')
+            self.country = normalized_track.split('/')[0].upper()
+        elif len(track) == 2:
+            self.country = track.upper()
+        else:
+            print(f"Error: Track '{track}' does not contain country code and is not a 2-letter country code.")
             sys.exit(1)
+
+        self.sanitized_track = self.track.replace('/', '_').replace('\\', '_')
+        if self.sanitized_track.upper().startswith(self.country.upper() + "_"):
+            self.file_prefix = self.sanitized_track
+        else:
+            self.file_prefix = f"{self.country}_{self.sanitized_track}"
 
         self.total_stages = TOTAL_STAGES
         print(f"Initializing pipeline for Track: {self.track}, Country: {self.country}")
@@ -90,7 +93,7 @@ class ProcessingPipeline:
             raise FileNotFoundError(f"Processing directory does not exist: {self.proc_dir}")
 
         # --- 3. Define all output file paths ---
-        self.seg_shp = self.seg_dir / f"{self.country}_{self.track}_segmentation.shp"
+        self.seg_shp = self.seg_dir / f"{self.file_prefix}_segmentation.shp"
 
         # --- PATH FIX: Smart Search for samples.shp ---
         # We look in 'shapefiles_samples' and try common subfolder names
@@ -98,10 +101,11 @@ class ProcessingPipeline:
 
         # Possible locations for samples.shp
         candidate_paths = [
-            samples_base / f"{self.country}_{self.track}" / "samples.shp",  # Check shapefiles_samples/AU_P1/samples.shp
-            samples_base / self.track / "samples.shp",  # Check shapefiles_samples/P1/samples.shp
-            samples_base / self.country / "samples.shp",  # Check shapefiles_samples/AT/samples.shp
-            samples_base / "samples.shp"  # Check shapefiles_samples/samples.shp
+            samples_base / f"{self.country}_{self.sanitized_track}" / "samples.shp",
+            samples_base / self.sanitized_track / "samples.shp",
+            samples_base / self.track / "samples.shp",
+            samples_base / self.country / "samples.shp",
+            samples_base / "samples.shp"
         ]
 
         self.sample_shp = None
@@ -120,7 +124,7 @@ class ProcessingPipeline:
             if all_samples:
                 # Try to find a path that contains the track name
                 for p in all_samples:
-                    if self.track in p.parts:
+                    if self.track in p.parts or self.sanitized_track in p.parts:
                         self.sample_shp = p
                         print(f"Training samples found via smart search (matched track): {self.sample_shp}")
                         break
@@ -140,21 +144,21 @@ class ProcessingPipeline:
 
         if not self.sample_shp:
             print(f"\nCRITICAL WARNING: Could not find 'samples.shp' inside {samples_base}")
-            print(f"Checked subfolders: {self.country}_{self.track}, {self.track}, {self.country}")
+            print(f"Checked subfolders: {self.country}_{self.sanitized_track}, {self.sanitized_track}, {self.country}")
             # Fallback path
-            self.sample_shp = samples_base / f"{self.country}_{self.track}" / "samples.shp"
+            self.sample_shp = samples_base / f"{self.country}_{self.sanitized_track}" / "samples.shp"
 
         # Output paths
         self.learn_shp = self.samples_dir / 'learn.shp'
         self.control_shp = self.samples_dir / 'control.shp'
-        self.sel_shp = self.samples_dir / f"{self.country}_{self.track}_learn_selected.shp"
-        self.class_shp = self.class_dir / f"{self.country}_{self.track}_classified.shp"
-        self.class_tif = self.class_dir / f"{self.country}_{self.track}_classified.tif"
-        self.conf_tif = self.class_dir / f"{self.country}_{self.track}_confidence_map.tif"
-        self.cutline_shp = self.proc_dir / f"{self.country}_{self.track}_valid_coverage.shp"
-        self.masked_class = self.class_dir / f"{self.country}_{self.track}_classified_masked.tif"
-        self.masked_conf = self.class_dir / f"{self.country}_{self.track}_confidence_masked.tif"
-        self.metrics_fp = self.class_dir / f"{self.country}_{self.track}_metrics.xlsx"
+        self.sel_shp = self.samples_dir / f"{self.file_prefix}_learn_selected.shp"
+        self.class_shp = self.class_dir / f"{self.file_prefix}_classified.shp"
+        self.class_tif = self.class_dir / f"{self.file_prefix}_classified.tif"
+        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence_map.tif"
+        self.cutline_shp = self.proc_dir / f"{self.file_prefix}_valid_coverage.shp"
+        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked.tif"
+        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked.tif"
+        self.metrics_fp = self.class_dir / f"{self.file_prefix}_metrics.xlsx"
 
         # --- 4. Define default parameters for configurable stages ---
         self.stage1_params = {
@@ -455,8 +459,8 @@ class ProcessingPipeline:
         self.feat_str = ' '.join(feats)
 
         clf_name = params['classifier']
-        model_fn = self.model_dir / f"{self.country}_{self.track}_model.{clf_name}"
-        confmat_fn = self.model_dir / f"{self.country}_{self.track}_train_confmat.{clf_name}.csv"
+        model_fn = self.model_dir / f"{self.file_prefix}_model.{clf_name}"
+        confmat_fn = self.model_dir / f"{self.file_prefix}_train_confmat.{clf_name}.csv"
 
         if force_retrain or not model_fn.exists() or os.path.getsize(model_fn) == 0:
             if force_retrain and model_fn.exists():
@@ -505,7 +509,7 @@ class ProcessingPipeline:
         stage = 5
 
         clf_name = self.stage4_params['classifier']
-        model_file = self.model_dir / f"{self.country}_{self.track}_model.{clf_name}"
+        model_file = self.model_dir / f"{self.file_prefix}_model.{clf_name}"
 
         if not model_file.exists():
             print(f"ERROR: Model file {model_file} not found. Run Stage 4 first.")
@@ -865,7 +869,7 @@ def main_menu(pipeline):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Modular OBIA Classification Pipeline")
-    parser.add_argument('--track', required=True, help="Processing track ID (e.g., P1, P2)")
+    parser.add_argument('--track', required=True, help="Processing track name (e.g. NL/orbit_88 or PT/orbit_161)")
     args = parser.parse_args()
 
     try:

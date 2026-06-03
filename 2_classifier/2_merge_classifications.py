@@ -13,15 +13,7 @@ from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 import openpyxl
 from openpyxl.styles import Font
 
-# Minimal mapping of track → country; extend as needed
-TRACK_REGIONS = {
-    'P1':  'AT', 'P1a': 'AT',
-    'P2':  'IE', 'P2a': 'IE',
-    'P3':  'NL',
-    'P4':  'PT', 'P4a': 'PT',
-    'P5':  'XX', 'P5a': 'XX', 'P5b': 'XX',
-    # add more as you create new tracks…
-}
+# Discover tracks logic
 
 def find_masked_files(base_dir: Path, tr: str, country: str, suffix: str = ""):
     """
@@ -94,13 +86,10 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
                 continue
             if '/' in tr or '\\' in tr:
                 country = tr.replace('\\', '/').split('/')[0].upper()
+            elif len(tr) == 2:
+                country = tr.upper()
             else:
-                country = TRACK_REGIONS.get(tr)
-            if country is None:
-                if len(tr) == 2:
-                    country = tr.upper()
-                else:
-                    continue
+                continue
             
             sanitized = tr.replace('/', '_').replace('\\', '_')
             track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"

@@ -58,13 +58,6 @@ aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
 # OTB Installation Path (Still used for some auxiliary tasks if needed, but main flow is Python)
 otb_dir = Path("D:/AIML_CropMapper_Cloud/bin/OTB-6.2.0-Win64")
 
-# Track to Country Mapping
-track_regions = {
-    'P1': 'AT', 'P1a': 'AT',
-    'P2': 'IE', 'P2a': 'IE',
-    'P3': 'NL',
-    'P4': 'PT', 'P4a': 'PT'
-}
 TOTAL_STAGES = 8
 
 
@@ -75,18 +68,15 @@ class ProcessingPipeline:
         self.track = track
         self.mask_variant = mask_variant  # '3class' lub 'allcrops'
         
-        # Dedykowana obsługa dynamicznych pasów dla krajów (np. PL/orbit_12)
+        # Dedykowana obsługa dynamicznych pasów dla krajów (np. PL/orbit_12 lub dwuliterowego kodu kraju)
         if '/' in track or '\\' in track:
             normalized_track = track.replace('\\', '/')
             self.country = normalized_track.split('/')[0].upper()
+        elif len(track) == 2:
+            self.country = track.upper()
         else:
-            self.country = track_regions.get(track)
-            if not self.country:
-                if len(track) == 2:
-                    self.country = track.upper()
-                else:
-                    print(f"Error: Track '{track}' not defined in track_regions configuration.")
-                    sys.exit(1)
+            print(f"Error: Track '{track}' does not contain country code and is not a 2-letter country code.")
+            sys.exit(1)
 
         self.total_stages = TOTAL_STAGES
         print(f"Initializing pipeline for Track: {self.track}, Country: {self.country}")
@@ -1731,7 +1721,7 @@ def main_menu(pipeline):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Modular OBIA Pipeline (True Object-Based Training)")
-    parser.add_argument('--track', required=True, help="Processing track ID (e.g., P1, P2)")
+    parser.add_argument('--track', required=True, help="Processing track name (e.g. NL/orbit_88 or PT/orbit_161)")
     parser.add_argument('--mask_variant', default='3class',
                         choices=['3class', 'allcrops'],
                         help="Agricultural mask variant: '3class' (jare/oziminy/rzepak, default) "

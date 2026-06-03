@@ -46,12 +46,6 @@ base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
 aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
 prithvi_dir = aux_dir / "Prithvi_models"
 
-track_regions = {
-    'P1': 'AT', 'P1a': 'AT',
-    'P2': 'IE', 'P2a': 'IE',
-    'P3': 'NL',
-    'P4': 'PT', 'P4a': 'PT'
-}
 TOTAL_STAGES = 8
 
 
@@ -197,14 +191,11 @@ class ProcessingPipeline:
         normalized_track = track.replace('\\', '/')
         if '/' in normalized_track:
             self.country = normalized_track.split('/')[0].upper()
+        elif len(track) == 2:
+            self.country = track.upper()
         else:
-            self.country = track_regions.get(track)
-            if not self.country:
-                if len(track) == 2:
-                    self.country = track.upper()
-                else:
-                    print(f"Error: Track '{track}' not defined in track_regions configuration.")
-                    sys.exit(1)
+            print(f"Error: Track '{track}' does not contain country code and is not a 2-letter country code.")
+            sys.exit(1)
 
         self.total_stages = TOTAL_STAGES
         print(f"Initializing Prithvi-SAR pipeline for Track: {self.track}, Country: {self.country}")
