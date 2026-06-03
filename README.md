@@ -135,7 +135,7 @@ $env:SNAP_GPT_EXE="D:/Program Files/esa-snap/bin/gpt.exe"
 # Path to SNAP auxiliary files (where orbit files are cached)
 $env:SNAP_AUXDATA_PATH="C:/Users/Administrator/.snap/auxdata"
 
-# Path to the raw Sentinel-1 GRD SAFE repository directory
+# Path to the raw Sentinel-1 GRD SAFE repository directory (for local preprocessor scripts)
 $env:S1_REPO_PATH="Y:/Sentinel-1/SAR/IW_GRDH_1S"
 
 # Output workspace directory for intermediate and final rasters
@@ -143,6 +143,10 @@ $env:AIML_WORKING_DIR="D:/AIML_CropMapper_Cloud/workingDir"
 
 # Path to project's auxiliary files directory
 $env:AIML_AUX_DIR="D:/AIML_CropMapper_Cloud/auxiliary_files"
+
+# CDSE Credentials for remote downloader preprocessor (Optional)
+$env:CDSE_USERNAME="your_username@email.com"
+$env:CDSE_PASSWORD="your_password"
 ```
 
 ### On Linux (Bash):
@@ -153,7 +157,7 @@ export SNAP_GPT_EXE="/usr/local/esa-snap/bin/gpt"
 # Path to SNAP auxiliary files (where orbit files are cached)
 export SNAP_AUXDATA_PATH="$HOME/.snap/auxdata"
 
-# Path to the raw Sentinel-1 GRD SAFE repository directory
+# Path to the raw Sentinel-1 GRD SAFE repository directory (for local preprocessor scripts)
 export S1_REPO_PATH="/mnt/sentinel1/SAR/IW_GRDH_1S"
 
 # Output workspace directory for intermediate and final rasters
@@ -161,6 +165,10 @@ export AIML_WORKING_DIR="/home/user/AIML_CropMapper_Cloud/workingDir"
 
 # Path to project's auxiliary files directory
 export AIML_AUX_DIR="/home/user/AIML_CropMapper_Cloud/auxiliary_files"
+
+# CDSE Credentials for remote downloader preprocessor (Optional)
+export CDSE_USERNAME="your_username@email.com"
+export CDSE_PASSWORD="your_password"
 ```
 
 ---
