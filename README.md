@@ -453,13 +453,13 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 
     *The object-based classification workflow using SAM is structured as follows:*
 
-    ![SAM Object-Based Classification Workflow](auxiliary_files/images/sam_classification_v4.png)
+    ![SAM Object-Based Classification Workflow](auxiliary_files/images/sam_classification_v5.png)
 
   - **Option C (Prithvi-SAR)** - `1_classify_prithvi_sar.py`: Leverages the NASA-IBM geospatial foundation model to extract `768`-dimensional temporal-spectral token embeddings from segmented image patches. It includes its own built-in Segment Anything Model (SAM) segmentation stage, making the entire pipeline completely self-contained.
 
     *The object-based classification workflow using Prithvi-SAR is structured as follows:*
 
-    ![Prithvi-SAR Object-Based Classification Workflow](auxiliary_files/images/prithvi_classification_v4.png)
+    ![Prithvi-SAR Object-Based Classification Workflow](auxiliary_files/images/prithvi_classification_v5.png)
 
   - **Option D (OTB RF/SVM)** - `1_classify_otb.py`: Integrates Orfeo ToolBox (OTB) CLI tools. Performs OTB Mean-Shift segmentation on the time-series stack, extracts statistical object features, trains an OTB Random Forest or SVM classifier, and outputs classified shapefiles and rasters.
 * **Prerequisites and Config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, model checkpoints if running SAM/Prithvi, and OTB binary installation in `bin/OTB-6.2.0-Win64/` if running OTB classification.
