@@ -170,13 +170,12 @@ The shapefile attributes table **must** contain an integer column representing t
   - *Note*: Value `0` is reserved for background/ignored areas.
 
 ### 3. File Directory Hierarchy (Input Paths)
-The classifier searches for your reference shapefile in the `shapefiles_samples` directory using the following hierarchy:
-1. `auxiliary_files/shapefiles_samples/{COUNTRY}_{SAN_TRACK}/samples.shp` (e.g. `PL_PL_orbit_12/samples.shp`)
-2. `auxiliary_files/shapefiles_samples/{COUNTRY}_{TRACK}/samples.shp` (e.g. `PL_PL/orbit_12/samples.shp`)
-3. `auxiliary_files/shapefiles_samples/{SAN_TRACK}/samples.shp`
-4. `auxiliary_files/shapefiles_samples/{TRACK}/samples.shp`
-5. `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp` (e.g. `PL/samples.shp` - country-wide fallback)
-6. `auxiliary_files/shapefiles_samples/samples.shp` (global fallback)
+The classifier searches for your reference shapefile in the `shapefiles_samples` directory using the following hierarchy (matching the Python code search paths):
+1. `auxiliary_files/shapefiles_samples/{FILE_PREFIX}/samples.shp` (e.g. `PL_orbit_12/samples.shp` or `AT_P1a/samples.shp`)
+2. `auxiliary_files/shapefiles_samples/{SAN_TRACK}/samples.shp` (e.g. `PL_orbit_12/samples.shp` or `P1a/samples.shp`)
+3. `auxiliary_files/shapefiles_samples/{TRACK}/samples.shp` (e.g. `PL/orbit_12/samples.shp` or `P1a/samples.shp`)
+4. `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp` (e.g. `PL/samples.shp` or `AT/samples.shp` - country fallback)
+5. `auxiliary_files/shapefiles_samples/samples.shp` (global fallback)
 
 ### 4. Automatic Sample Splitting
 In Stage 2, the pipeline automatically splits your `samples.shp` dataset:
