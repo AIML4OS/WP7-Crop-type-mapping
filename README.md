@@ -48,21 +48,26 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
 
 1. **Install Python via Miniforge**:
    - Download and install [Miniforge3](https://github.com/conda-forge/miniforge) for Windows.
-   - Open **Miniforge Prompt** and create your conda environment. 
+   - Open **Miniforge Prompt** and create your environment. 
+     > [!TIP]
+     > Miniforge uses `mamba` under the hood, which is significantly faster than the standard `conda` solver, especially on Windows when resolving complex geospatial dependencies like GDAL. We strongly recommend using the `mamba` command.
      > [!IMPORTANT]
      > The pipeline requires standard Python libraries for processing geospatial data, machine learning, and report generation:
      > - **Geospatial Processing**: `gdal`, `geopandas`, `rasterio`, `numpy` (for grid manipulation), and `pyogrio` (for accelerated vector database reading).
      > - **Machine Learning**: `scikit-learn` (for MLP ANN classifier).
      > - **Report & Data Handling**: `pandas`, `openpyxl` (for writing Excel metric reports), and `joblib` (for model saving/loading).
      > - **Image Processing**: `scikit-image` (required for Felzenszwalb, SLIC, and Multi-Resolution segmentation).
+     
+     **If you do NOT have an NVIDIA GPU (Standard CPU Setup):**
      ```bash
-     conda create -n your_env python=3.10 gdal geopandas rasterio numpy pandas scikit-learn scikit-image openpyxl joblib pyogrio -y
-     conda activate your_env
+     mamba env create -f environment.yml
+     mamba activate aiml_env
      ```
-   - *Optional (for SAM GPU acceleration & Prithvi-SAR foundation model)*: Install PyTorch with CUDA, Segment Anything (SAM), and HuggingFace dependencies:
+
+     **If you have an NVIDIA GPU (Recommended for speed):**
      ```bash
-     conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia -y
-     pip install segment-anything segment-geospatial huggingface_hub transformers timm einops
+     mamba env create -f environment_gpu.yml
+     mamba activate aiml_env
      ```
 
 2. **Install ESA SNAP**:
@@ -90,15 +95,18 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
      bash Miniforge3-Linux-x86_64.sh -b
      source ~/miniforge3/bin/activate
      ```
-   - Create the Conda environment with standard geospatial and data processing dependencies (`gdal`, `geopandas`, `rasterio`, `numpy`, `pandas`, `scikit-learn`, `scikit-image`, `openpyxl`, `joblib`, `pyogrio`):
+   - Create the environment using the provided YAML configuration files:
+     
+     **If you do NOT have an NVIDIA GPU (Standard CPU Setup):**
      ```bash
-     conda create -n your_env python=3.10 gdal geopandas rasterio numpy pandas scikit-learn scikit-image openpyxl joblib pyogrio -y
-     conda activate your_env
+     mamba env create -f environment.yml
+     mamba activate aiml_env
      ```
-   - *Optional (for SAM & Prithvi-SAR)*: Install deep learning frameworks and foundation model libraries:
+
+     **If you have an NVIDIA GPU (Recommended for speed):**
      ```bash
-     conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia -y
-     pip install segment-anything segment-geospatial huggingface_hub transformers timm einops
+     mamba env create -f environment_gpu.yml
+     mamba activate aiml_env
      ```
 
 3. **Install ESA SNAP**:
@@ -115,6 +123,9 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
 ## Environment Configuration
 
 Before running any script, you must configure the following environment variables in your terminal shell. Make sure all paths align with your actual system installation.
+
+> [!TIP]
+> Instead of exporting these variables manually every time you open a terminal, we recommend using the `set_env.bat` (Windows) or `set_env.sh` (Linux) scripts provided in the `tools/` folder. Adjust the paths inside these scripts to match your system and run them to automatically set your environment.
 
 ### On Windows (PowerShell):
 ```powershell
@@ -311,6 +322,14 @@ Prithvi expects 6 spectral bands across 3 temporal frames (total size `[6, 3, 22
 
 This guide details each script in the pipeline, explaining its functionality, requirements, execution commands, and output products.
 
+> [!IMPORTANT]
+> **Working Directory**: All terminal commands listed below must be executed from the **root directory** of this repository (the folder containing this `README.md`). Do not navigate into subfolders like `1_Sentinel-1_preprocessor` to run the scripts, as this will break relative paths.
+> 
+> Also, ensure your conda environment is active before starting:
+> ```bash
+> mamba activate aiml_env
+> ```
+
 ---
 
 ### Step 1: NUTS2 Boundary Database Builder (`download_nuts_shapefiles.py`)
@@ -338,27 +357,40 @@ This guide details each script in the pipeline, explaining its functionality, re
 
 ---
 
-### Step 3: Sentinel-1 Slice Calibration & Assembly (`1_Sentinel-1_preprocessor/1a_slice_calibration.py` / `1b_slice_calibration_cog.py` [PREFERRED])
-* **Description & Logic**: Scans the local Sentinel-1 IW GRD repository and reads spatial geometries of available `.SAFE` directories. It solves a Set Cover mathematical optimization problem (`CountryOrbitOptimizer`) to find the minimal set of relative orbits required to fully cover the country's geometry. For each orbit, it runs SNAP's Graph Processing Tool (`gpt.exe`) to perform calibration.
+### Step 3: Sentinel-1 Slice Calibration & Assembly (`1_Sentinel-1_preprocessor/1a_slice_calibration.py` / `1b_slice_calibration_cog.py` [PREFERRED] / `1c_slice_calibration_cdse.py`)
+* **Description & Logic**: Scans available Sentinel-1 spatial geometries and solves a Set Cover mathematical optimization problem (`CountryOrbitOptimizer` / `CDSECountryOrbitOptimizer`) to find the minimal set of relative orbits required to fully cover the country's geometry. For each orbit, it runs SNAP's Graph Processing Tool (`gpt.exe`) to perform calibration.
 * **Calibration Alternatives**:
-  - **Standard Calibration** (`1a_slice_calibration.py`): Performs radiometric calibration, orbit application, thermal noise removal, terrain correction, and slice assembly, saving intermediate and final outputs as raw SNAP `.dim` / `.data` BEAM-DIMAP pairs.
-  - **Cloud-Optimized GeoTIFF (COG) Calibration** (`1b_slice_calibration_cog.py` [**RECOMMENDED/PREFERRED**]): Executes the same calibration steps but writes outputs directly as Cloud-Optimized GeoTIFFs (`.tif`) utilizing DEFLATE compression. 
+  - **Standard Calibration (Local Y: Drive)** (`1a_slice_calibration.py`): Scans the local directory, performs radiometric calibration, orbit application, thermal noise removal, terrain correction, and slice assembly, saving intermediate and final outputs as raw SNAP `.dim` / `.data` BEAM-DIMAP pairs.
+  - **Cloud-Optimized GeoTIFF (COG) Calibration (Local Y: Drive)** (`1b_slice_calibration_cog.py` [**RECOMMENDED FOR LOCAL DISK**]): Executes the same calibration steps but writes outputs directly as Cloud-Optimized GeoTIFFs (`.tif`) utilizing DEFLATE compression. 
     > [!TIP]
-    > **Why the COG version is preferred:**
+    > **Why the COG version is preferred for local repositories:**
     > 1. **Massive Disk Space Savings**: Uses up to 5x less disk space compared to uncompressed raw BEAM-DIMAP files.
     > 2. **Cloud/Network Optimization**: Supports HTTP range requests, making it highly optimized for remote storage, virtual file systems, and cloud deployments.
     > 3. **Reduced I/O Bottlenecks**: Faster reading/writing during downstream coregistration and clipping steps.
-* **Prerequisites & Config**: Requires SNAP GPT executable path and environment variables (`SNAP_GPT_EXE`, `S1_REPO_PATH`, `AIML_WORKING_DIR`, `AIML_AUX_DIR`) set in the active terminal.
+  - **CDSE Calibration & Downloader (On-Demand Remote Downloads)** (`1c_slice_calibration_cdse.py` [**FOR USERS WITHOUT LOCAL REPO**]): Performs standard calibration, but automatically **discovers, downloads, and extracts the required Sentinel-1 raw ZIP files directly from the Copernicus Data Space Ecosystem (CDSE)**. It caches downloaded SAFE folders in `workingDir/S1_downloads` for future runs, making it ideal for systems without local rclone mounts.
+* **Prerequisites & Config**: 
+  - For local runs: Requires SNAP GPT executable path and environment variables (`SNAP_GPT_EXE`, `S1_REPO_PATH`, `AIML_WORKING_DIR`, `AIML_AUX_DIR`).
+  - For CDSE downloader (`1c_slice_calibration_cdse.py`): Also requires `CDSE_USERNAME` and `CDSE_PASSWORD` environment variables set in your shell (e.g. by configuring them in `tools/set_env.bat` or `tools/set_env.sh`).
 * **Launch Command**:
   ```bash
-  # Standard Calibration (BEAM-DIMAP outputs):
+  # Standard Calibration (BEAM-DIMAP outputs from local repository):
   python 1_Sentinel-1_preprocessor/1a_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -c PL
 
-  # Cloud-Optimized GeoTIFF (COG) Calibration (Preferred):
+  # Cloud-Optimized GeoTIFF (COG) Calibration (Preferred local run):
   python 1_Sentinel-1_preprocessor/1b_slice_calibration_cog.py -s 2024-10-15 -e 2024-11-30 -c PL
+
+  # Copernicus Data Space Ecosystem (CDSE) Calibration & Downloader:
+  python 1_Sentinel-1_preprocessor/1c_slice_calibration_cdse.py -s 2024-10-15 -e 2024-11-30 -c PL
   ```
+  *Command arguments:*
+  - `-s` : Start date (`YYYY-MM-DD`)
+  - `-e` : End date (`YYYY-MM-DD`)
+  - `-c` : 2-letter NUTS0 country code (e.g. `PL` for Poland)
+  - `-d` : (Optional for CDSE) Custom download directory path to cache SAFE files. Defaults to `workingDir/S1_downloads`.
+
 * **Produced Outputs**:
   - Calibrated daily SAR scenes saved in: `workingDir/{COUNTRY}/orbit_{ORBIT}/slice_assembly/` as `.dim` / `.data` pairs (or `.tif` for COG).
+  - (For CDSE) Cached raw S1 products in `workingDir/S1_downloads/`.
 
 ---
 
@@ -369,6 +401,9 @@ This guide details each script in the pipeline, explaining its functionality, re
   ```bash
   python 1_Sentinel-1_preprocessor/2_coregistration.py -t PL/orbit_12 PL/orbit_88
   ```
+  *Command arguments:*
+  - `-t` : Space-separated list of tracks/orbits to process (format: `{COUNTRY}/orbit_{NUMBER}`).
+
 * **Produced Outputs**:
   - Aligned time-series stack saved to: `workingDir/{COUNTRY}/orbit_{ORBIT}/coregistration/` (as `.dim` and `.data` folders).
 
@@ -452,3 +487,26 @@ SNAP can consume huge amounts of RAM. If you face Java Heap Space/OOM crashes:
 During step 3/4, SNAP will attempt to download Precise Orbit files. If this fails due to ESA server downtimes:
 - Ensure you have an internet connection.
 - In SNAP's `Apply-Orbit-File` XML node, the code sets `continueOnFail` to `true`, which allows processing to continue with lower precision orbit files if the precise files are unavailable.
+
+---
+
+## How to Cite
+
+If you use this software in your research, publications, reports, or any derivative work, you are required under the Apache 2.0 license terms to acknowledge and cite the authors.
+
+**APA Format:**
+> Slesinski, P., Kotulak, N., Roos, M., Mróz, M. (2025). Sentinel-1 OBIA Crop Type Mapping Pipeline (v2.0). AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics. European Commission / Eurostat. Available at: https://github.com/AIML4OS/WP7-Crop-type-mapping
+
+**BibTeX:**
+```bibtex
+@software{slesinski2025obia,
+  author       = {Slesinski, Przemyslaw and Kotulak, Natalia and Roos, Marko and Mróz, Marek},
+  title        = {Sentinel-1 OBIA Crop Type Mapping Pipeline},
+  version      = {2.0.0},
+  year         = {2025},
+  url          = {https://github.com/AIML4OS/WP7-Crop-type-mapping},
+  organization = {AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics, Eurostat, European Commission}
+}
+```
+
+For more detailed citation metadata, please refer to the [`CITATION.cff`](CITATION.cff) file included in this repository.
