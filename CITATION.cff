@@ -49,6 +49,47 @@ authors:
     email: "magdalena.mleczko@uwm.edu.pl"
     affiliation: "University of Warmia and Mazury in Olsztyn"
 
+  - family-names: "Gabriel"
+    given-names: "Cristina"
+    email: "cristina.gabriel@ine.pt"
+    affiliation: "Statistics Portugal"
+
+  - family-names: "Hofer"
+    given-names: "Nina"
+    email: "Nina.Hofer@statistik.gv.at"
+    affiliation: "Statistics Austria"
+
+  - family-names: "Belton"
+    given-names: "Sam"
+    email: "sam.belton@cso.ie"
+    affiliation: "Central Statistics Office, Ireland"
+
+  - family-names: "Logakrishnan"
+    given-names: "Mohana"
+    email: "mohana.logakrishnan@cso.ie"
+    affiliation: "Central Statistics Office, Ireland"
+
+  - family-names: "Kästenbauer"
+    given-names: "Mathias"
+    email: "Mathias.Kaestenbauer@statistik.gv.at"
+    affiliation: "Statistics Austria"
+
+  - family-names: "Martins"
+    given-names: "Carla"
+    email: "Carla.MARTINS@ec.europa.eu"
+    affiliation: "Eurostat, European Commission"
+
+  - family-names: "Pallister"
+    given-names: "Ivana I. L. M."
+    email: "ilm.pallister@cbs.nl"
+    affiliation: "Statistics Netherlands"
+
+  - family-names: "Gonçalves"
+    given-names: "Isabel"
+    email: "isabel.goncalves@ine.pt"
+    affiliation: "Statistics Portugal"
+
+
 
 keywords:
   - "Sentinel-1"

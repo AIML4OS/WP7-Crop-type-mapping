@@ -529,12 +529,12 @@ During step 3/4, SNAP will attempt to download Precise Orbit files. If this fail
 If you use this software in your research, publications, reports, or any derivative work, you are required under the Apache 2.0 license terms to acknowledge and cite the authors.
 
 **APA Format:**
-> Slesinski, P., Kotulak, N., Roos, M., Mróz, M., Mleczko, M. (2025). Sentinel-1 OBIA Crop Type Mapping Pipeline (v2.0). [AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics](https://cros.ec.europa.eu/dashboard/aiml4os). European Commission / Eurostat. Available at: https://github.com/AIML4OS/WP7-Crop-type-mapping
+> Slesinski, P., Kotulak, N., Roos, M., Mróz, M., Mleczko, M., Gabriel, C., Hofer, N., Belton, S., Logakrishnan, M., Kästenbauer, M., Martins, C., Pallister, I. L. M., Gonçalves, I. (2025). Sentinel-1 OBIA Crop Type Mapping Pipeline (v2.0). [AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics](https://cros.ec.europa.eu/dashboard/aiml4os). European Commission / Eurostat. Available at: https://github.com/AIML4OS/WP7-Crop-type-mapping
 
 **BibTeX:**
 ```bibtex
 @software{slesinski2025obia,
-  author       = {Slesinski, Przemyslaw and Kotulak, Natalia and Roos, Marko and Mróz, Marek and Mleczko, Magdalena},
+  author       = {Slesinski, Przemyslaw and Kotulak, Natalia and Roos, Marko and Mróz, Marek and Mleczko, Magdalena and Gabriel, Cristina and Hofer, Nina and Belton, Sam and Logakrishnan, Mohana and Kästenbauer, Mathias and Martins, Carla and Pallister, Ivana I. L. M. and Gonçalves, Isabel},
   title        = {Sentinel-1 OBIA Crop Type Mapping Pipeline},
   version      = {2.0.0},
   year         = {2025},
