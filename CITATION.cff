@@ -61,6 +61,7 @@ authors:
 
   - family-names: "Belton"
     given-names: "Sam"
+    name-particle: "dr"
     email: "sam.belton@cso.ie"
     affiliation: "Central Statistics Office, Ireland"
 
