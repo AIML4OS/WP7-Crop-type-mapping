@@ -39,13 +39,13 @@ authors:
 
   - family-names: "Mróz"
     given-names: "Marek"
-    name-particle: "prof. dr hab. inż."
+    name-particle: "Prof. Dr. Hab. Eng."
     email: "marek.mroz@uwm.edu.pl"
     affiliation: "University of Warmia and Mazury in Olsztyn"
 
   - family-names: "Mleczko"
     given-names: "Magdalena"
-    name-particle: "dr inż."
+    name-particle: "Dr. Eng."
     email: "magdalena.mleczko@uwm.edu.pl"
     affiliation: "University of Warmia and Mazury in Olsztyn"
 
@@ -61,7 +61,7 @@ authors:
 
   - family-names: "Belton"
     given-names: "Sam"
-    name-particle: "dr"
+    name-particle: "Dr."
     email: "sam.belton@cso.ie"
     affiliation: "Central Statistics Office, Ireland"
 
