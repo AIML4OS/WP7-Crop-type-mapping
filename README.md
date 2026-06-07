@@ -23,22 +23,22 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
 6. [Segment Anything (SAM) model setup and parameters](#segment-anything-sam-model-setup--parameters)
 7. [NASA-IBM Prithvi-SAR model setup and parameters](#nasa-ibm-prithvi-sar-model-setup--parameters)
 8. [Step-by-step execution guide](#step-by-step-execution-guide)
-   - [Step 1: Download NUTS2 boundaries](#step-1-download-nuts2-boundaries)
-   - [Step 2: Prepare Copernicus HRL crop mask](#step-2-prepare-copernicus-hrl-crop-mask)
-   - [Step 3: SAR slice calibration and assembly](#step-3-sar-slice-calibration--assembly)
-   - [Step 4: Stack coregistration](#step-4-stack-coregistration)
-   - [Step 5: Stack clipping](#step-5-stack-clipping)
+   - [Step 1: NUTS2 boundary database builder](#step-1-nuts2-boundary-database-builder)
+   - [Step 2: Crop mask preparation](#step-2-crop-mask-preparation)
+   - [Step 3: Sentinel-1 slice calibration and assembly](#step-3-sentinel-1-slice-calibration-and-assembly)
+   - [Step 4: Multi-temporal stack coregistration](#step-4-multi-temporal-stack-coregistration)
+   - [Step 5: Stack spatial clipping](#step-5-stack-spatial-clipping)
    - [Step 6: Object-based classification](#step-6-object-based-classification)
-   - [Step 7: Merge country classification](#step-7-merge-country-classification)
+   - [Step 7: Classification merge](#step-7-classification-merge)
 8. [Troubleshooting and performance tuning](#troubleshooting--performance-tuning)
 
 ---
 
 ## Overview for non-experts
 Processing radar satellite data (Sentinel-1) usually involves many complicated manual steps. This toolbox automates the entire process:
-1. **Calibration and Slicing**: Converts raw radar backscatter signals (recorded as `.SAFE` directories) into physically meaningful values, merges slices of the same day, and clips them to your country's bounding box.
+1. **Calibration and slicing**: Converts raw radar backscatter signals (recorded as `.SAFE` directories) into physically meaningful values, merges slices of the same day, and clips them to your country's bounding box.
 2. **Coregistration**: Aligns a time-series stack of images taken over several weeks/months so that pixels from different dates match perfectly.
-3. **Segmentation and Classification**: Groups similar pixels into "fields" (objects) using image segmentation, calculates stats (mean backscatter values over time), trains a machine learning model, and classifies what crop is growing in each field.
+3. **Segmentation and classification**: Groups similar pixels into "fields" (objects) using image segmentation, calculates stats (mean backscatter values over time), trains a machine learning model, and classifies what crop is growing in each field.
 
 ---
 
@@ -53,10 +53,10 @@ Processing radar satellite data (Sentinel-1) usually involves many complicated m
      > Miniforge uses `mamba` under the hood, which is significantly faster than the standard `conda` solver, especially on Windows when resolving complex geospatial dependencies like GDAL. We strongly recommend using the `mamba` command.
      > [!IMPORTANT]
      > The pipeline requires standard Python libraries for processing geospatial data, machine learning, and report generation:
-     > - **Geospatial Processing**: `gdal`, `geopandas`, `rasterio`, `numpy` (for grid manipulation), and `pyogrio` (for accelerated vector database reading).
-     > - **Machine Learning**: `scikit-learn` (for MLP ANN classifier).
-     > - **Report and Data Handling**: `pandas`, `openpyxl` (for writing Excel metric reports), and `joblib` (for model saving/loading).
-     > - **Image Processing**: `scikit-image` (required for Felzenszwalb, SLIC, and Multi-Resolution segmentation).
+     > - **Geospatial processing**: `gdal`, `geopandas`, `rasterio`, `numpy` (for grid manipulation), and `pyogrio` (for accelerated vector database reading).
+     > - **Machine learning**: `scikit-learn` (for MLP ANN classifier).
+     > - **Report and data handling**: `pandas`, `openpyxl` (for writing Excel metric reports), and `joblib` (for model saving/loading).
+     > - **Image processing**: `scikit-image` (required for Felzenszwalb, SLIC, and Multi-Resolution segmentation).
      
      **If you do NOT have an NVIDIA GPU (Standard CPU Setup):**
      ```bash
@@ -348,7 +348,7 @@ To set up a new project on a new computer, establish the following folder hierar
 
 ---
 
-### Step 1: NUTS2 boundary database builder (`download_nuts_shapefiles.py`)
+### Step 1: NUTS2 boundary database builder
 * **Description and Logic**: Automatically downloads the official GISCO Eurostat administrative boundary dataset (1:1 Million high-resolution shapefiles) and extracts boundary polygons for 37 European countries. It builds a local GIS database of national boundaries at the NUTS2 level, which is used for spatial subsetting of the satellite data. It also duplicates boundaries for Greece under both `EL` and `GR` codes to handle standardized data querying.
 * **Prerequisites and Config**: Requires `geopandas` and `pyogrio` python packages. No environment variables are needed.
 * **Launch Command**:
@@ -360,7 +360,7 @@ To set up a new project on a new computer, establish the following folder hierar
 
 ---
 
-### Step 2: Crop mask preparation (`tools/build_agri_mask.py`)
+### Step 2: Crop mask preparation
 * **Description and Logic**: Mosaics and clips the Copernicus High Resolution Layer (HRL) Crop Type raster files to the exact boundary of the target country. It aligns the final raster to the Web Mercator projection (`EPSG:3857`) at a 10-meter resolution grid. Non-agricultural pixels are masked out to focus object segmentation and neural network predictions strictly on active croplands.
 * **Prerequisites and Config**: The HRL ZIP files must be manually downloaded from the Copernicus CLMS portal and placed in `auxiliary_files/raster_files/AgriMasks/{COUNTRY}/Results/` (e.g. `PL/Results/`).
 * **Launch Command**:
@@ -381,7 +381,7 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 
 ---
 
-### Step 3: Sentinel-1 slice calibration and assembly (`1_Sentinel-1_preprocessor/1a_slice_calibration.py` / `1b_slice_calibration_cog.py` [PREFERRED] / `1c_slice_calibration_cdse.py`)
+### Step 3: Sentinel-1 slice calibration and assembly
 * **Description and Logic**: Scans available Sentinel-1 spatial geometries and solves a Set Cover mathematical optimization problem (`CountryOrbitOptimizer` / `CDSECountryOrbitOptimizer`) to find the minimal set of relative orbits required to fully cover the country's geometry. For each orbit, it runs SNAP's Graph Processing Tool (`gpt.exe`) to perform calibration.
 * **Calibration Alternatives**:
   - **Standard calibration (local Y: drive)** (`1a_slice_calibration.py`): Scans the local directory, performs radiometric calibration, orbit application, thermal noise removal, terrain correction, and slice assembly, saving intermediate and final outputs as raw SNAP `.dim` / `.data` BEAM-DIMAP pairs.
@@ -418,7 +418,7 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 
 ---
 
-### Step 4: Multi-temporal stack coregistration (`1_Sentinel-1_preprocessor/2_coregistration.py`)
+### Step 4: Multi-temporal stack coregistration
 * **Description and Logic**: Aligns the multi-temporal time-series of assembled Sentinel-1 scenes for each orbit. It dynamically parses the band ordering (VH/VV) from the `.dim` XML files, sorts the dates chronologically, and registers all dates to a common master scene. It then applies a multi-temporal Lee Sigma speckle filter to suppress radar noise while preserving field boundaries.
 * **Prerequisites and Config**: Requires calibrated outputs from Step 3.
 * **Launch Command**:
@@ -433,7 +433,7 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 
 ---
 
-### Step 5: Stack spatial clipping (`1_Sentinel-1_preprocessor/3_stack_clip.py`)
+### Step 5: Stack spatial clipping
 * **Description and Logic**: Converts the coregistered time-series SNAP stacks into standard multiband GeoTIFF format and clips them to the exact NUTS2 country boundary shapefile. It executes warping and DEFLATE compression in parallel across all CPU cores (`NUM_THREADS=ALL_CPUS`) and automatically builds overview pyramids (`BuildOverviews`) for instant visual rendering in QGIS.
 * **Prerequisites and Config**: Requires NUTS2 shapefiles (from Step 1) and coregistered stacks (from Step 4).
 * **Launch Command**:
@@ -445,7 +445,7 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 
 ---
 
-### Step 6: Object-based classification (`2_classifier/` scripts)
+### Step 6: Object-based classification
 * **Description and Logic**: Splits the clipped image stack into homogeneous agricultural parcel objects, extracts statistical or deep learning features for each object over the Sentinel-1 timeline, trains a machine learning or deep learning classifier, and performs tiled prediction across the entire track.
 * **Algorithm Options**:
   - **Option A (Felzenszwalb ANN)** - `1_classify_ann.py`: Performs Felzenszwalb segmentation on CPU. Extracts zonal statistics (mean backscatter, standard deviation, and temporal ratios) per parcel object to train a scikit-learn MLP Classifier.
@@ -488,7 +488,7 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 
 ---
 
-### Step 7: Classification merge (`2_classifier/2_merge_classifications.py`)
+### Step 7: Classification merge
 * **Description and Logic**: Mosaics and merges the classification results from all individual orbits into a single country-wide map. For overlapping zones between different orbits, the script compares confidence scores at the pixel level and selects the prediction with the **highest confidence score**. Finally, it applies a morphological **sieve filter** to dissolve small isolated pixels (slivers) and validates the merged dataset against validation points (`control.shp`).
 * **Prerequisites and Config**: Requires masked rasters and `control.shp` from Step 6.
 * **Launch Command**:
