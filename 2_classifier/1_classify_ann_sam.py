@@ -1351,6 +1351,7 @@ class ProcessingPipeline:
 
         print(f"[Stage {stage}/{self.total_stages}] Training ANN...")
 
+        df = pd.read_csv(self.sel_csv)
         feat_cols = [c for c in df.columns if c not in ['crop_id', 'seg_id']]
         self.feat_cols = feat_cols
 
