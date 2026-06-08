@@ -9,3 +9,4 @@ __pycache__/
 .idea/
 2_classifier/*.pth
 scratch/
+scratch/SATMIROL/
