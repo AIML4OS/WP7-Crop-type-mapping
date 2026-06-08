@@ -101,6 +101,17 @@ def _calculate_class_weights(y_data, all_classes):
             
     return weight_vector
 
+# Crop aggregation mapping for the Netherlands (NL) to reduce semantic confusion
+CROP_AGGREGATION_NL = {
+    2: 5,   # Clover -> Grassland
+    7: 5,   # Lucerne -> Grassland
+    10: 20, # Oats -> Winter Wheat (Cereals)
+    16: 20, # Summer Barley -> Winter Wheat (Cereals)
+    17: 20, # Summer Wheat -> Winter Wheat (Cereals)
+    18: 20, # Triticale -> Winter Wheat (Cereals)
+    19: 20, # Winter Barley -> Winter Wheat (Cereals)
+}
+
 class TorchMLPClassifier:
     def __init__(self, hidden_layer_sizes=(512, 256, 128), max_iter=120, batch_size=256, lr=0.001, class_weights=None, all_classes=None):
         self.hidden_layer_sizes = hidden_layer_sizes
@@ -1360,6 +1371,11 @@ class ProcessingPipeline:
         X = df[feat_cols].values
         y = df['crop_id'].values
 
+        # Apply crop aggregation for NL if country is NL
+        if self.country == 'NL':
+            print("    Applying crop aggregation for Netherlands to reduce semantic confusion...")
+            y = np.array([CROP_AGGREGATION_NL.get(val, val) for val in y])
+
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
@@ -1412,9 +1428,12 @@ class ProcessingPipeline:
         scaler = data['scaler']
         feat_cols = data['feats']
 
-        # Calculate priors from training samples
+        # Calculate priors from training samples (with crop aggregation if NL)
         df_train = pd.read_csv(self.sel_csv)
-        counts = df_train['crop_id'].value_counts()
+        y_train = df_train['crop_id'].values
+        if self.country == 'NL':
+            y_train = np.array([CROP_AGGREGATION_NL.get(val, val) for val in y_train])
+        counts = pd.Series(y_train).value_counts()
         total = counts.sum()
         priors_dict = {cid: cnt / total for cid, cnt in counts.items()}
         priors_arr = np.array([priors_dict.get(c, 1e-5) for c in clf.classes_])
@@ -1638,6 +1657,11 @@ class ProcessingPipeline:
             pxs = (inv[0] + inv[1] * xs + inv[2] * ys).astype(int)
             pys = (inv[3] + inv[4] * xs + inv[5] * ys).astype(int)
             crop_ids = ctrl['crop_id'].values
+
+            # Apply crop aggregation for NL
+            if self.country == 'NL':
+                print("    Applying crop aggregation for Netherlands validation labels...")
+                crop_ids = np.array([CROP_AGGREGATION_NL.get(val, val) for val in crop_ids])
 
             for px, py, crop_id in zip(pxs, pys, crop_ids):
                 try:
