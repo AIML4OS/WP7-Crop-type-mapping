@@ -113,6 +113,141 @@ CROP_AGGREGATION_NL = {
     19: 20, # Winter Barley -> Winter Wheat (Cereals)
 }
 
+def _get_priors_for_country(country, learn_shp_path, classes, class_counts, total_samples, priors_file_override=None):
+    # Try custom JSON override first
+    if priors_file_override and os.path.exists(priors_file_override):
+        try:
+            import json
+            with open(priors_file_override, 'r') as f:
+                custom_priors = json.load(f)
+            p_true = np.array([float(custom_priors.get(str(c), custom_priors.get(int(c), 1e-5))) for c in classes])
+            p_true = p_true / np.sum(p_true)
+            print(f"    Loaded custom priors from {priors_file_override}")
+            return p_true
+        except Exception as e:
+            print(f"    [WARNING] Failed to load custom priors file: {e}")
+
+    # Check for general priors_<country>.json in track folder
+    if learn_shp_path:
+        track_dir = Path(learn_shp_path).parent.parent
+        custom_file = track_dir / f"priors_{country}.json"
+        if not custom_file.exists():
+            custom_file = track_dir / "priors.json"
+        if custom_file.exists():
+            try:
+                import json
+                with open(custom_file, 'r') as f:
+                    custom_priors = json.load(f)
+                p_true = np.array([float(custom_priors.get(str(c), custom_priors.get(int(c), 1e-5))) for c in classes])
+                p_true = p_true / np.sum(p_true)
+                print(f"    Loaded custom priors from {custom_file}")
+                return p_true
+            except Exception as e:
+                print(f"    [WARNING] Failed to load custom priors: {e}")
+
+    # NL specific priors
+    if country == 'NL':
+        real_priors_nl = {
+            1: 0.0030, 2: 0.0015, 3: 0.0775, 4: 0.0057, 5: 0.7214,
+            6: 0.0033, 7: 0.0056, 8: 0.0847, 9: 0.0060, 10: 0.0007,
+            11: 0.0073, 12: 0.0087, 13: 0.0255, 14: 0.0023, 15: 0.0149,
+            16: 0.0058, 17: 0.0044, 18: 0.0006, 19: 0.0034, 20: 0.0178
+        }
+        # Aggregate to match the model's classes (which might be aggregated)
+        aggregated_priors = {}
+        for cid, val in real_priors_nl.items():
+            mapped_cid = CROP_AGGREGATION_NL.get(cid, cid)
+            aggregated_priors[mapped_cid] = aggregated_priors.get(mapped_cid, 0.0) + val
+        p_true = np.array([aggregated_priors.get(c, 1e-5) for c in classes])
+        p_true = p_true / np.sum(p_true)
+        return p_true
+
+    # PL & any other country - dynamic estimation using keyword-based field sizes
+    id_to_name = {}
+    if learn_shp_path and os.path.exists(learn_shp_path):
+        try:
+            import geopandas as gpd
+            gdf = gpd.read_file(str(learn_shp_path), engine="pyogrio")
+            if 'crop_id' in gdf.columns and 'crop_name' in gdf.columns:
+                id_to_name = dict(zip(gdf['crop_id'].astype(int), gdf['crop_name'].astype(str)))
+        except Exception as e:
+            print(f"    [WARNING] Could not read crop names from shapefile: {e}")
+
+    # Area threshold keyword matcher
+    def get_area_multiplier(cid):
+        name = id_to_name.get(cid, '').lower()
+        if not name:
+            # Fallback to standard 37 classes PL hardcoded values if crop_id maps to them (1 to 37)
+            area_thresholds_pl = {
+                1: 3000, 2: 5000, 3: 5000, 4: 40000, 5: 5000, 6: 10000, 7: 5000, 8: 30000, 9: 15000,
+                10: 20000, 11: 30000, 12: 40000, 13: 5000, 14: 70000, 15: 2000, 16: 30000, 17: 5000,
+                18: 3000, 19: 40000, 20: 2000, 21: 40000, 22: 2000, 23: 10000, 24: 25000, 25: 70000,
+                26: 10000, 27: 50000, 28: 2000, 29: 60000, 30: 3000, 31: 15000, 32: 70000, 33: 5000,
+                34: 3000, 35: 5000, 36: 20000, 37: 40000
+            }
+            return area_thresholds_pl.get(cid, 10000)
+            
+        # Large field crops (~40k - 100k m2)
+        if any(k in name for k in ['grass', 'tiuz', 'grassland', 'pasture', 'trawa', 'trawiast', 'blijvend', 'tijdelijk', 'permanent', 'clover', 'klaver', 'lucerne', 'luzerne']):
+            return 70000
+        if any(k in name for k in ['maize', 'mais', 'kukurydza', 'corn']):
+            return 70000
+        if any(k in name for k in ['wheat', 'pszenica', 'tarwe']):
+            return 70000
+        if any(k in name for k in ['barley', 'jeczmien', 'gerst']):
+            return 40000
+        if any(k in name for k in ['rye', 'zyto', 'rogge']):
+            return 40000
+        if any(k in name for k in ['triticale', 'pszenzyto', 'koorn']):
+            return 50000
+        if any(k in name for k in ['oats', 'owies', 'haver']):
+            return 40000
+        if any(k in name for k in ['rapeseed', 'rzepak', 'koolzaad']):
+            return 60000
+        if any(k in name for k in ['sugar beet', 'burak', 'suikerbiet']):
+            return 40000
+        if any(k in name for k in ['fallow', 'braak', 'ugor']):
+            return 40000
+            
+        # Medium/small (~10k - 30k m2)
+        if any(k in name for k in ['potato', 'ziemniak', 'aardappel']):
+            return 20000
+        if any(k in name for k in ['orchard', 'fruit', 'sad', 'appel', 'peer', 'jablon', 'sliwa', 'wisnia']):
+            return 20000
+        if any(k in name for k in ['pea', 'groch', 'erwt']):
+            return 30000
+        if any(k in name for k in ['bean', 'fasola', 'boon']):
+            return 10000
+        if any(k in name for k in ['aronia', 'blueberry', 'borowka', 'currant', 'porzeczka', 'bessen']):
+            return 10000
+        if any(k in name for k in ['nursery', 'ornamental', 'szkolka', 'sier', 'boomkwekerij']):
+            return 10000
+            
+        # Small / vegetable crops (<10k m2)
+        if any(k in name for k in ['onion', 'cebula', 'ui']):
+            return 5000
+        if any(k in name for k in ['strawberry', 'truskawka', 'aardbei']):
+            return 5000
+        if any(k in name for k in ['cabbage', 'brassica', 'kapusta', 'kool']):
+            return 5000
+        if any(k in name for k in ['carrot', 'marchew', 'peen']):
+            return 3000
+        if any(k in name for k in ['tomato', 'pomidor', 'tomaat']):
+            return 2000
+        if any(k in name for k in ['cucumber', 'ogorek', 'komkommer']):
+            return 2000
+        if any(k in name for k in ['tobacco', 'tyton', 'tabak']):
+            return 3000
+        if any(k in name for k in ['raspberry', 'blackberry', 'malina', 'jezyna', 'framboos']):
+            return 5000
+        return 10000
+
+    area_multipliers = np.array([get_area_multiplier(c) for c in classes])
+    counts_arr = np.array([class_counts.get(c, 0) for c in classes])
+    true_area_dist = counts_arr * area_multipliers
+    p_true = true_area_dist / (np.sum(true_area_dist) + 1e-9)
+    return p_true
+
 class TorchMLPClassifier:
     def __init__(self, hidden_layer_sizes=(512, 256, 128), max_iter=120, batch_size=256, lr=0.001, class_weights=None, all_classes=None):
         self.hidden_layer_sizes = hidden_layer_sizes
@@ -1186,11 +1321,32 @@ class ProcessingPipeline:
         y_train = df_train['crop_id'].values
         if self.country == 'NL':
             y_train = np.array([CROP_AGGREGATION_NL.get(val, val) for val in y_train])
-        counts = pd.Series(y_train).value_counts()
-        total = counts.sum()
-        priors_dict = {cid: cnt / total for cid, cnt in counts.items()}
-        priors_arr = np.array([priors_dict.get(c, 1e-5) for c in clf.classes_])
-        priors_arr = priors_arr / np.sum(priors_arr)
+            
+        classes = clf.classes_
+        n_classes = len(classes)
+        total_samples = len(y_train)
+        class_counts = pd.Series(y_train).value_counts()
+        
+        # Calculate true prior probabilities P_true
+        p_true = _get_priors_for_country(
+            country=self.country,
+            learn_shp_path=self.learn_shp,
+            classes=classes,
+            class_counts=class_counts,
+            total_samples=total_samples
+        )
+        
+        # Calculate training bias P_train introduced by class weights:
+        # weight = sqrt(total / (n_classes * count))
+        train_bias = np.array([math.sqrt(total_samples / (n_classes * class_counts.get(c, 1))) for c in classes])
+        p_train = train_bias / np.sum(train_bias)
+        
+        # Exact Bayesian correction factor: P_true / P_train
+        correction = p_true / (p_train + 1e-9)
+        
+        # Apply SATMIROL power smoothing factor (0.7) to prevent over-correction
+        correction = np.power(correction, 0.7)
+        priors_arr = correction / np.sum(correction)
 
         ds_stack_info = gdal.Open(str(self.ras))
         cols = ds_stack_info.RasterXSize
@@ -1450,6 +1606,35 @@ class ProcessingPipeline:
             else:
                 areas = [{'Class': c, 'Area_ha': 0} for c in labels]
 
+            # Calculate weighted overall accuracy
+            weighted_oa = None
+            try:
+                df_train = pd.read_csv(self.sel_csv)
+                y_train = df_train['crop_id'].values
+                if self.country == 'NL':
+                    y_train = np.array([CROP_AGGREGATION_NL.get(val, val) for val in y_train])
+                
+                train_classes = sorted(list(set(y_train)))
+                train_class_counts = pd.Series(y_train).value_counts()
+                train_total_samples = len(y_train)
+                
+                p_true_all = _get_priors_for_country(
+                    country=self.country,
+                    learn_shp_path=self.learn_shp,
+                    classes=train_classes,
+                    class_counts=train_class_counts,
+                    total_samples=train_total_samples
+                )
+                p_true_dict = dict(zip(train_classes, p_true_all))
+                
+                active_priors = np.array([p_true_dict.get(lbl, 1e-5) for lbl in labels])
+                active_priors = active_priors / np.sum(active_priors)
+                
+                weighted_oa = np.sum(active_priors * recalls)
+                print(f"    Weighted Overall Accuracy ({self.country} Area-Adjusted): {weighted_oa:.4f}")
+            except Exception as e:
+                print(f"    [WARNING] Could not compute Weighted Overall Accuracy: {e}")
+
             wb = openpyxl.Workbook()
             sh = wb.active
             sh.title = 'Results'
@@ -1469,7 +1654,12 @@ class ProcessingPipeline:
             sh.cell(row=base + 1, column=1, value='Kappa').font = Font(bold=True)
             sh.cell(row=base + 1, column=2, value=round(kappa, 4))
 
-            start = base + 3
+            if weighted_oa is not None:
+                sh.cell(row=base + 2, column=1, value='Weighted Overall Accuracy').font = Font(bold=True)
+                sh.cell(row=base + 2, column=2, value=round(weighted_oa, 4))
+                start = base + 4
+            else:
+                start = base + 3
             headers = ['Class', 'Producer Acc (Recall)', 'User Acc (Precision)', 'F1-score']
             for j, h in enumerate(headers, start=1):
                 sh.cell(row=start, column=j, value=h).font = Font(bold=True)
