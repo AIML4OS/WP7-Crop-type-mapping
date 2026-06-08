@@ -106,11 +106,6 @@ def _calculate_class_weights(y_data, all_classes):
 CROP_AGGREGATION_NL = {
     2: 5,   # Clover -> Grassland
     7: 5,   # Lucerne -> Grassland
-    10: 20, # Oats -> Winter Wheat (Cereals)
-    16: 20, # Summer Barley -> Winter Wheat (Cereals)
-    17: 20, # Summer Wheat -> Winter Wheat (Cereals)
-    18: 20, # Triticale -> Winter Wheat (Cereals)
-    19: 20, # Winter Barley -> Winter Wheat (Cereals)
 }
 
 def _get_priors_for_country(country, learn_shp_path, classes, class_counts, total_samples, priors_file_override=None):
