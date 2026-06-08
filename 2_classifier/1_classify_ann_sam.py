@@ -10,8 +10,7 @@ import numpy as np
 import pandas as pd
 from osgeo import gdal, ogr, osr, gdalconst
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
-from sklearn.neural_network import MLPClassifier
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.utils import resample
 import joblib
 import openpyxl
@@ -19,6 +18,212 @@ from openpyxl.styles import Font
 
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import math
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+
+# Limit PyTorch to 1 thread to prevent thread explosion / CPU thrashing when run inside ThreadPoolExecutor
+torch.set_num_threads(1)
+
+def compute_210_features_dict(mean_matrix, std_matrix, nbands=44):
+    n_dates = nbands // 2
+    
+    # Split into VH and VV
+    mean_vh = mean_matrix[:, 0:n_dates]
+    mean_vv = mean_matrix[:, n_dates:2*n_dates]
+    std_vh = std_matrix[:, 0:n_dates]
+    std_vv = std_matrix[:, n_dates:2*n_dates]
+    
+    # Convert to linear scale
+    lin_vh = 10.0 ** (mean_vh / 10.0)
+    lin_vv = 10.0 ** (mean_vv / 10.0)
+    
+    # Polarization ratio & NDPI
+    pr = lin_vv / (lin_vh + 1e-5)
+    ndpi = (lin_vv - lin_vh) / (lin_vv + lin_vh + 1e-5)
+    
+    feature_data = {}
+    
+    # 1. Raw band features
+    for b in range(nbands):
+        feature_data[f'meanB{b}'] = mean_matrix[:, b]
+        feature_data[f'stdB{b}'] = std_matrix[:, b]
+        
+    # 2. Polarization ratios and NDPI
+    for t in range(n_dates):
+        feature_data[f'ratioB{t}'] = pr[:, t]
+        feature_data[f'ndpiB{t}'] = ndpi[:, t]
+        
+    # 3. Temporal statistics
+    # VH
+    feature_data['vh_temp_mean'] = np.mean(mean_vh, axis=1)
+    feature_data['vh_temp_std'] = np.std(mean_vh, axis=1)
+    feature_data['vh_temp_min'] = np.min(mean_vh, axis=1)
+    feature_data['vh_temp_max'] = np.max(mean_vh, axis=1)
+    feature_data['vh_temp_range'] = feature_data['vh_temp_max'] - feature_data['vh_temp_min']
+    
+    # VV
+    feature_data['vv_temp_mean'] = np.mean(mean_vv, axis=1)
+    feature_data['vv_temp_std'] = np.std(mean_vv, axis=1)
+    feature_data['vv_temp_min'] = np.min(mean_vv, axis=1)
+    feature_data['vv_temp_max'] = np.max(mean_vv, axis=1)
+    feature_data['vv_temp_range'] = feature_data['vv_temp_max'] - feature_data['vv_temp_min']
+    
+    # NDPI
+    feature_data['ndpi_temp_mean'] = np.mean(ndpi, axis=1)
+    feature_data['ndpi_temp_std'] = np.std(ndpi, axis=1)
+    feature_data['ndpi_temp_min'] = np.min(ndpi, axis=1)
+    feature_data['ndpi_temp_max'] = np.max(ndpi, axis=1)
+    feature_data['ndpi_temp_range'] = feature_data['ndpi_temp_max'] - feature_data['ndpi_temp_min']
+    
+    # 4. Consecutive temporal differences
+    for t in range(n_dates - 1):
+        feature_data[f'diff_vh_B{t}'] = mean_vh[:, t+1] - mean_vh[:, t]
+        feature_data[f'diff_vv_B{t}'] = mean_vv[:, t+1] - mean_vv[:, t]
+        feature_data[f'diff_ndpi_B{t}'] = ndpi[:, t+1] - ndpi[:, t]
+        
+    return feature_data
+
+def _calculate_class_weights(y_data, all_classes):
+    classes_in_data = np.unique(y_data)
+    total_samples = len(y_data)
+    n_classes = len(classes_in_data)
+    weight_vector = np.ones(len(all_classes))
+    
+    for c in classes_in_data:
+        count = np.sum(y_data == c)
+        if count > 0:
+            weight = total_samples / (n_classes * count)
+            idx = np.where(all_classes == c)[0][0]
+            weight_vector[idx] = math.sqrt(weight)
+            
+    return weight_vector
+
+class TorchMLPClassifier:
+    def __init__(self, hidden_layer_sizes=(512, 256, 128), max_iter=120, batch_size=256, lr=0.001, class_weights=None, all_classes=None):
+        self.hidden_layer_sizes = hidden_layer_sizes
+        self.max_iter = max_iter
+        self.batch_size = batch_size
+        self.lr = lr
+        self.class_weights = class_weights
+        self.all_classes = all_classes
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = None
+        self.le = None
+        self.classes_ = None
+        self.input_dim = None
+        self.output_dim = None
+
+    def fit(self, X, y):
+        self.le = LabelEncoder()
+        if self.all_classes is not None:
+            self.le.fit(self.all_classes)
+        else:
+            self.le.fit(y)
+        
+        y_enc = self.le.transform(y)
+        self.classes_ = self.le.classes_
+        
+        self.input_dim = X.shape[1]
+        self.output_dim = len(self.classes_)
+
+        layers = []
+        in_dim = self.input_dim
+        for h_dim in self.hidden_layer_sizes:
+            layers.append(nn.Linear(in_dim, h_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.BatchNorm1d(h_dim))
+            layers.append(nn.Dropout(0.3))
+            in_dim = h_dim
+        layers.append(nn.Linear(in_dim, self.output_dim))
+
+        self.model = nn.Sequential(*layers).to(self.device)
+        
+        if self.class_weights is not None:
+            weights_tensor = torch.tensor(self.class_weights, dtype=torch.float32).to(self.device)
+            criterion = nn.CrossEntropyLoss(weight=weights_tensor)
+        else:
+            criterion = nn.CrossEntropyLoss()
+            
+        optimizer = optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=1e-4)
+
+        X_tensor = torch.tensor(X, dtype=torch.float32)
+        y_tensor = torch.tensor(y_enc, dtype=torch.long)
+
+        dataset = TensorDataset(X_tensor, y_tensor)
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+
+        self.model.train()
+        for epoch in range(self.max_iter):
+            for batch_X, batch_y in loader:
+                batch_X = batch_X.to(self.device)
+                batch_y = batch_y.to(self.device)
+
+                optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+
+        return self
+
+    def predict(self, X):
+        self.model.eval()
+        X_tensor = torch.tensor(X, dtype=torch.float32)
+        dataset = TensorDataset(X_tensor)
+        loader = DataLoader(dataset, batch_size=1024, shuffle=False)
+        predictions = []
+
+        with torch.no_grad():
+            for batch_X in loader:
+                batch_X = batch_X[0].to(self.device)
+                outputs = self.model(batch_X)
+                _, predicted = torch.max(outputs.data, 1)
+                predictions.append(predicted.cpu().numpy())
+
+        return self.le.inverse_transform(np.concatenate(predictions))
+
+    def predict_proba(self, X):
+        self.model.eval()
+        X_tensor = torch.tensor(X, dtype=torch.float32)
+        dataset = TensorDataset(X_tensor)
+        loader = DataLoader(dataset, batch_size=1024, shuffle=False)
+        probabilities = []
+
+        with torch.no_grad():
+            for batch_X in loader:
+                batch_X = batch_X[0].to(self.device)
+                outputs = self.model(batch_X)
+                probs = torch.softmax(outputs, dim=1)
+                probabilities.append(probs.cpu().numpy())
+
+        return np.concatenate(probabilities, axis=0)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if self.model is not None:
+            self.model.cpu()
+            state['model_state_dict'] = self.model.state_dict()
+            state['model'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        if 'model_state_dict' in state and state['model_state_dict'] is not None:
+            layers = []
+            in_dim = self.input_dim
+            for h_dim in self.hidden_layer_sizes:
+                layers.append(nn.Linear(in_dim, h_dim))
+                layers.append(nn.ReLU())
+                layers.append(nn.BatchNorm1d(h_dim))
+                layers.append(nn.Dropout(0.3))
+                in_dim = h_dim
+            layers.append(nn.Linear(in_dim, self.output_dim))
+            self.model = nn.Sequential(*layers)
+            self.model.load_state_dict(state['model_state_dict'])
+            self.model.to(self.device)
 
 # Try importing scikit-image
 try:
@@ -185,11 +390,11 @@ class ProcessingPipeline:
         }
         self.stage4_params = {
             'classifier': 'ann_sklearn',
-            'sk_hidden_sizes': '100,50',
+            'sk_hidden_sizes': '512,256,128',
             'sk_activation': 'relu',
             'sk_solver': 'adam',
             'sk_alpha': 0.0001,
-            'sk_max_iter': 500,
+            'sk_max_iter': 120,
             'balance_threshold': 1000
         }
 
@@ -1123,10 +1328,9 @@ class ProcessingPipeline:
             mean_matrix = np.empty((0, nbands))
             std_matrix = np.empty((0, nbands))
 
-        feature_data = {'crop_id': crop_ids, 'seg_id': seg_ids}
-        for b in range(nbands):
-            feature_data[f'meanB{b}'] = mean_matrix[:, b]
-            feature_data[f'stdB{b}'] = std_matrix[:, b]
+        feature_data = compute_210_features_dict(mean_matrix, std_matrix, nbands=nbands)
+        feature_data['crop_id'] = crop_ids
+        feature_data['seg_id'] = seg_ids
 
         df_final = pd.DataFrame(feature_data)
         df_final.to_csv(self.sel_csv, index=False)
@@ -1147,41 +1351,30 @@ class ProcessingPipeline:
 
         print(f"[Stage {stage}/{self.total_stages}] Training ANN...")
 
-        df = pd.read_csv(self.sel_csv)
-        feat_cols = [c for c in df.columns if c.startswith('meanB') or c.startswith('stdB')]
+        feat_cols = [c for c in df.columns if c not in ['crop_id', 'seg_id']]
         self.feat_cols = feat_cols
 
-        print("    Balancing classes (Capped Oversampling)...")
-        threshold = params.get('balance_threshold', 1000)
-        df_balanced = pd.DataFrame()
-        for crop_id in df['crop_id'].unique():
-            df_class = df[df['crop_id'] == crop_id]
-            count = len(df_class)
+        print(f"    Original samples: {len(df)}")
 
-            if count < threshold:
-                df_resampled = resample(df_class, replace=True, n_samples=threshold, random_state=42)
-                df_balanced = pd.concat([df_balanced, df_resampled])
-            else:
-                df_balanced = pd.concat([df_balanced, df_class])
-
-        print(f"    Original samples: {len(df)}. Balanced samples: {len(df_balanced)}")
-
-        X = df_balanced[feat_cols].values
-        y = df_balanced['crop_id'].values
+        X = df[feat_cols].values
+        y = df['crop_id'].values
 
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
-        hidden_sizes = tuple(map(int, str(params['sk_hidden_sizes']).split(',')))
+        all_classes = np.unique(y)
+        class_weights = _calculate_class_weights(y, all_classes)
 
-        clf = MLPClassifier(
+        hidden_sizes = tuple(map(int, str(params.get('sk_hidden_sizes', '512,256,128')).split(',')))
+        max_iter = params.get('sk_max_iter', 120)
+
+        print(f"    Training TorchMLPClassifier on {X.shape[0]} samples with input dim {X.shape[1]}, hidden sizes {hidden_sizes}...")
+        clf = TorchMLPClassifier(
             hidden_layer_sizes=hidden_sizes,
-            activation=params['sk_activation'],
-            solver=params['sk_solver'],
-            alpha=params['sk_alpha'],
-            max_iter=params['sk_max_iter'],
-            random_state=42,
-            verbose=True
+            max_iter=max_iter,
+            batch_size=256,
+            class_weights=class_weights,
+            all_classes=all_classes
         )
 
         clf.fit(X_scaled, y)
@@ -1217,6 +1410,14 @@ class ProcessingPipeline:
         clf = data['model']
         scaler = data['scaler']
         feat_cols = data['feats']
+
+        # Calculate priors from training samples
+        df_train = pd.read_csv(self.sel_csv)
+        counts = df_train['crop_id'].value_counts()
+        total = counts.sum()
+        priors_dict = {cid: cnt / total for cid, cnt in counts.items()}
+        priors_arr = np.array([priors_dict.get(c, 1e-5) for c in clf.classes_])
+        priors_arr = priors_arr / np.sum(priors_arr)
 
         ds_stack_info = gdal.Open(str(self.ras))
         cols = ds_stack_info.RasterXSize
@@ -1295,19 +1496,23 @@ class ProcessingPipeline:
 
                 stds = np.nan_to_num(stds)
 
-                # Assemble X_tile matching the exact feature columns order
+                # Compute the 210 advanced features using our helper function
+                feature_data = compute_210_features_dict(means, stds, nbands=nbands)
+
                 X_tile = np.zeros((len(unique_ids), len(feat_cols)), dtype=np.float32)
                 for idx, col in enumerate(feat_cols):
-                    if col.startswith('meanB'):
-                        b = int(col[5:])
-                        X_tile[:, idx] = means[:, b]
-                    elif col.startswith('stdB'):
-                        b = int(col[4:])
-                        X_tile[:, idx] = stds[:, b]
-
+                    X_tile[:, idx] = feature_data[col]
                 X_scaled = scaler.transform(X_tile)
-                preds = clf.predict(X_scaled)
-                probs = np.max(clf.predict_proba(X_scaled), axis=1)
+
+                # Get raw probabilities and apply Bayesian Prior Correction
+                raw_probs = clf.predict_proba(X_scaled)
+                corrected_probs = raw_probs * priors_arr
+                row_sums = np.sum(corrected_probs, axis=1, keepdims=True) + 1e-9
+                corrected_probs = corrected_probs / row_sums
+
+                preds = clf.classes_[np.argmax(corrected_probs, axis=1)]
+                probs = np.max(corrected_probs, axis=1)
+
                 sort_idx = np.argsort(unique_ids)
                 sorted_ids = unique_ids[sort_idx]
                 sorted_preds = preds[sort_idx]
