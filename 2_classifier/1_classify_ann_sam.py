@@ -471,7 +471,21 @@ class ProcessingPipeline:
             self.sample_shp = samples_base / self.file_prefix / "samples.shp"
 
         # --- 3. Initialize seg_mode and output file paths ---
-        initial_method = 'lpis' if seg_mode == 'lpis' else 'python_sam'
+        method_mapping_inv = {
+            'sam': 'python_sam',
+            'lpis': 'lpis',
+            'mrs_summed': 'python_mrs_summed',
+            'mrs_seasonal': 'python_mrs_seasonal',
+            'otb_meanshift': 'otb_meanshift_summed',
+            'felzenszwalb': 'python_felzenszwalb',
+            'slic': 'python_slic'
+        }
+        initial_method = method_mapping_inv.get(seg_mode, 'python_sam')
+
+        # Initialize parameters dictionary first so update_paths can populate method-specific defaults
+        self.stage1_params = {
+            'method': initial_method
+        }
         self.update_paths(initial_method)
 
         # Legacy compatibility migration for SAM segmentation files
@@ -493,14 +507,6 @@ class ProcessingPipeline:
         self.agri_mask = self._resolve_agri_mask()
 
         # --- 4. Parameters ---
-        self.stage1_params = {
-            'method': initial_method,
-            'tile_size': 2048, # SAM is memory intensive, smaller tile
-            'buffer': 128,     # buffer to avoid edge artifacts
-            'sam_checkpoint': str(self.aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'),
-            'sam_model_type': 'vit_h',
-            'sam_device': 'cuda' if (HAS_SAM and torch.cuda.is_available()) else 'cpu'
-        }
         self.stage2_params = {
             'learn_frac': 0.7, 'random_state': 42
         }
@@ -559,6 +565,39 @@ class ProcessingPipeline:
         # Keep stage1_params['method'] consistent with mode if it has been initialized
         if hasattr(self, 'stage1_params'):
             self.stage1_params['method'] = method_name
+            # Initialize default values for the selected method in stage1_params if they don't exist
+            if method_name == 'python_sam':
+                self.stage1_params.setdefault('tile_size', 2048)
+                self.stage1_params.setdefault('buffer', 128)
+                self.stage1_params.setdefault('sam_checkpoint', str(self.aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'))
+                self.stage1_params.setdefault('sam_model_type', 'vit_h')
+                self.stage1_params.setdefault('sam_device', 'cuda' if (HAS_SAM and torch.cuda.is_available()) else 'cpu')
+            elif method_name in ['python_mrs_summed', 'python_mrs_seasonal', 'python_mrs']:
+                self.stage1_params.setdefault('tile_size', 4096)
+                self.stage1_params.setdefault('buffer', 256)
+                self.stage1_params.setdefault('n_segments', 20000)
+                self.stage1_params.setdefault('compactness', 0.1)
+                self.stage1_params.setdefault('ws_compactness', 0.001)
+                self.stage1_params.setdefault('mrs_thresh', 0.08)
+            elif method_name in ['otb_meanshift_summed', 'otb_meanshift_seasonal', 'otb_meanshift']:
+                self.stage1_params.setdefault('spatialr', 4)
+                self.stage1_params.setdefault('ranger', 0.3)
+                self.stage1_params.setdefault('minsize', 20)
+                self.stage1_params.setdefault('tilesizex', 4096)
+                self.stage1_params.setdefault('tilesizey', 4096)
+                self.stage1_params.setdefault('ram', 4096)
+            elif method_name == 'python_felzenszwalb':
+                self.stage1_params.setdefault('tile_size', 4096)
+                self.stage1_params.setdefault('buffer', 256)
+                self.stage1_params.setdefault('scale', 50.0)
+                self.stage1_params.setdefault('sigma', 0.8)
+                self.stage1_params.setdefault('min_size', 15)
+            elif method_name == 'python_slic':
+                self.stage1_params.setdefault('tile_size', 4096)
+                self.stage1_params.setdefault('buffer', 256)
+                self.stage1_params.setdefault('n_segments', 20000)
+                self.stage1_params.setdefault('compactness', 0.1)
+                self.stage1_params.setdefault('slic_sigma', 1.0)
 
     def _resolve_agri_mask(self) -> Path:
         """
