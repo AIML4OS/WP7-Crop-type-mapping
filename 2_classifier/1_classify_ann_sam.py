@@ -699,6 +699,12 @@ class ProcessingPipeline:
 
         out_ds.FlushCache()
 
+        # Build pyramids (overviews) for faster loading in GIS software
+        # Using NEAREST for classification (integers) and AVERAGE for confidence (floats)
+        resampling = "NEAREST" if out_type in [gdal.GDT_Byte, gdal.GDT_Int16, gdal.GDT_Int32] else "AVERAGE"
+        print(f"    [INFO] Building pyramids for masked raster with resampling: {resampling}...")
+        out_ds.BuildOverviews(resampling=resampling, overviewlist=[2, 4, 8, 16, 32])
+
         ds_mask = None
         out_ds = None
         ds_in = None
@@ -1174,12 +1180,12 @@ class ProcessingPipeline:
                         checkpoint=params['sam_checkpoint'],
                         device=params['sam_device'],
                         sam_kwargs={
-                            "points_per_side": 96,
-                            "pred_iou_thresh": 0.55,
-                            "stability_score_thresh": 0.55,
+                            "points_per_side": 128,
+                            "pred_iou_thresh": 0.45,
+                            "stability_score_thresh": 0.45,
                             "crop_n_layers": 1,
                             "crop_n_points_downscale_factor": 2,
-                            "min_mask_region_area": 10
+                            "min_mask_region_area": 5
                         }
                     )
                 except Exception as e:
@@ -1807,6 +1813,14 @@ class ProcessingPipeline:
 
         ds_cls.FlushCache()
         ds_conf.FlushCache()
+
+        # Build pyramids (overviews) for faster loading in GIS software
+        print("    [INFO] Building pyramids for raw classification and confidence rasters...")
+        ds_cls.BuildOverviews(resampling="NEAREST", overviewlist=[2, 4, 8, 16, 32])
+        ds_conf.BuildOverviews(resampling="AVERAGE", overviewlist=[2, 4, 8, 16, 32])
+
+        ds_cls = None
+        ds_conf = None
         print(f"    Classification saved to {self.class_tif}\n")
 
     # --- Stage 6: Mask Class ---
