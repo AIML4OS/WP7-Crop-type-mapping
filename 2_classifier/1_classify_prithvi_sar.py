@@ -1367,6 +1367,8 @@ class ProcessingPipeline:
             if 0 <= px < ds.RasterXSize and 0 <= py < ds.RasterYSize:
                 val = int(band.ReadAsArray(int(px), int(py), 1, 1)[0, 0])
                 if val > 0:
+                    if self.country == 'NL':
+                        val = CROP_AGGREGATION_NL.get(val, val)
                     pred_labels.append(val)
                     valid_indices.append(i)
 

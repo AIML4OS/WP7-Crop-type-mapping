@@ -1006,6 +1006,8 @@ class ProcessingPipeline:
                         val_arr = band.ReadAsArray(px, py, 1, 1)
                         if val_arr is not None:
                             p = int(val_arr[0, 0])
+                            if self.country == 'NL':
+                                p = CROP_AGGREGATION_NL.get(p, p)
                             if t > 0 and p > 0 and p != -9999:
                                 true_vals.append(t)
                                 pred_vals.append(p)
