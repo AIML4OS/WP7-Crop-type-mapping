@@ -1439,8 +1439,8 @@ def main():
         pipeline.stage_2_prepare_points()
         pipeline.stage_3_selection()
         pipeline.stage_4_train_classifier()
-        pipeline.stage_5_classify_vector()
-        pipeline.stage_6_mask_classification()
+        pipeline.stage_5_classify_vector(force_recompute=True)
+        pipeline.stage_6_mask_classification(force_recompute=True)
         pipeline.stage_7_calculate_metrics()
     elif choice == '1':
         pipeline.stage_0_generate_footprint(force_recompute=True)
