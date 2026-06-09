@@ -575,6 +575,10 @@ class ProcessingPipeline:
 
         gdf = gpd.read_file(str(self.sample_shp), engine="pyogrio")
 
+        if self.country == 'NL':
+            print("    Applying crop aggregation for Netherlands (Clover/Lucerne -> Grassland)...")
+            gdf['crop_id'] = gdf['crop_id'].map(lambda cid: CROP_AGGREGATION_NL.get(cid, cid))
+
         if not self.seg_tif.exists():
             print("    [WARNING] Segmentation raster not found. Falling back to random sample split.")
             learn = gdf.sample(frac=params['learn_frac'], random_state=params['random_state'])
@@ -665,6 +669,20 @@ class ProcessingPipeline:
 
             # Spatial join
             sel = gpd.sjoin(polys, pts, how='inner', predicate='intersects')
+
+            # Apply Class Balancing (Oversampling) to prevent OTB classifier bias
+            if not sel.empty:
+                print("    Balancing classes in training polygons (Oversampling)...")
+                max_size = sel['crop_id'].value_counts().max()
+                balanced_dfs = []
+                for crop_id, group in sel.groupby('crop_id'):
+                    if len(group) < max_size:
+                        resampled = group.sample(max_size, replace=True, random_state=42)
+                        balanced_dfs.append(resampled)
+                    else:
+                        balanced_dfs.append(group)
+                sel = pd.concat(balanced_dfs)
+                sel = gpd.GeoDataFrame(sel, geometry='geometry', crs=polys.crs)
 
             sel.to_file(self.sel_shp, engine="pyogrio")
             print(f"[Stage {stage}/{self.total_stages}] Selected {len(sel)} features\n")
