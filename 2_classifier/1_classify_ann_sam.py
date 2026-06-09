@@ -340,29 +340,29 @@ except ImportError:
 # --- Configuration (Global) ---
 
 # ==============================================================================
-# JAK URUCHOMIĆ SKRYPT (INSTRUKCJA):
+# HOW TO RUN THE SCRIPT (INSTRUCTIONS):
 #
-# Dostępne opcje wywołania:
-#   --track          : Nazwa pasa roboczego (np. NL/orbit_88, PL/orbit_12)
-#   --seg_mode       : Tryb segmentacji. Wybierz:
-#                      * 'sam'  (detekcja obiektów za pomocą sieci Meta AI SAM)
-#                      * 'lpis' (rasteryzacja rzeczywistych granic działek z baz wektorowych GPKG/SHP)
-#   --mask_variant   : Maska upraw rolniczych. Wybierz:
-#                      * 'allcrops' (pełna maska rolnicza dla wszystkich 18+ klas, zalecana dla NL)
-#                      * '3class'   (agregacja/maskowanie dla 3 głównych klas: jare/oziminy/rzepak, dla PL)
+# Available CLI arguments:
+#   --track          : Name of the processing track (e.g. NL/orbit_88, PL/orbit_12)
+#   --seg_mode       : Segmentation mode. Choose:
+#                      * 'sam'  (deep learning boundary delineation using Meta AI SAM)
+#                      * 'lpis' (rasterization of actual cadastral parcel boundaries from vector GPKG/SHP databases)
+#   --mask_variant   : Agricultural crop mask variant. Choose:
+#                      * 'allcrops' (full cropland mask including all 18+ classes, recommended for NL)
+#                      * '3class'   (aggregated/masked for the 3 main PL crop types: spring crops, winter crops, rapeseed)
 #
-# PRZYKŁADY URUCHOMIENIA:
+# LAUNCH EXAMPLES:
 #
-# 1. Holandia (NL) - Segmentacja na rzeczywistych działkach LPIS (BRP) i maska allcrops:
+# 1. Netherlands (NL) - Segmentation using actual LPIS boundaries (BRP) and allcrops mask:
 #    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode lpis --mask_variant allcrops
 #
-# 2. Holandia (NL) - Segmentacja za pomocą modelu SAM i maska allcrops:
+# 2. Netherlands (NL) - Segmentation using Meta SAM model and allcrops mask:
 #    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode sam --mask_variant allcrops
 #
-# 3. Polska (PL) - Segmentacja za pomocą modelu SAM i maska 3-klasowa:
+# 3. Poland (PL) - Segmentation using Meta SAM model and 3-class crop mask:
 #    python 1_classify_ann_sam.py --track PL/orbit_12 --seg_mode sam --mask_variant 3class
 #
-# 4. Polska (PL) - Segmentacja na działkach LPIS (ARiMR) i maska 3-klasowa:
+# 4. Poland (PL) - Segmentation using LPIS boundaries (ARiMR) and 3-class crop mask:
 #    python 1_classify_ann_sam.py --track PL/orbit_12 --seg_mode lpis --mask_variant 3class
 # ==============================================================================
 # Base Paths provided by user
@@ -383,7 +383,7 @@ class ProcessingPipeline:
         self.mask_variant = mask_variant  # '3class' lub 'allcrops'
         self.seg_mode = seg_mode          # 'sam' lub 'lpis'
         
-        # Dedykowana obsługa dynamicznych pasów dla krajów (np. PL/orbit_12 lub dwuliterowego kodu kraju)
+        # Dedicated support for dynamic tracks per country (e.g. PL/orbit_12 or 2-letter country code)
         if '/' in track or '\\' in track:
             normalized_track = track.replace('\\', '/')
             self.country = normalized_track.split('/')[0].upper()
@@ -2042,22 +2042,22 @@ SAM_MODELS = {
 
 
 def get_stage1_params_sam(param_dict):
-    """Interaktywne menu wyboru metody segmentacji i parametrów Stage 1."""
+    """Interactive menu for selecting the segmentation method and Stage 1 parameters."""
     new_params = param_dict.copy()
     current_method = new_params.get('method', 'python_sam')
     
-    print("\n=== WYBÓR METODY SEGMENTACJI ===")
-    print(f"  Aktualna metoda: {current_method.upper()}")
+    print("\n=== SELECT SEGMENTATION METHOD ===")
+    print(f"  Current method: {current_method.upper()}")
     print()
-    print("  [1] Meta SAM (Głębokie uczenie, domyślne) [python_sam]")
-    print("  [2] Watershed / MRS na zsumowanym dB (Szybkie tradycyjne) [python_mrs_summed]")
-    print("  [3] Watershed / MRS na kompozycie sezonowym [python_mrs_seasonal]")
-    print("  [4] OTB Mean-Shift na zsumowanym dB (Ekstremalnie szybkie) [otb_meanshift_summed]")
-    print("  [5] Algorytm Felzenszwalba na pełnym rastrze [python_felzenszwalb]")
-    print("  [6] Algorytm SLIC na pełnym rastrze [python_slic]")
-    print("  [Enter] Zachowaj aktualną metodę")
+    print("  [1] Meta SAM (Deep learning, default) [python_sam]")
+    print("  [2] Watershed / MRS on summed dB (Fast traditional) [python_mrs_summed]")
+    print("  [3] Watershed / MRS on seasonal composite [python_mrs_seasonal]")
+    print("  [4] OTB Mean-Shift on summed dB (Fast C++ engine) [otb_meanshift_summed]")
+    print("  [5] Felzenszwalb algorithm on full raster [python_felzenszwalb]")
+    print("  [6] SLIC algorithm on full raster [python_slic]")
+    print("  [Enter] Keep current method")
     
-    choice = input("Wybierz opcję (1-6): ").strip()
+    choice = input("Choose option (1-6): ").strip()
     
     method_mapping = {
         '1': 'python_sam',
@@ -2071,7 +2071,7 @@ def get_stage1_params_sam(param_dict):
     if choice in method_mapping:
         new_params['method'] = method_mapping[choice]
         method = new_params['method']
-        print(f"  Wybrano metodę: {method.upper()}")
+        print(f"  Selected method: {method.upper()}")
         
         # Initialize default values for the selected method if they don't exist
         if method == 'python_sam':
@@ -2113,13 +2113,13 @@ def get_stage1_params_sam(param_dict):
     if method == 'python_sam':
         current_type = new_params.get('sam_model_type', 'vit_h')
         current_ckpt = new_params.get('sam_checkpoint', 'sam_vit_h_4b8939.pth')
-        print("\n  Dostępne modele SAM:")
+        print("\n  Available SAM models:")
         for k, v in SAM_MODELS.items():
-            marker = " <-- aktualny" if v['model_type'] == current_type else ""
+            marker = " <-- current" if v['model_type'] == current_type else ""
             print(f"    [{k}] {v['name']}{marker}")
         print()
         
-        sam_choice = input("Wybierz model SAM (1/2/3) lub Enter aby zachować: ").strip()
+        sam_choice = input("Choose SAM model (1/2/3) or Enter to keep current: ").strip()
         if sam_choice in SAM_MODELS:
             selected = SAM_MODELS[sam_choice]
             new_params['sam_model_type'] = selected['model_type']
@@ -2130,13 +2130,13 @@ def get_stage1_params_sam(param_dict):
             new_params['sam_checkpoint'] = str(ckpt_path)
 
             if not ckpt_path.exists():
-                print(f"\n  [UWAGA] Plik wag '{ckpt_fn}' nie istnieje w katalogu {sam_models_dir}!")
-                print(f"  Pobierz go z: {selected['url']}")
-                proceed = input("  Kontynuować mimo to? (y/n) [n]: ").strip().lower()
+                print(f"\n  [WARNING] Checkpoint weight file '{ckpt_fn}' does not exist in {sam_models_dir}!")
+                print(f"  Download it from: {selected['url']}")
+                proceed = input("  Continue anyway? (y/n) [n]: ").strip().lower()
                 if proceed != 'y':
                     return None
             else:
-                print(f"  [OK] Plik wag '{ckpt_fn}' znaleziony.")
+                print(f"  [OK] Checkpoint weight file '{ckpt_fn}' found.")
                 
     # Filter parameters to show and edit based on chosen method
     show_keys = []
@@ -2151,7 +2151,7 @@ def get_stage1_params_sam(param_dict):
     elif method == 'python_slic':
         show_keys = ['tile_size', 'buffer', 'n_segments', 'compactness', 'slic_sigma']
 
-    print(f"\n--- Edycja parametrów dla: {method.upper()} ---")
+    print(f"\n--- Edit parameters for: {method.upper()} ---")
     for key in show_keys:
         val = new_params.get(key)
         new_val_str = input(f"  {key} [{val}]: ").strip()
@@ -2162,10 +2162,10 @@ def get_stage1_params_sam(param_dict):
                 else:
                     new_params[key] = type(val)(new_val_str) if val is not None else new_val_str
             except ValueError:
-                print("    Nieprawidłowa wartość, pozostawiam domyślną.")
+                print("    Invalid value. Keeping default.")
 
-    print("\n--- ZATWIERDZONE PARAMETRY SEGMENTACJI ---")
-    print(f"  Metoda: {method.upper()}")
+    print("\n--- APPROVED SEGMENTATION PARAMETERS ---")
+    print(f"  Method: {method.upper()}")
     for key in show_keys:
         print(f"  {key}: {new_params.get(key)}")
     print("==========================================\n")
