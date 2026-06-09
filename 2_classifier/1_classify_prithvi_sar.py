@@ -22,6 +22,148 @@ import openpyxl
 from openpyxl.styles import Font
 import threading
 from concurrent.futures import ThreadPoolExecutor
+import json
+import math
+
+# Crop aggregation mapping for the Netherlands (NL) to reduce semantic confusion
+CROP_AGGREGATION_NL = {
+    2: 5,   # Clover -> Grassland
+    7: 5,   # Lucerne -> Grassland
+}
+
+def _get_priors_for_country(country, learn_shp_path, classes, class_counts, total_samples, priors_file_override=None):
+    # Try custom JSON override first
+    if priors_file_override and os.path.exists(priors_file_override):
+        try:
+            with open(priors_file_override, 'r') as f:
+                custom_priors = json.load(f)
+            p_true = np.array([float(custom_priors.get(str(c), custom_priors.get(int(c), 1e-5))) for c in classes])
+            p_true = p_true / np.sum(p_true)
+            print(f"    Loaded custom priors from {priors_file_override}")
+            return p_true
+        except Exception as e:
+            print(f"    [WARNING] Failed to load custom priors file: {e}")
+
+    # Check for general priors_<country>.json in track folder
+    if learn_shp_path:
+        track_dir = Path(learn_shp_path).parent.parent
+        custom_file = track_dir / f"priors_{country}.json"
+        if not custom_file.exists():
+            custom_file = track_dir / "priors.json"
+        if custom_file.exists():
+            try:
+                with open(custom_file, 'r') as f:
+                    custom_priors = json.load(f)
+                p_true = np.array([float(custom_priors.get(str(c), custom_priors.get(int(c), 1e-5))) for c in classes])
+                p_true = p_true / np.sum(p_true)
+                print(f"    Loaded custom priors from {custom_file}")
+                return p_true
+            except Exception as e:
+                print(f"    [WARNING] Failed to load custom priors: {e}")
+
+    # NL specific priors
+    if country == 'NL':
+        real_priors_nl = {
+            1: 0.0030, 2: 0.0015, 3: 0.0775, 4: 0.0057, 5: 0.7214,
+            6: 0.0033, 7: 0.0056, 8: 0.0847, 9: 0.0060, 10: 0.0007,
+            11: 0.0073, 12: 0.0087, 13: 0.0255, 14: 0.0023, 15: 0.0149,
+            16: 0.0058, 17: 0.0044, 18: 0.0006, 19: 0.0034, 20: 0.0178
+        }
+        # Aggregate to match the model's classes (which might be aggregated)
+        aggregated_priors = {}
+        for cid, val in real_priors_nl.items():
+            mapped_cid = CROP_AGGREGATION_NL.get(cid, cid)
+            aggregated_priors[mapped_cid] = aggregated_priors.get(mapped_cid, 0.0) + val
+        p_true = np.array([aggregated_priors.get(c, 1e-5) for c in classes])
+        p_true = p_true / np.sum(p_true)
+        return p_true
+
+    # PL & any other country - dynamic estimation using keyword-based field sizes
+    id_to_name = {}
+    if learn_shp_path and os.path.exists(learn_shp_path):
+        try:
+            import geopandas as gpd
+            gdf = gpd.read_file(str(learn_shp_path), engine="pyogrio")
+            if 'crop_id' in gdf.columns and 'crop_name' in gdf.columns:
+                id_to_name = dict(zip(gdf['crop_id'].astype(int), gdf['crop_name'].astype(str)))
+        except Exception as e:
+            print(f"    [WARNING] Could not read crop names from shapefile: {e}")
+
+    # Area threshold keyword matcher
+    def get_area_multiplier(cid):
+        name = id_to_name.get(cid, '').lower()
+        if not name:
+            # Fallback to standard 37 classes PL hardcoded values if crop_id maps to them (1 to 37)
+            area_thresholds_pl = {
+                1: 3000, 2: 5000, 3: 5000, 4: 40000, 5: 5000, 6: 10000, 7: 5000, 8: 30000, 9: 15000,
+                10: 20000, 11: 30000, 12: 40000, 13: 5000, 14: 70000, 15: 2000, 16: 30000, 17: 5000,
+                18: 3000, 19: 40000, 20: 2000, 21: 40000, 22: 2000, 23: 10000, 24: 25000, 25: 70000,
+                26: 10000, 27: 50000, 28: 2000, 29: 60000, 30: 3000, 31: 15000, 32: 70000, 33: 5000,
+                34: 3000, 35: 5000, 36: 20000, 37: 40000
+            }
+            return area_thresholds_pl.get(cid, 10000)
+            
+        # Large field crops (~40k - 100k m2)
+        if any(k in name for k in ['grass', 'tiuz', 'grassland', 'pasture', 'trawa', 'trawiast', 'blijvend', 'tijdelijk', 'permanent', 'clover', 'klaver', 'lucerne', 'luzerne']):
+            return 70000
+        if any(k in name for k in ['maize', 'mais', 'kukurydza', 'corn']):
+            return 70000
+        if any(k in name for k in ['wheat', 'pszenica', 'tarwe']):
+            return 70000
+        if any(k in name for k in ['barley', 'jeczmien', 'gerst']):
+            return 40000
+        if any(k in name for k in ['rye', 'zyto', 'rogge']):
+            return 40000
+        if any(k in name for k in ['triticale', 'pszenzyto', 'koorn']):
+            return 50000
+        if any(k in name for k in ['oats', 'owies', 'haver']):
+            return 40000
+        if any(k in name for k in ['rapeseed', 'rzepak', 'koolzaad']):
+            return 60000
+        if any(k in name for k in ['sugar beet', 'burak', 'suikerbiet']):
+            return 40000
+        if any(k in name for k in ['fallow', 'braak', 'ugor']):
+            return 40000
+            
+        # Medium/small (~10k - 30k m2)
+        if any(k in name for k in ['potato', 'ziemniak', 'aardappel']):
+            return 20000
+        if any(k in name for k in ['orchard', 'fruit', 'sad', 'appel', 'peer', 'jablon', 'sliwa', 'wisnia']):
+            return 20000
+        if any(k in name for k in ['pea', 'groch', 'erwt']):
+            return 30000
+        if any(k in name for k in ['bean', 'fasola', 'boon']):
+            return 10000
+        if any(k in name for k in ['aronia', 'blueberry', 'borowka', 'currant', 'porzeczka', 'bessen']):
+            return 10000
+        if any(k in name for k in ['nursery', 'ornamental', 'szkolka', 'sier', 'boomkwekerij']):
+            return 10000
+            
+        # Small / vegetable crops (<10k m2)
+        if any(k in name for k in ['onion', 'cebula', 'ui']):
+            return 5000
+        if any(k in name for k in ['strawberry', 'truskawka', 'aardbei']):
+            return 5000
+        if any(k in name for k in ['cabbage', 'brassica', 'kapusta', 'kool']):
+            return 5000
+        if any(k in name for k in ['carrot', 'marchew', 'peen']):
+            return 3000
+        if any(k in name for k in ['tomato', 'pomidor', 'tomaat']):
+            return 2000
+        if any(k in name for k in ['cucumber', 'ogorek', 'komkommer']):
+            return 2000
+        if any(k in name for k in ['tobacco', 'tyton', 'tabak']):
+            return 3000
+        if any(k in name for k in ['raspberry', 'blackberry', 'malina', 'jezyna', 'framboos']):
+            return 5000
+        return 10000
+
+    area_multipliers = np.array([get_area_multiplier(c) for c in classes])
+    counts_arr = np.array([class_counts.get(c, 0) for c in classes])
+    true_area_dist = counts_arr * area_multipliers
+    p_true = true_area_dist / (np.sum(true_area_dist) + 1e-9)
+    return p_true
+
 
 # Try importing SAM
 try:
@@ -166,15 +308,22 @@ def prepare_segment_patch(raster_ds, segment_mask, bbox, target_size=(224, 224))
         frames = dates_grouped[:3]
         
     # Replicate 2 SAR bands (VV, VH) into 6 bands expected by Prithvi: [VV, VH, VV, VH, VV, VH]
+    # We normalize from decibels (dB) to [0.0, 1.0] range expected by Prithvi-EO (optical model)
     prithvi_tensor = np.zeros((6, 3, h, w), dtype=np.float32)
     for t in range(3):
         vv, vh = frames[t]
-        prithvi_tensor[0, t] = vv
-        prithvi_tensor[1, t] = vh
-        prithvi_tensor[2, t] = vv
-        prithvi_tensor[3, t] = vh
-        prithvi_tensor[4, t] = vv
-        prithvi_tensor[5, t] = vh
+        
+        # Min-max scale VV from [-25.0, 0.0] to [0.0, 1.0]
+        vv_norm = np.clip((vv + 25.0) / 25.0, 0.0, 1.0)
+        # Min-max scale VH from [-30.0, -5.0] to [0.0, 1.0]
+        vh_norm = np.clip((vh + 30.0) / 25.0, 0.0, 1.0)
+        
+        prithvi_tensor[0, t] = vv_norm
+        prithvi_tensor[1, t] = vh_norm
+        prithvi_tensor[2, t] = vv_norm
+        prithvi_tensor[3, t] = vh_norm
+        prithvi_tensor[4, t] = vv_norm
+        prithvi_tensor[5, t] = vh_norm
         
     # Resize the spatial dimensions to [224, 224] using bilinear interpolation
     import torch.nn.functional as F
@@ -834,6 +983,10 @@ class ProcessingPipeline:
         X = df_balanced[feat_cols].values
         y = df_balanced['crop_id'].values
 
+        if self.country == 'NL':
+            print("    Applying crop aggregation for Netherlands training labels...")
+            y = np.array([CROP_AGGREGATION_NL.get(val, val) for val in y])
+
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
@@ -883,6 +1036,37 @@ class ProcessingPipeline:
         # Load Prithvi-SAR
         mae_script, weights_path = resolve_prithvi_model()
         model = load_prithvi_encoder(weights_path)
+        
+        # --- Calculate Bayesian Priors ---
+        print("    Calculating Bayesian priors for Prithvi inference...")
+        df_learn = pd.read_csv(self.sel_csv)
+        y_train = df_learn['crop_id'].values
+        if self.country == 'NL':
+            print("    Applying crop aggregation for Netherlands priors...")
+            y_train = np.array([CROP_AGGREGATION_NL.get(val, val) for val in y_train])
+
+        class_counts = pd.Series(y_train).value_counts().to_dict()
+        classes = clf.classes_
+        total_samples = len(df_learn)
+        
+        p_true = _get_priors_for_country(
+            self.country, self.learn_shp, classes, class_counts, total_samples, 
+            priors_file_override=self.base_dir / "priors.json"
+        )
+        
+        threshold = 1000
+        balanced_counts = {}
+        for c in classes:
+            count = len(df_learn[df_learn['crop_id'] == c])
+            balanced_counts[c] = max(count, threshold)
+        total_balanced = sum(balanced_counts.values())
+        p_train = np.array([balanced_counts[c] / total_balanced for c in classes])
+        
+        correction = p_true / (p_train + 1e-9)
+        correction = np.power(correction, 0.7)
+        correction = np.clip(correction, 0.3, 1.5)
+        priors_arr = correction / np.sum(correction)
+        # ---------------------------------
 
         ds_stack_info = gdal.Open(str(self.ras))
         cols = ds_stack_info.RasterXSize
@@ -992,9 +1176,14 @@ class ProcessingPipeline:
                 X_scaled = scaler.transform(features_arr)
                 
                 # Classify
-                preds = clf.predict(X_scaled)
-                probs = clf.predict_proba(X_scaled)
-                max_probs = np.max(probs, axis=1)
+                raw_probs = clf.predict_proba(X_scaled)
+                
+                # Apply Bayesian Prior Correction
+                corrected_probs = raw_probs * priors_arr
+                corrected_probs = corrected_probs / np.sum(corrected_probs, axis=1, keepdims=True)
+                
+                preds = clf.classes_[np.argmax(corrected_probs, axis=1)]
+                max_probs = np.max(corrected_probs, axis=1)
 
                 id_to_pred = {sid: int(pred) for sid, pred in zip(valid_ids, preds)}
                 id_to_prob = {sid: float(prob) for sid, prob in zip(valid_ids, max_probs)}
@@ -1058,8 +1247,26 @@ class ProcessingPipeline:
 
         mask_tif = self.agri_mask
         ds_mask = None
+        temp_mask_vrt = None
         if mask_tif and mask_tif.exists():
-            ds_mask = gdal.Open(str(mask_tif))
+            print(f"    Warping country agricultural mask to match classification raster bounds...")
+            minx = gt[0]
+            maxy = gt[3]
+            maxx = minx + gt[1] * cols
+            miny = maxy + gt[5] * rows
+
+            temp_mask_vrt = str(self.masked_class).replace('.tif', '_mask_temp.vrt')
+            mask_opts = gdal.WarpOptions(
+                format='VRT',
+                outputBounds=(minx, miny, maxx, maxy),
+                width=cols,
+                height=rows,
+                dstSRS=proj,
+                resampleAlg=gdal.GRA_NearestNeighbour
+            )
+            ds_mask = gdal.Warp(temp_mask_vrt, str(mask_tif), options=mask_opts)
+            if not ds_mask:
+                raise RuntimeError("Failed to warp the arable mask.")
             print(f"    Applying country agricultural mask: {mask_tif.name}")
         else:
             print("    WARNING: Arable mask not found. Only applying data footprint mask.")
@@ -1112,6 +1319,13 @@ class ProcessingPipeline:
         ds_cls = None
         ds_conf = None
         ds_stack = None
+        
+        if temp_mask_vrt and os.path.exists(temp_mask_vrt):
+            try:
+                os.remove(temp_mask_vrt)
+            except Exception as e:
+                print(f"Warning: Could not remove temp VRT: {e}")
+                
         print("    Masking stage complete.\n")
 
     # --- Stage 7: Validation Metrics ---
@@ -1141,6 +1355,10 @@ class ProcessingPipeline:
         pys = (inv_gt[3] + inv_gt[4] * xs + inv_gt[5] * ys).astype(int)
         
         true_labels = gdf['crop_id'].values
+        if self.country == 'NL':
+            print("    Applying crop aggregation for Netherlands validation labels...")
+            true_labels = np.array([CROP_AGGREGATION_NL.get(val, val) for val in true_labels])
+
         pred_labels = []
         valid_indices = []
 

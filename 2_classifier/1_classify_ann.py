@@ -1341,6 +1341,10 @@ class ProcessingPipeline:
         
         # Apply SATMIROL power smoothing factor (0.7) to prevent over-correction
         correction = np.power(correction, 0.7)
+        
+        # [NEW] Cap extreme multipliers to prevent "black hole" effect for dominant classes (like Grassland)
+        correction = np.clip(correction, 0.3, 1.5)
+        
         priors_arr = correction / np.sum(correction)
 
         ds_stack_info = gdal.Open(str(self.ras))
