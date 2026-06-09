@@ -2042,66 +2042,133 @@ SAM_MODELS = {
 
 
 def get_stage1_params_sam(param_dict):
-    """Interaktywne menu wyboru modelu SAM i parametrow Stage 1."""
+    """Interaktywne menu wyboru metody segmentacji i parametrów Stage 1."""
     new_params = param_dict.copy()
-    current_type = new_params.get('sam_model_type', 'vit_b')
-    current_ckpt = new_params.get('sam_checkpoint', 'sam_vit_b_01ec64.pth')
-    device = new_params.get('sam_device', 'cpu')
-    tile_size = new_params.get('tile_size', 2048)
-    buffer = new_params.get('buffer', 128)
-
-    print("\n--- Stage 1: Segmentacja SAM ---")
-    print(f"  Urzadzenie (device)  : {device}")
-    print(f"  Rozmiar kafla (px)   : {tile_size}")
-    print(f"  Bufor kafla (px)     : {buffer}")
-    print(f"  Aktualny model       : {current_type}  [{current_ckpt}]")
+    current_method = new_params.get('method', 'python_sam')
+    
+    print("\n=== WYBÓR METODY SEGMENTACJI ===")
+    print(f"  Aktualna metoda: {current_method.upper()}")
     print()
-    print("  Dostepne modele SAM:")
-    for k, v in SAM_MODELS.items():
-        marker = " <-- aktualny" if v['model_type'] == current_type else ""
-        print(f"    [{k}] {v['name']}{marker}")
-    print()
-
-    choice = input("Wybierz model SAM (1/2/3) lub Enter aby zachowac aktualny: ").strip()
-    if choice in SAM_MODELS:
-        selected = SAM_MODELS[choice]
-        new_params['sam_model_type'] = selected['model_type']
+    print("  [1] Meta SAM (Głębokie uczenie, domyślne) [python_sam]")
+    print("  [2] Watershed / MRS na zsumowanym dB (Szybkie tradycyjne) [python_mrs_summed]")
+    print("  [3] Watershed / MRS na kompozycie sezonowym [python_mrs_seasonal]")
+    print("  [4] OTB Mean-Shift na zsumowanym dB (Ekstremalnie szybkie) [otb_meanshift_summed]")
+    print("  [5] Algorytm Felzenszwalba na pełnym rastrze [python_felzenszwalb]")
+    print("  [6] Algorytm SLIC na pełnym rastrze [python_slic]")
+    print("  [Enter] Zachowaj aktualną metodę")
+    
+    choice = input("Wybierz opcję (1-6): ").strip()
+    
+    method_mapping = {
+        '1': 'python_sam',
+        '2': 'python_mrs_summed',
+        '3': 'python_mrs_seasonal',
+        '4': 'otb_meanshift_summed',
+        '5': 'python_felzenszwalb',
+        '6': 'python_slic'
+    }
+    
+    if choice in method_mapping:
+        new_params['method'] = method_mapping[choice]
+        method = new_params['method']
+        print(f"  Wybrano metodę: {method.upper()}")
         
-        # Use absolute path to auxiliary_files/SAM_models
-        sam_models_dir = aux_dir / 'SAM_models'
-        ckpt_fn = selected['checkpoint']
-        ckpt_path = sam_models_dir / ckpt_fn
-        new_params['sam_checkpoint'] = str(ckpt_path)
+        # Initialize default values for the selected method if they don't exist
+        if method == 'python_sam':
+            new_params.setdefault('tile_size', 2048)
+            new_params.setdefault('buffer', 128)
+            new_params.setdefault('sam_checkpoint', str(aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'))
+            new_params.setdefault('sam_model_type', 'vit_h')
+            new_params.setdefault('sam_device', 'cuda' if torch.cuda.is_available() else 'cpu')
+        elif method in ['python_mrs_summed', 'python_mrs_seasonal', 'python_mrs']:
+            new_params.setdefault('tile_size', 4096)
+            new_params.setdefault('buffer', 256)
+            new_params.setdefault('n_segments', 20000)
+            new_params.setdefault('compactness', 0.1)
+            new_params.setdefault('ws_compactness', 0.001)
+            new_params.setdefault('mrs_thresh', 0.08)
+        elif method in ['otb_meanshift_summed', 'otb_meanshift_seasonal', 'otb_meanshift']:
+            new_params.setdefault('spatialr', 4)
+            new_params.setdefault('ranger', 0.3)
+            new_params.setdefault('minsize', 20)
+            new_params.setdefault('tilesizex', 4096)
+            new_params.setdefault('tilesizey', 4096)
+            new_params.setdefault('ram', 4096)
+        elif method == 'python_felzenszwalb':
+            new_params.setdefault('tile_size', 4096)
+            new_params.setdefault('buffer', 256)
+            new_params.setdefault('scale', 50.0)
+            new_params.setdefault('sigma', 0.8)
+            new_params.setdefault('min_size', 15)
+        elif method == 'python_slic':
+            new_params.setdefault('tile_size', 4096)
+            new_params.setdefault('buffer', 256)
+            new_params.setdefault('n_segments', 20000)
+            new_params.setdefault('compactness', 0.1)
+            new_params.setdefault('slic_sigma', 1.0)
+            
+    method = new_params.get('method', 'python_sam')
+    
+    # Specific interactive choice for SAM models
+    if method == 'python_sam':
+        current_type = new_params.get('sam_model_type', 'vit_h')
+        current_ckpt = new_params.get('sam_checkpoint', 'sam_vit_h_4b8939.pth')
+        print("\n  Dostępne modele SAM:")
+        for k, v in SAM_MODELS.items():
+            marker = " <-- aktualny" if v['model_type'] == current_type else ""
+            print(f"    [{k}] {v['name']}{marker}")
+        print()
+        
+        sam_choice = input("Wybierz model SAM (1/2/3) lub Enter aby zachować: ").strip()
+        if sam_choice in SAM_MODELS:
+            selected = SAM_MODELS[sam_choice]
+            new_params['sam_model_type'] = selected['model_type']
+            
+            sam_models_dir = aux_dir / 'SAM_models'
+            ckpt_fn = selected['checkpoint']
+            ckpt_path = sam_models_dir / ckpt_fn
+            new_params['sam_checkpoint'] = str(ckpt_path)
 
-        if not ckpt_path.exists():
-            print(f"\n  [UWAGA] Plik wag '{ckpt_fn}' nie istnieje w katalogu {sam_models_dir}!")
-            print(f"  Pobierz go z: {selected['url']}")
-            print(f"  i wrzuc do: {sam_models_dir}")
-            proceed = input("  Kontynuowac mimo to? (y/n) [n]: ").strip().lower()
-            if proceed != 'y':
-                return None   # Sygnał do przerwania
-        else:
-            print(f"  [OK] Plik wag '{ckpt_fn}' znaleziony w {sam_models_dir}.")
-    else:
-        print("  Zachowuje aktualny model.")
+            if not ckpt_path.exists():
+                print(f"\n  [UWAGA] Plik wag '{ckpt_fn}' nie istnieje w katalogu {sam_models_dir}!")
+                print(f"  Pobierz go z: {selected['url']}")
+                proceed = input("  Kontynuować mimo to? (y/n) [n]: ").strip().lower()
+                if proceed != 'y':
+                    return None
+            else:
+                print(f"  [OK] Plik wag '{ckpt_fn}' znaleziony.")
+                
+    # Filter parameters to show and edit based on chosen method
+    show_keys = []
+    if method == 'python_sam':
+        show_keys = ['tile_size', 'buffer', 'sam_device']
+    elif method in ['python_mrs_summed', 'python_mrs_seasonal', 'python_mrs']:
+        show_keys = ['tile_size', 'buffer', 'n_segments', 'compactness', 'ws_compactness', 'mrs_thresh']
+    elif method in ['otb_meanshift_summed', 'otb_meanshift_seasonal', 'otb_meanshift']:
+        show_keys = ['spatialr', 'ranger', 'minsize', 'tilesizex', 'tilesizey', 'ram']
+    elif method == 'python_felzenszwalb':
+        show_keys = ['tile_size', 'buffer', 'scale', 'sigma', 'min_size']
+    elif method == 'python_slic':
+        show_keys = ['tile_size', 'buffer', 'n_segments', 'compactness', 'slic_sigma']
 
-    # Opcjonalna zmiana urządzenia
-    dev_choice = input(f"  Urzadzenie (cuda/cpu) [{device}]: ").strip().lower()
-    if dev_choice in ('cuda', 'cpu'):
-        new_params['sam_device'] = dev_choice
+    print(f"\n--- Edycja parametrów dla: {method.upper()} ---")
+    for key in show_keys:
+        val = new_params.get(key)
+        new_val_str = input(f"  {key} [{val}]: ").strip()
+        if new_val_str:
+            try:
+                if isinstance(val, bool):
+                    new_params[key] = new_val_str.lower() in ('true', '1', 'y', 'yes')
+                else:
+                    new_params[key] = type(val)(new_val_str) if val is not None else new_val_str
+            except ValueError:
+                print("    Nieprawidłowa wartość, pozostawiam domyślną.")
 
-    # Opcjonalna zmiana rozmiaru kafla
-    ts_str = input(f"  Rozmiar kafla w px [{tile_size}]: ").strip()
-    if ts_str:
-        try:
-            new_params['tile_size'] = int(ts_str)
-        except ValueError:
-            print("  Nieprawidłowa wartość, pozostawiam domyślną.")
-
-    print("\n--- Zatwierdzone parametry Stage 1 (SAM) ---")
-    for k, v in new_params.items():
-        print(f"  {k}: {v}")
-    print()
+    print("\n--- ZATWIERDZONE PARAMETRY SEGMENTACJI ---")
+    print(f"  Metoda: {method.upper()}")
+    for key in show_keys:
+        print(f"  {key}: {new_params.get(key)}")
+    print("==========================================\n")
     return new_params
 
 
