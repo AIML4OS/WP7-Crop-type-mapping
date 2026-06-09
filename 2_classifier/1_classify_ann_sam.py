@@ -15,6 +15,7 @@ from sklearn.utils import resample
 import joblib
 import openpyxl
 from openpyxl.styles import Font
+from pyogrio import read_info, read_dataframe
 
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -28,62 +29,9 @@ from torch.utils.data import DataLoader, TensorDataset
 torch.set_num_threads(1)
 
 def compute_210_features_dict(mean_matrix, std_matrix, nbands=44):
-    n_dates = nbands // 2
-    
-    # Split into VH and VV
-    mean_vh = mean_matrix[:, 0:n_dates]
-    mean_vv = mean_matrix[:, n_dates:2*n_dates]
-    std_vh = std_matrix[:, 0:n_dates]
-    std_vv = std_matrix[:, n_dates:2*n_dates]
-    
-    # Convert to linear scale
-    lin_vh = 10.0 ** (mean_vh / 10.0)
-    lin_vv = 10.0 ** (mean_vv / 10.0)
-    
-    # Polarization ratio & NDPI
-    pr = lin_vv / (lin_vh + 1e-5)
-    ndpi = (lin_vv - lin_vh) / (lin_vv + lin_vh + 1e-5)
-    
     feature_data = {}
-    
-    # 1. Raw band features
     for b in range(nbands):
         feature_data[f'meanB{b}'] = mean_matrix[:, b]
-        feature_data[f'stdB{b}'] = std_matrix[:, b]
-        
-    # 2. Polarization ratios and NDPI
-    for t in range(n_dates):
-        feature_data[f'ratioB{t}'] = pr[:, t]
-        feature_data[f'ndpiB{t}'] = ndpi[:, t]
-        
-    # 3. Temporal statistics
-    # VH
-    feature_data['vh_temp_mean'] = np.mean(mean_vh, axis=1)
-    feature_data['vh_temp_std'] = np.std(mean_vh, axis=1)
-    feature_data['vh_temp_min'] = np.min(mean_vh, axis=1)
-    feature_data['vh_temp_max'] = np.max(mean_vh, axis=1)
-    feature_data['vh_temp_range'] = feature_data['vh_temp_max'] - feature_data['vh_temp_min']
-    
-    # VV
-    feature_data['vv_temp_mean'] = np.mean(mean_vv, axis=1)
-    feature_data['vv_temp_std'] = np.std(mean_vv, axis=1)
-    feature_data['vv_temp_min'] = np.min(mean_vv, axis=1)
-    feature_data['vv_temp_max'] = np.max(mean_vv, axis=1)
-    feature_data['vv_temp_range'] = feature_data['vv_temp_max'] - feature_data['vv_temp_min']
-    
-    # NDPI
-    feature_data['ndpi_temp_mean'] = np.mean(ndpi, axis=1)
-    feature_data['ndpi_temp_std'] = np.std(ndpi, axis=1)
-    feature_data['ndpi_temp_min'] = np.min(ndpi, axis=1)
-    feature_data['ndpi_temp_max'] = np.max(ndpi, axis=1)
-    feature_data['ndpi_temp_range'] = feature_data['ndpi_temp_max'] - feature_data['ndpi_temp_min']
-    
-    # 4. Consecutive temporal differences
-    for t in range(n_dates - 1):
-        feature_data[f'diff_vh_B{t}'] = mean_vh[:, t+1] - mean_vh[:, t]
-        feature_data[f'diff_vv_B{t}'] = mean_vv[:, t+1] - mean_vv[:, t]
-        feature_data[f'diff_ndpi_B{t}'] = ndpi[:, t+1] - ndpi[:, t]
-        
     return feature_data
 
 def _calculate_class_weights(y_data, all_classes):
@@ -243,7 +191,7 @@ def _get_priors_for_country(country, learn_shp_path, classes, class_counts, tota
     return p_true
 
 class TorchMLPClassifier:
-    def __init__(self, hidden_layer_sizes=(512, 256, 128), max_iter=120, batch_size=256, lr=0.001, class_weights=None, all_classes=None):
+    def __init__(self, hidden_layer_sizes=(256, 128, 64), max_iter=120, batch_size=256, lr=0.001, class_weights=None, all_classes=None):
         self.hidden_layer_sizes = hidden_layer_sizes
         self.max_iter = max_iter
         self.batch_size = batch_size
@@ -391,12 +339,32 @@ except ImportError:
 
 # --- Configuration (Global) ---
 
-# python 1_classify_ann.py --track P1a
-
-# Jak uruchomić skrypt:
-# python 1_classify_ann_sam.py --track PL/orbit_12
-# python 1_classify_ann_sam.py --track FR/orbit_8
-
+# ==============================================================================
+# JAK URUCHOMIĆ SKRYPT (INSTRUKCJA):
+#
+# Dostępne opcje wywołania:
+#   --track          : Nazwa pasa roboczego (np. NL/orbit_88, PL/orbit_12)
+#   --seg_mode       : Tryb segmentacji. Wybierz:
+#                      * 'sam'  (detekcja obiektów za pomocą sieci Meta AI SAM)
+#                      * 'lpis' (rasteryzacja rzeczywistych granic działek z baz wektorowych GPKG/SHP)
+#   --mask_variant   : Maska upraw rolniczych. Wybierz:
+#                      * 'allcrops' (pełna maska rolnicza dla wszystkich 18+ klas, zalecana dla NL)
+#                      * '3class'   (agregacja/maskowanie dla 3 głównych klas: jare/oziminy/rzepak, dla PL)
+#
+# PRZYKŁADY URUCHOMIENIA:
+#
+# 1. Holandia (NL) - Segmentacja na rzeczywistych działkach LPIS (BRP) i maska allcrops:
+#    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode lpis --mask_variant allcrops
+#
+# 2. Holandia (NL) - Segmentacja za pomocą modelu SAM i maska allcrops:
+#    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode sam --mask_variant allcrops
+#
+# 3. Polska (PL) - Segmentacja za pomocą modelu SAM i maska 3-klasowa:
+#    python 1_classify_ann_sam.py --track PL/orbit_12 --seg_mode sam --mask_variant 3class
+#
+# 4. Polska (PL) - Segmentacja na działkach LPIS (ARiMR) i maska 3-klasowa:
+#    python 1_classify_ann_sam.py --track PL/orbit_12 --seg_mode lpis --mask_variant 3class
+# ==============================================================================
 # Base Paths provided by user
 base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
 aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
@@ -410,9 +378,10 @@ TOTAL_STAGES = 8
 # --- Main Pipeline Class ---
 
 class ProcessingPipeline:
-    def __init__(self, track, mask_variant='3class'):
+    def __init__(self, track, mask_variant='3class', seg_mode='sam'):
         self.track = track
         self.mask_variant = mask_variant  # '3class' lub 'allcrops'
+        self.seg_mode = seg_mode          # 'sam' lub 'lpis'
         
         # Dedykowana obsługa dynamicznych pasów dla krajów (np. PL/orbit_12 lub dwuliterowego kodu kraju)
         if '/' in track or '\\' in track:
@@ -425,7 +394,7 @@ class ProcessingPipeline:
             sys.exit(1)
 
         self.total_stages = TOTAL_STAGES
-        print(f"Initializing pipeline for Track: {self.track}, Country: {self.country}")
+        print(f"Initializing pipeline for Track: {self.track}, Country: {self.country}, Segmentation: {self.seg_mode.upper()}")
 
         # Sanitized track name for filenames (no slashes)
         self.sanitized_track = self.track.replace('/', '_').replace('\\', '_')
@@ -474,8 +443,21 @@ class ProcessingPipeline:
             raise FileNotFoundError(f"Processing directory does not exist: {self.proc_dir}")
 
         # --- 3. Define all output file paths ---
-        self.seg_tif = self.seg_dir / f"{self.file_prefix}_segmentation.tif"
-        self.seg_shp = self.seg_dir / f"{self.file_prefix}_segmentation.sqlite"
+        self.seg_tif = self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif"
+        self.seg_shp = self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_mode}.sqlite"
+
+        # Legacy compatibility migration for SAM segmentation files
+        if self.seg_mode == 'sam':
+            legacy_tif = self.seg_dir / f"{self.file_prefix}_segmentation.tif"
+            legacy_sqlite = self.seg_dir / f"{self.file_prefix}_segmentation.sqlite"
+            if legacy_tif.exists() and not self.seg_tif.exists():
+                print(f"    [INFO] Migrating legacy SAM segmentation raster to new naming format...")
+                try:
+                    os.rename(str(legacy_tif), str(self.seg_tif))
+                    if legacy_sqlite.exists() and not self.seg_shp.exists():
+                        os.rename(str(legacy_sqlite), str(self.seg_shp))
+                except Exception as e:
+                    print(f"    [WARNING] Failed to migrate legacy segmentation files: {e}")
 
         # Samples
         samples_base = self.aux_dir / 'shapefiles_samples'
@@ -501,18 +483,18 @@ class ProcessingPipeline:
             self.sample_shp = samples_base / self.file_prefix / "samples.shp"
 
         # Output paths
-        self.learn_shp = self.samples_dir / 'learn.shp'
-        self.control_shp = self.samples_dir / 'control.shp'
-        self.sel_csv = self.samples_dir / f"{self.file_prefix}_learn_features.csv"
+        self.learn_shp = self.samples_dir / f"learn_{self.seg_mode}.shp"
+        self.control_shp = self.samples_dir / f"control_{self.seg_mode}.shp"
+        self.sel_csv = self.samples_dir / f"{self.file_prefix}_learn_features_{self.seg_mode}.csv"
 
         # Classification outputs
-        self.class_tif = self.class_dir / f"{self.file_prefix}_classified.tif"
-        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence_map.tif"
+        self.class_tif = self.class_dir / f"{self.file_prefix}_classified_{self.seg_mode}.tif"
+        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence_map_{self.seg_mode}.tif"
 
         self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
-        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked.tif"
-        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked.tif"
-        self.metrics_fp = self.class_dir / f"{self.file_prefix}_metrics.xlsx"
+        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked_{self.seg_mode}.tif"
+        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked_{self.seg_mode}.tif"
+        self.metrics_fp = self.class_dir / f"{self.file_prefix}_metrics_{self.seg_mode}.xlsx"
 
         # Agricultural mask - resolved per country (set in _resolve_agri_mask)
         self.agri_mask = self._resolve_agri_mask()
@@ -531,7 +513,7 @@ class ProcessingPipeline:
         }
         self.stage4_params = {
             'classifier': 'ann_sklearn',
-            'sk_hidden_sizes': '512,256,128',
+            'sk_hidden_sizes': '256,128,64',
             'sk_activation': 'relu',
             'sk_solver': 'adam',
             'sk_alpha': 0.0001,
@@ -954,6 +936,100 @@ class ProcessingPipeline:
 
         if self.seg_tif.exists():
             print(f"[Stage {stage}/{self.total_stages}] Segmentation Raster exists, skipping\n")
+            return
+
+        if self.seg_mode == 'lpis':
+            print(f"[Stage {stage}/{self.total_stages}] Running LPIS (Parcel Boundary) Rasterization...")
+            lpis_dir = self.aux_dir / 'shapefiles_samples' / self.country
+            lpis_candidates = list(lpis_dir.glob("*.gpkg")) + list(lpis_dir.glob("*.shp"))
+            lpis_candidates = [p for p in lpis_candidates if p.name not in ['samples.shp', 'learn.shp', 'control.shp']]
+            
+            if not lpis_candidates:
+                raise FileNotFoundError(f"No LPIS vector file (.gpkg/.shp) found in {lpis_dir}")
+            
+            lpis_file = lpis_candidates[0]
+            print(f"    LPIS file selected: {lpis_file}")
+            
+            ds_ras = gdal.Open(str(self.ras))
+            cols = ds_ras.RasterXSize
+            rows = ds_ras.RasterYSize
+            gt = ds_ras.GetGeoTransform()
+            proj = ds_ras.GetProjection()
+            
+            minx = gt[0]
+            maxy = gt[3]
+            maxx = minx + gt[1] * cols
+            miny = maxy + gt[5] * rows
+            
+            info = read_info(str(lpis_file))
+            
+            srs_target = osr.SpatialReference()
+            srs_target.ImportFromWkt(proj)
+            target_epsg = srs_target.GetAttrValue("AUTHORITY", 1)
+            
+            from pyproj import Transformer
+            lpis_crs = info.get('crs')
+            print(f"    LPIS CRS: {lpis_crs}")
+            
+            transformer = Transformer.from_crs(f"EPSG:{target_epsg}", lpis_crs, always_xy=True)
+            p1 = transformer.transform(minx, miny)
+            p2 = transformer.transform(maxx, maxy)
+            lpis_bbox = (min(p1[0], p2[0]), min(p1[1], p2[1]), max(p1[0], p2[0]), max(p1[1], p2[1]))
+            
+            print(f"    Querying LPIS with spatial filter bbox: {lpis_bbox}")
+            gdf = read_dataframe(str(lpis_file), bbox=lpis_bbox)
+            print(f"    Loaded {len(gdf)} intersecting parcels. Reprojecting to EPSG:{target_epsg}...")
+            gdf_target = gdf.to_crs(f"EPSG:{target_epsg}")
+            
+            # Resolve unique ID column
+            fid_col = info.get('fid_column')
+            if fid_col and fid_col in gdf_target.columns:
+                id_col = fid_col
+            elif 'id' in gdf_target.columns:
+                id_col = 'id'
+            elif 'id_0' in gdf_target.columns:
+                id_col = 'id_0'
+            else:
+                id_col = None
+
+            if id_col is None:
+                gdf_target['lpis_id'] = np.arange(1, len(gdf_target) + 1)
+                id_col = 'lpis_id'
+            else:
+                gdf_target[id_col] = pd.to_numeric(gdf_target[id_col], errors='coerce').fillna(0).astype(np.int32)
+                if gdf_target[id_col].sum() == 0 or gdf_target[id_col].nunique() < len(gdf_target):
+                    gdf_target['lpis_id'] = np.arange(1, len(gdf_target) + 1)
+                    id_col = 'lpis_id'
+            
+            temp_gpkg = self.seg_dir / f"temp_lpis_{self.sanitized_track}.gpkg"
+            gdf_target.geometry = gdf_target.geometry.force_2d()
+            gdf_target.to_file(str(temp_gpkg), driver="GPKG", engine="pyogrio")
+            
+            driver = gdal.GetDriverByName("GTiff")
+            ds_out = driver.Create(
+                str(self.seg_tif),
+                cols, rows, 1,
+                gdal.GDT_Int32,
+                options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
+            )
+            ds_out.SetGeoTransform(gt)
+            ds_out.SetProjection(proj)
+            
+            band = ds_out.GetRasterBand(1)
+            band.SetNoDataValue(0)
+            band.Fill(0)
+            
+            print(f"    Rasterizing parcels to {self.seg_tif.name} (burning column '{id_col}')...")
+            gdal.Rasterize(ds_out, str(temp_gpkg), attribute=id_col)
+            
+            ds_out.FlushCache()
+            ds_out = None
+            ds_ras = None
+            
+            if os.path.exists(temp_gpkg):
+                os.remove(temp_gpkg)
+                    
+            print(f"Completed stage {stage}: LPIS rasterized.\n")
             return
 
         method = params.get('method', 'otb_meanshift')
@@ -1488,7 +1564,7 @@ class ProcessingPipeline:
             print("ERROR: Feature CSV not found.")
             return
 
-        model_fn = self.model_dir / f"{self.file_prefix}_model.pkl"
+        model_fn = self.model_dir / f"{self.file_prefix}_model_{self.seg_mode}.pkl"
 
         print(f"[Stage {stage}/{self.total_stages}] Training ANN...")
 
@@ -1512,7 +1588,7 @@ class ProcessingPipeline:
         all_classes = np.unique(y)
         class_weights = _calculate_class_weights(y, all_classes)
 
-        hidden_sizes = tuple(map(int, str(params.get('sk_hidden_sizes', '512,256,128')).split(',')))
+        hidden_sizes = tuple(map(int, str(params.get('sk_hidden_sizes', '256,128,64')).split(',')))
         max_iter = params.get('sk_max_iter', 120)
 
         print(f"    Training TorchMLPClassifier on {X.shape[0]} samples with input dim {X.shape[1]}, hidden sizes {hidden_sizes}...")
@@ -1542,7 +1618,7 @@ class ProcessingPipeline:
         self._ensure_directories()
         stage = 5
 
-        model_file = self.model_dir / f"{self.file_prefix}_model.pkl"
+        model_file = self.model_dir / f"{self.file_prefix}_model_{self.seg_mode}.pkl"
         if not model_file.exists():
             print("ERROR: Model not found.")
             return
@@ -2144,10 +2220,14 @@ if __name__ == '__main__':
                         choices=['3class', 'allcrops'],
                         help="Agricultural mask variant: '3class' (jare/oziminy/rzepak, default) "
                              "or 'allcrops' (wszystkie uprawy wlacznie z trwalymi)")
+    parser.add_argument('--seg_mode', default='sam',
+                        choices=['sam', 'lpis'],
+                        help="Segmentation mode: 'sam' (Meta AI SAM segmentation, default) "
+                             "or 'lpis' (rasterize LPIS parcel boundaries)")
     args = parser.parse_args()
 
     try:
-        pipeline = ProcessingPipeline(track=args.track, mask_variant=args.mask_variant)
+        pipeline = ProcessingPipeline(track=args.track, mask_variant=args.mask_variant, seg_mode=args.seg_mode)
         main_menu(pipeline)
     except Exception as e:
         print(f"Initialization Error: {e}")
