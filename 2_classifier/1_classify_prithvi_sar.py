@@ -1418,18 +1418,20 @@ def main():
     pipeline = ProcessingPipeline(args.track)
     
     print("\n--- PRITHVI-SAR CLASSIFICATION MENU ---")
-    print("  [1] Run Full Classification Pipeline (Stages 0-7)")
-    print("  [2] Stage 0: Generate Data Footprint")
-    print("  [3] Stage 1: Segmentation (SAM)")
-    print("  [4] Stage 2: Prepare Point Split")
-    print("  [5] Stage 3: Extract Prithvi-SAR Features")
-    print("  [6] Stage 4: Train ANN Classifier")
-    print("  [7] Stage 5: Run Inference (Object-based)")
-    print("  [8] Stage 6: Apply Agricultural Mask")
-    print("  [9] Stage 7: Calculate Validation Metrics")
+    print("  [1] Stage 0: Generate Data Footprint")
+    print("  [2] Stage 1: Segmentation (SAM)")
+    print("  [3] Stage 2: Prepare Point Split")
+    print("  [4] Stage 3: Extract Prithvi-SAR Features")
+    print("  [5] Stage 4: Train ANN Classifier")
+    print("  [6] Stage 5: Run Inference (Object-based)")
+    print("  [7] Stage 6: Apply Agricultural Mask")
+    print("  [8] Stage 7: Calculate Validation Metrics")
     
-    choice = input("\nEnter choice (1-9): ").strip()
-    if choice == '1':
+    print("\n  [A] Run All Stages (Stages 0-7)")
+    print("  [Q] Quit")
+    
+    choice = input("\nEnter choice: ").strip().upper()
+    if choice == 'A':
         pipeline.stage_0_generate_footprint()
         pipeline.stage_1_segmentation()
         pipeline.stage_2_prepare_points()
@@ -1438,22 +1440,24 @@ def main():
         pipeline.stage_5_classify_vector()
         pipeline.stage_6_mask_classification()
         pipeline.stage_7_calculate_metrics()
-    elif choice == '2':
+    elif choice == '1':
         pipeline.stage_0_generate_footprint(force_recompute=True)
-    elif choice == '3':
+    elif choice == '2':
         pipeline.stage_1_segmentation(force_recompute=True)
-    elif choice == '4':
+    elif choice == '3':
         pipeline.stage_2_prepare_points(force_recompute=True)
-    elif choice == '5':
+    elif choice == '4':
         pipeline.stage_3_selection()
-    elif choice == '6':
+    elif choice == '5':
         pipeline.stage_4_train_classifier()
-    elif choice == '7':
+    elif choice == '6':
         pipeline.stage_5_classify_vector(force_recompute=True)
-    elif choice == '8':
+    elif choice == '7':
         pipeline.stage_6_mask_classification(force_recompute=True)
-    elif choice == '9':
+    elif choice == '8':
         pipeline.stage_7_calculate_metrics()
+    elif choice == 'Q':
+        sys.exit(0)
     else:
         print("Invalid choice. Exiting.")
 
