@@ -203,9 +203,9 @@ In Stage 2, the pipeline automatically splits your `samples.shp` dataset:
 
 ---
 
-## Interactive menu and stages selector (ANN / SAM)
+## Interactive menu and stages selector (ANN-SAM)
 
-When you execute the classifier script (`1_classify_ann.py` or the SAM version), the program starts an interactive text menu in your terminal. This gives you absolute control over execution, allowing you to run everything in one go or step-by-step while adjusting hyperparameters.
+When you execute the classifier script (`1_classify_ann_sam.py`), the program starts an interactive text menu in your terminal. This gives you absolute control over execution, allowing you to run everything in one go or step-by-step while adjusting hyperparameters.
 
 ### The pipeline menu layout
 Upon launching the script, the following menu is displayed:
@@ -213,7 +213,8 @@ Upon launching the script, the following menu is displayed:
     --- Raster-Based OBIA Pipeline (ANN) ---
     Track: PL/orbit_12 (PL)
 
-    [1] Stage 1: SAR Summed Segmentation (eCognition-style MRS)
+    [0] Stage 0: Generate Data Footprint Mask
+    [1] Stage 1: SAR Segmentation (Meta SAM - Automatic Mask Generator)
     [2] Stage 2: Split Samples
     [3] Stage 3: Extract Features (Object-based Training)
     [4] Stage 4: Train ANN Classifier
@@ -446,30 +447,31 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 ---
 
 ### Step 6: Object-based classification
-* **Description and Logic**: Splits the clipped image stack into homogeneous agricultural parcel objects, extracts statistical or deep learning features for each object over the Sentinel-1 timeline, trains a machine learning or deep learning classifier, and performs tiled prediction across the entire track.
-* **Algorithm Options**:
-  - **Option A (Felzenszwalb ANN)** - `1_classify_ann.py`: Performs Felzenszwalb segmentation on CPU. Extracts zonal statistics (mean backscatter, standard deviation, and temporal ratios) per parcel object to train a scikit-learn MLP Classifier.
-  - **Option B (SAM ANN)** - `1_classify_ann_sam.py`: Employs Meta AI's Segment Anything Model (SAM) for deep learning-based boundary delineation (requires GPU / PyTorch).
+* **Description and logic**: Splits the clipped image stack into homogeneous agricultural parcel objects, extracts statistical or deep learning features for each object over the Sentinel-1 timeline, trains a machine learning or deep learning classifier, and performs tiled prediction across the entire track.
+* **Algorithm options**:
+  - **Option A (ANN-SAM / LPIS)** - `1_classify_ann_sam.py`: The primary neural network classifier script. It supports two segmentation modes:
+    - **SAM mode (`--seg_mode sam`)**: Employs Meta AI's Segment Anything Model (SAM) for deep learning-based boundary delineation (requires GPU / PyTorch).
+    - **LPIS mode (`--seg_mode lpis`)**: Instantly rasterizes local vector land parcel databases (e.g. BRP in the Netherlands or ARiMR in Poland) to use exact parcel boundaries as classification objects.
 
     *The object-based classification workflow using SAM is structured as follows:*
 
     ![SAM Object-Based Classification Workflow](auxiliary_files/images/sam_classification_v5.png)
 
-  - **Option C (Prithvi-SAR)** - `1_classify_prithvi_sar.py`: Leverages the NASA-IBM geospatial foundation model to extract `768`-dimensional temporal-spectral token embeddings from segmented image patches. It includes its own built-in Segment Anything Model (SAM) segmentation stage, making the entire pipeline completely self-contained.
+  - **Option B (Prithvi-SAR)** - `1_classify_prithvi_sar.py`: Leverages the NASA-IBM geospatial foundation model to extract `768`-dimensional temporal-spectral token embeddings from segmented image patches. It includes its own built-in Segment Anything Model (SAM) segmentation stage, making the entire pipeline completely self-contained.
 
     *The object-based classification workflow using Prithvi-SAR is structured as follows:*
 
     ![Prithvi-SAR Object-Based Classification Workflow](auxiliary_files/images/prithvi_classification_v5.png)
 
-  - **Option D (OTB RF/SVM)** - `1_classify_otb.py`: Integrates Orfeo ToolBox (OTB) CLI tools. Performs OTB Mean-Shift segmentation on the time-series stack, extracts statistical object features, trains an OTB Random Forest or SVM classifier, and outputs classified shapefiles and rasters.
-* **Prerequisites and Config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, model checkpoints if running SAM/Prithvi, and OTB binary installation in `bin/OTB-6.2.0-Win64/` if running OTB classification.
-* **Launch Command**:
+  - **Option C (OTB RF/SVM)** - `1_classify_otb.py`: Integrates Orfeo ToolBox (OTB) CLI tools. Performs OTB Mean-Shift segmentation on the time-series stack, extracts statistical object features, trains an OTB Random Forest or SVM classifier, and outputs classified shapefiles and rasters.
+* **Prerequisites and config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, model checkpoints if running SAM/Prithvi, and OTB binary installation in `bin/OTB-6.2.0-Win64/` if running OTB classification.
+* **Launch command**:
   ```bash
-  # Run Felzenszwalb ANN Classifier:
-  python 2_classifier/1_classify_ann.py --track PL/orbit_12
+  # Run ANN-SAM classifier (SAM segmentation mode):
+  python 2_classifier/1_classify_ann_sam.py --track PL/orbit_12 --seg_mode sam
 
-  # Run SAM Deep-Learning Classifier:
-  python 2_classifier/1_classify_ann_sam.py --track PL/orbit_12
+  # Run ANN-SAM classifier (LPIS boundaries mode):
+  python 2_classifier/1_classify_ann_sam.py --track PL/orbit_12 --seg_mode lpis
 
   # Run NASA-IBM Prithvi-SAR Classifier:
   python 2_classifier/1_classify_prithvi_sar.py --track PL/orbit_12
