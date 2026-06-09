@@ -344,9 +344,14 @@ except ImportError:
 #
 # Available CLI arguments:
 #   --track          : Name of the processing track (e.g. NL/orbit_88, PL/orbit_12)
-#   --seg_mode       : Segmentation mode. Choose:
-#                      * 'sam'  (deep learning boundary delineation using Meta AI SAM)
+#   --seg_mode       : Initial segmentation mode. Choose:
+#                      * 'sam'  (default, uses Meta AI SAM or other dynamically computed segmentation)
 #                      * 'lpis' (rasterization of actual cadastral parcel boundaries from vector GPKG/SHP databases)
+#                      Note: In the interactive menu, you can dynamically switch between any of the 7 supported
+#                            segmentation methods. The output filenames, models, and metric spreadsheets
+#                            will automatically update to include a suffix matching the selected method
+#                            (e.g., '_sam', '_lpis', '_mrs_summed', '_mrs_seasonal', '_otb_meanshift',
+#                            '_felzenszwalb', '_slic'). This prevents file name collisions.
 #   --mask_variant   : Agricultural crop mask variant. Choose:
 #                      * 'allcrops' (full cropland mask including all 18+ classes, recommended for NL)
 #                      * '3class'   (aggregated/masked for the 3 main PL crop types: spring crops, winter crops, rapeseed)
@@ -380,8 +385,8 @@ TOTAL_STAGES = 8
 class ProcessingPipeline:
     def __init__(self, track, mask_variant='3class', seg_mode='sam'):
         self.track = track
-        self.mask_variant = mask_variant  # '3class' lub 'allcrops'
-        self.seg_mode = seg_mode          # 'sam' lub 'lpis'
+        self.mask_variant = mask_variant  # '3class' or 'allcrops'
+        self.seg_mode = seg_mode          # 'sam' or 'lpis'
         
         # Dedicated support for dynamic tracks per country (e.g. PL/orbit_12 or 2-letter country code)
         if '/' in track or '\\' in track:
@@ -442,23 +447,6 @@ class ProcessingPipeline:
         else:
             raise FileNotFoundError(f"Processing directory does not exist: {self.proc_dir}")
 
-        # --- 3. Define all output file paths ---
-        self.seg_tif = self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif"
-        self.seg_shp = self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_mode}.sqlite"
-
-        # Legacy compatibility migration for SAM segmentation files
-        if self.seg_mode == 'sam':
-            legacy_tif = self.seg_dir / f"{self.file_prefix}_segmentation.tif"
-            legacy_sqlite = self.seg_dir / f"{self.file_prefix}_segmentation.sqlite"
-            if legacy_tif.exists() and not self.seg_tif.exists():
-                print(f"    [INFO] Migrating legacy SAM segmentation raster to new naming format...")
-                try:
-                    os.rename(str(legacy_tif), str(self.seg_tif))
-                    if legacy_sqlite.exists() and not self.seg_shp.exists():
-                        os.rename(str(legacy_sqlite), str(self.seg_shp))
-                except Exception as e:
-                    print(f"    [WARNING] Failed to migrate legacy segmentation files: {e}")
-
         # Samples
         samples_base = self.aux_dir / 'shapefiles_samples'
         candidate_paths = [
@@ -482,26 +470,31 @@ class ProcessingPipeline:
             print(f"\nCRITICAL WARNING: Could not find 'samples.shp' inside {samples_base}")
             self.sample_shp = samples_base / self.file_prefix / "samples.shp"
 
-        # Output paths
-        self.learn_shp = self.samples_dir / f"learn_{self.seg_mode}.shp"
-        self.control_shp = self.samples_dir / f"control_{self.seg_mode}.shp"
-        self.sel_csv = self.samples_dir / f"{self.file_prefix}_learn_features_{self.seg_mode}.csv"
+        # --- 3. Initialize seg_mode and output file paths ---
+        initial_method = 'lpis' if seg_mode == 'lpis' else 'python_sam'
+        self.update_paths(initial_method)
 
-        # Classification outputs
-        self.class_tif = self.class_dir / f"{self.file_prefix}_classified_{self.seg_mode}.tif"
-        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence_map_{self.seg_mode}.tif"
+        # Legacy compatibility migration for SAM segmentation files
+        if self.seg_mode == 'sam':
+            legacy_tif = self.seg_dir / f"{self.file_prefix}_segmentation.tif"
+            legacy_sqlite = self.seg_dir / f"{self.file_prefix}_segmentation.sqlite"
+            if legacy_tif.exists() and not self.seg_tif.exists():
+                print(f"    [INFO] Migrating legacy SAM segmentation raster to new naming format...")
+                try:
+                    os.rename(str(legacy_tif), str(self.seg_tif))
+                    if legacy_sqlite.exists() and not self.seg_shp.exists():
+                        os.rename(str(legacy_sqlite), str(self.seg_shp))
+                except Exception as e:
+                    print(f"    [WARNING] Failed to migrate legacy segmentation files: {e}")
 
         self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
-        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked_{self.seg_mode}.tif"
-        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked_{self.seg_mode}.tif"
-        self.metrics_fp = self.class_dir / f"{self.file_prefix}_metrics_{self.seg_mode}.xlsx"
-
+        
         # Agricultural mask - resolved per country (set in _resolve_agri_mask)
         self.agri_mask = self._resolve_agri_mask()
 
         # --- 4. Parameters ---
         self.stage1_params = {
-            'method': 'python_sam',
+            'method': initial_method,
             'tile_size': 2048, # SAM is memory intensive, smaller tile
             'buffer': 128,     # buffer to avoid edge artifacts
             'sam_checkpoint': str(self.aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'),
@@ -523,19 +516,61 @@ class ProcessingPipeline:
 
         self.feat_cols = []
 
-        # --- Utility Methods ---
+    # --- Utility Methods ---
+
+    def update_paths(self, method_name):
+        """
+        Dynamically updates the output file paths based on the selected segmentation method
+        (e.g., 'sam', 'lpis', 'mrs_summed', 'mrs_seasonal', 'otb_meanshift', 'felzenszwalb', 'slic').
+        """
+        suffix_mapping = {
+            'python_sam': 'sam',
+            'lpis': 'lpis',
+            'python_mrs_summed': 'mrs_summed',
+            'python_mrs_seasonal': 'mrs_seasonal',
+            'otb_meanshift_summed': 'otb_meanshift',
+            'python_felzenszwalb': 'felzenszwalb',
+            'python_slic': 'slic'
+        }
+        
+        self.seg_suffix = suffix_mapping.get(method_name, 'sam')
+        
+        # 'lpis' mode does vector parcel boundary rasterization, others do image-based segmentation
+        if method_name == 'lpis':
+            self.seg_mode = 'lpis'
+        else:
+            self.seg_mode = 'sam'
+        
+        self.seg_tif = self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_suffix}.tif"
+        self.seg_shp = self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_suffix}.sqlite"
+        self.learn_shp = self.samples_dir / f"learn_{self.seg_suffix}.shp"
+        self.control_shp = self.samples_dir / f"control_{self.seg_suffix}.shp"
+        self.sel_csv = self.samples_dir / f"{self.file_prefix}_learn_features_{self.seg_suffix}.csv"
+        self.class_tif = self.class_dir / f"{self.file_prefix}_classified_{self.seg_suffix}.tif"
+        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence_map_{self.seg_suffix}.tif"
+        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked_{self.seg_suffix}.tif"
+        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked_{self.seg_suffix}.tif"
+        self.metrics_fp = self.class_dir / f"{self.file_prefix}_metrics_{self.seg_suffix}.xlsx"
+        self.model_pkl = self.model_dir / f"{self.file_prefix}_model_{self.seg_suffix}.pkl"
+        
+        print(f"    [INFO] Switched segmentation mode to: {self.seg_mode.upper()} (Suffix: {self.seg_suffix})")
+        print(f"    Updated output paths accordingly (e.g. classification output: {self.class_tif.name})")
+
+        # Keep stage1_params['method'] consistent with mode if it has been initialized
+        if hasattr(self, 'stage1_params'):
+            self.stage1_params['method'] = method_name
 
     def _resolve_agri_mask(self) -> Path:
         """
-        Inteligentnie dobiera binarna maske terenow rolnych per kraj.
-        Wariant wybierany przez self.mask_variant ('3class' lub 'allcrops').
+        Smart-selects the binary agricultural mask per country.
+        Variant selected by self.mask_variant ('3class' or 'allcrops').
 
-        Kolejnosc wyszukiwania (dla mask_variant='3class'):
+        Search order (for mask_variant='3class'):
           1. AgriMasks/<COUNTRY>/<COUNTRY>_agri_mask_3class_epsg3857.tif
           2. AgriMasks/<COUNTRY>/<COUNTRY>_agri_mask_allcrops_epsg3857.tif
           3. EU_arable_areas_mask_3857.tif (fallback)
 
-        Aby wygenerowac maske: python build_agri_mask.py --country {self.country}
+        To generate the mask, run: python build_agri_mask.py --country {self.country}
         """
         raster_dir  = self.aux_dir / 'raster_files'
         country_dir = raster_dir / 'AgriMasks' / self.country
@@ -544,13 +579,13 @@ class ProcessingPipeline:
         mask_allcrops = country_dir / f"{self.country}_agri_mask_allcrops_epsg3857.tif"
         mask_eu       = raster_dir / 'EU_arable_areas_mask_3857.tif'
 
-        # Kolejnosc kandydatow zalezna od wybranego wariantu
+        # Candidates order depends on the selected variant
         if self.mask_variant == 'allcrops':
             candidates = [mask_allcrops, mask_3class, mask_eu]
-            print(f"  Mask variant: allcrops (wszystkie uprawy wlacznie z trwalymi)")
+            print(f"  Mask variant: allcrops (all crops including permanent ones)")
         else:
             candidates = [mask_3class, mask_allcrops, mask_eu]
-            print(f"  Mask variant: 3class (jare/oziminy/rzepak)")
+            print(f"  Mask variant: 3class (spring/winter/rapeseed)")
 
         for p in candidates:
             if p.exists():
@@ -1570,7 +1605,7 @@ class ProcessingPipeline:
             print("ERROR: Feature CSV not found.")
             return
 
-        model_fn = self.model_dir / f"{self.file_prefix}_model_{self.seg_mode}.pkl"
+        model_fn = self.model_pkl
 
         print(f"[Stage {stage}/{self.total_stages}] Training ANN...")
 
@@ -1624,7 +1659,7 @@ class ProcessingPipeline:
         self._ensure_directories()
         stage = 5
 
-        model_file = self.model_dir / f"{self.file_prefix}_model_{self.seg_mode}.pkl"
+        model_file = self.model_pkl
         if not model_file.exists():
             print("ERROR: Model not found.")
             return
@@ -2029,13 +2064,13 @@ class ProcessingPipeline:
 # --- Interactive Menu Helpers ---
 
 SAM_MODELS = {
-    '1': {'name': 'vit_b  (Maly,  ~375 MB, SZYBKI,  ~2 GB VRAM - polecany do testow)',
+    '1': {'name': 'vit_b  (Small, ~375 MB, FAST,   ~2 GB VRAM - recommended for testing)',
            'model_type': 'vit_b',  'checkpoint': 'sam_vit_b_01ec64.pth',
            'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth'},
-    '2': {'name': 'vit_l  (Sredni, ~1.2 GB, SREDNI,  ~6 GB VRAM)',
+    '2': {'name': 'vit_l  (Medium, ~1.2 GB, MEDIUM, ~6 GB VRAM)',
            'model_type': 'vit_l',  'checkpoint': 'sam_vit_l_0b3195.pth',
            'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth'},
-    '3': {'name': 'vit_h  (Ogromny,~2.4 GB, WOLNY,  ~10 GB VRAM - najwyzsza dokladnosc)',
+    '3': {'name': 'vit_h  (Huge,  ~2.4 GB, SLOW,   ~10 GB VRAM - highest accuracy)',
            'model_type': 'vit_h',  'checkpoint': 'sam_vit_h_4b8939.pth',
            'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth'},
 }
@@ -2055,9 +2090,10 @@ def get_stage1_params_sam(param_dict):
     print("  [4] OTB Mean-Shift on summed dB (Fast C++ engine) [otb_meanshift_summed]")
     print("  [5] Felzenszwalb algorithm on full raster [python_felzenszwalb]")
     print("  [6] SLIC algorithm on full raster [python_slic]")
+    print("  [7] LPIS boundary rasterization (Cadastral vector data) [lpis]")
     print("  [Enter] Keep current method")
     
-    choice = input("Choose option (1-6): ").strip()
+    choice = input("Choose option (1-7): ").strip()
     
     method_mapping = {
         '1': 'python_sam',
@@ -2065,7 +2101,8 @@ def get_stage1_params_sam(param_dict):
         '3': 'python_mrs_seasonal',
         '4': 'otb_meanshift_summed',
         '5': 'python_felzenszwalb',
-        '6': 'python_slic'
+        '6': 'python_slic',
+        '7': 'lpis'
     }
     
     if choice in method_mapping:
@@ -2106,6 +2143,8 @@ def get_stage1_params_sam(param_dict):
             new_params.setdefault('n_segments', 20000)
             new_params.setdefault('compactness', 0.1)
             new_params.setdefault('slic_sigma', 1.0)
+        elif method == 'lpis':
+            pass
             
     method = new_params.get('method', 'python_sam')
     
@@ -2150,19 +2189,25 @@ def get_stage1_params_sam(param_dict):
         show_keys = ['tile_size', 'buffer', 'scale', 'sigma', 'min_size']
     elif method == 'python_slic':
         show_keys = ['tile_size', 'buffer', 'n_segments', 'compactness', 'slic_sigma']
+    elif method == 'lpis':
+        show_keys = []
 
-    print(f"\n--- Edit parameters for: {method.upper()} ---")
-    for key in show_keys:
-        val = new_params.get(key)
-        new_val_str = input(f"  {key} [{val}]: ").strip()
-        if new_val_str:
-            try:
-                if isinstance(val, bool):
-                    new_params[key] = new_val_str.lower() in ('true', '1', 'y', 'yes')
-                else:
-                    new_params[key] = type(val)(new_val_str) if val is not None else new_val_str
-            except ValueError:
-                print("    Invalid value. Keeping default.")
+    if method == 'lpis':
+        print("\n  No configurable parameters for LPIS rasterization.")
+        print("  It will use the cadastral vector files in the country folder.")
+    else:
+        print(f"\n--- Edit parameters for: {method.upper()} ---")
+        for key in show_keys:
+            val = new_params.get(key)
+            new_val_str = input(f"  {key} [{val}]: ").strip()
+            if new_val_str:
+                try:
+                    if isinstance(val, bool):
+                        new_params[key] = new_val_str.lower() in ('true', '1', 'y', 'yes')
+                    else:
+                        new_params[key] = type(val)(new_val_str) if val is not None else new_val_str
+                except ValueError:
+                    print("    Invalid value. Keeping default.")
 
     print("\n--- APPROVED SEGMENTATION PARAMETERS ---")
     print(f"  Method: {method.upper()}")
@@ -2221,12 +2266,17 @@ def get_classifier_params(param_dict):
 # --- Main Execution ---
 
 def main_menu(pipeline):
-    menu = f"""
+    while True:
+        seg_method = pipeline.stage1_params.get('method', 'python_sam')
+        seg_desc = "LPIS Cadastral Vector Rasterization" if pipeline.seg_mode == 'lpis' else f"SAR Segmentation ({seg_method})"
+        
+        menu = f"""
     --- Raster-Based OBIA Pipeline (ANN) ---
     Track: {pipeline.track} ({pipeline.country})
+    Segmentation Mode: {pipeline.seg_mode.upper()} ({seg_method})
 
     [0] Stage 0: Generate Data Footprint Mask
-    [1] Stage 1: SAR Segmentation (Meta SAM - Automatic Mask Generator)
+    [1] Stage 1: {seg_desc}
     [2] Stage 2: Split Samples
     [3] Stage 3: Extract Features (Object-based Training)
     [4] Stage 4: Train ANN Classifier
@@ -2238,10 +2288,8 @@ def main_menu(pipeline):
     [A] Run All Stages (Forces overwrite of Stages 5-8 to clear old bugs)
     [Q] Quit
 
-    Enter your choice:
-    """
-
-    while True:
+    Enter your choice: 
+        """
         choice = input(menu).strip().upper()
         try:
             if choice == '0':
@@ -2249,9 +2297,10 @@ def main_menu(pipeline):
             elif choice == '1':
                 new_params = get_stage1_params_sam(pipeline.stage1_params)
                 if new_params is None:
-                    print("  Anulowano uruchamianie segmentacji SAM.")
+                    print("  Segmentation parameter setup cancelled.")
                     continue
                 pipeline.stage1_params.update(new_params)
+                pipeline.update_paths(pipeline.stage1_params['method'])
                 pipeline.stage_1_segmentation(**pipeline.stage1_params)
             elif choice == '2':
                 new_params = get_params(pipeline.stage2_params)
@@ -2299,12 +2348,12 @@ if __name__ == '__main__':
     parser.add_argument('--track', required=True, help="Processing track name (e.g. NL/orbit_88 or PT/orbit_161)")
     parser.add_argument('--mask_variant', default='3class',
                         choices=['3class', 'allcrops'],
-                        help="Agricultural mask variant: '3class' (jare/oziminy/rzepak, default) "
-                             "or 'allcrops' (wszystkie uprawy wlacznie z trwalymi)")
+                        help="Agricultural mask variant: '3class' (spring/winter/rapeseed, default) "
+                             "or 'allcrops' (all crops including permanent ones)")
     parser.add_argument('--seg_mode', default='sam',
-                        choices=['sam', 'lpis'],
-                        help="Segmentation mode: 'sam' (Meta AI SAM segmentation, default) "
-                             "or 'lpis' (rasterize LPIS parcel boundaries)")
+                        choices=['sam', 'lpis', 'mrs_summed', 'mrs_seasonal', 'otb_meanshift', 'felzenszwalb', 'slic'],
+                        help="Initial segmentation mode/suffix (default: 'sam'). "
+                             "Determines which files (features, model, results) are processed.")
     args = parser.parse_args()
 
     try:

@@ -285,46 +285,62 @@ You can select individual numbers to execute specific parts of the pipeline and 
 
 ## Segmentation methods and parameter tuning guide
 
-Upon executing `Stage 1` (Segmentation) in the interactive menu of `1_classify_ann_sam.py`, the program presents a sub-menu to select your preferred segmentation method and dynamically configure its parameters.
+Upon executing `Stage 1` (Segmentation) in the interactive menu of `1_classify_ann_sam.py`, the program presents a sub-menu to select your preferred segmentation method and dynamically configure its parameters. Selecting a method will also dynamically toggle the target outputs and paths between the cadastral boundaries (`_lpis` suffix) and dynamic segmentation results (`_sam` suffix).
 
 ### 1. Supported segmentation methods
 
-* **Meta SAM (`python_sam` - default)**: Utilizes Meta AI's deep learning Segment Anything Model (SAM) to delineate field boundaries. It is highly robust to speckle noise and understands general object geometry. Requires downloading weights (see below).
-* **Watershed / MRS on summed dB (`python_mrs_summed`)**: Performs a watershed transform on the gradient magnitude (edges) of the log-domain summed composite image. Extremely fast, removes speckle noise through temporal summing, and yields clean field boundaries.
-* **Watershed / MRS on seasonal composite (`python_mrs_seasonal`)**: Runs watershed segmentation on a 3-date seasonal composite (mid-May, mid-July, mid-August). It preserves phenological changes, allowing the detection of boundaries between crops with different growing calendars.
-* **OTB Mean-Shift on summed dB (`otb_meanshift_summed`)**: Integrates the high-performance C++ Mean-Shift clustering engine from Orfeo ToolBox. Fast and yields good results, but can suffer from I/O bottlenecks when writing large numbers of vector polygons to shapefiles.
-* **Felzenszwalb (`python_felzenszwalb`)**: A graph-based CPU clustering algorithm. It is very fast but highly sensitive to local pixel variations, which can cause it to segment individual radar speckle patterns instead of actual agricultural fields.
-* **SLIC (`python_slic`)**: Simple linear iterative clustering. It partitions the image into compact, uniform-sized superpixel cells. It does not conform well to actual irregular field boundaries.
+* **Meta SAM (`python_sam` - default)**: Utilizes Meta AI's deep learning Segment Anything Model (SAM) to delineate agricultural field boundaries. It is highly robust to SAR speckle noise and understands general object shapes. Since SAM is trained on RGB imagery, the pipeline converts the SAR data to 8-bit, enhances contrast using CLAHE, and applies an edge-preserving bilateral filter before passing it to SAM-Geo. Requires downloading weights (see checkpoint instructions below).
+* **Watershed / MRS on summed dB (`python_mrs_summed`)**: Performs a watershed transform on the gradient magnitude (edges) of the log-domain summed composite image, followed by Hierarchical Multi-Resolution Segmentation (MRS) region merging. Extremely fast, suppresses radar speckle noise through temporal summing, and yields clean, geometrically precise field boundaries.
+* **Watershed / MRS on seasonal composite (`python_mrs_seasonal`)**: Runs watershed segmentation on a 6-band composite consisting of three dates from the vegetation season (e.g., mid-May, mid-July, and mid-August, with VV/VH bands for each date). It preserves phenological changes, allowing the detection of boundaries between adjacent crops that look identical in backscatter on one date but have different growing calendars.
+* **OTB Mean-Shift on summed dB (`otb_meanshift_summed`)**: Integrates the high-performance C++ Mean-Shift clustering engine from Orfeo ToolBox. Fast and yields high-quality linear features, but OTB can suffer from disk I/O bottlenecks when writing large numbers of vector polygons to shapefiles.
+* **Felzenszwalb (`python_felzenszwalb`)**: A graph-based CPU clustering algorithm. It is very fast but highly sensitive to local pixel-to-pixel variations, which can cause it to segment individual radar speckle patterns instead of actual agricultural fields.
+* **SLIC (`python_slic`)**: Simple Linear Iterative Clustering. It partitions the image into compact, uniform-sized superpixel cells using k-means in the color-spatial space. Because it favors regular grid-like shapes, it does not conform well to actual irregular field boundaries.
+* **LPIS boundary rasterization (`lpis`)**: Instead of dynamic image-based segmentation, this mode queries cadastral or land parcel vector databases (e.g., BRP in the Netherlands or ARiMR in Poland) stored in the country's sample directory. It reprojects the vector boundaries to match the target raster grid and rasterizes them by burning unique parcel identifiers into the segmentation raster. This is the gold standard for official statistical crop classification when vector databases are available.
 
 ---
 
 ### 2. Tuning parameters for each method
 
 #### Meta SAM (`python_sam`)
-* **`sam_checkpoint`**: Path to the downloaded `.pth` weights file (e.g. `sam_vit_h_4b8939.pth`).
-* **`sam_model_type`**: Type of the model (e.g. `vit_h`, `vit_l`, `vit_b`).
-* **`sam_device`**: Execution hardware. Use `cuda` for NVIDIA GPU acceleration or `cpu` as a fallback.
-* **`tile_size`**: Image grid dimensions parsed to SAM at once. Lower to `1024` or `512` if you experience CUDA out of memory (OOM) errors.
-* **`points_per_side`**: Grid density of mask probes. Increasing to `128` or `160` detects smaller fields but requires more VRAM/time.
-* **`pred_iou_thresh` & `stability_score_thresh`**: Quality filters. Lowering to `0.45` accepts more (and smaller) masks.
-* **`min_mask_region_area`**: Minimum size of a segment in pixels.
+SAM is deep learning-based and highly sensitive to GPU VRAM limits.
+* **`sam_checkpoint`**: Absolute path to the downloaded `.pth` weights file (e.g. `sam_vit_h_4b8939.pth`).
+* **`sam_model_type`**: The size/variant of the model. Choose `vit_b` (small, 375 MB, fast, uses ~2 GB VRAM, good for quick testing), `vit_l` (medium, 1.2 GB), or `vit_h` (huge, 2.4 GB, slow, uses ~10 GB VRAM, highest precision).
+* **`sam_device`**: Execution hardware. Use `cuda` for NVIDIA GPU acceleration (highly recommended) or `cpu` (very slow) as a fallback.
+* **`tile_size`**: Dimensions of the image blocks processed by SAM. Defaults to `2048`. Lower this to `1024` or `512` if you encounter CUDA out-of-memory (OOM) errors.
+* **`buffer`**: Overlap buffer in pixels around each tile to prevent boundary edge artifacts. Defaults to `128`.
+* **`points_per_side`**: Grid density of mask candidate probes. Increasing this (e.g., to `128` or `160`) allows the detection of smaller/finer fields but increases processing time and VRAM usage.
+* **`pred_iou_thresh`**: Filter threshold for predicted mask IoU (Intersection-over-Union). Lowering this (e.g., to `0.45`) keeps more candidate masks (useful for small or fuzzy crop fields).
+* **`stability_score_thresh`**: Filter threshold for mask stability under binary threshold perturbations. Lowering this to `0.45` allows more fields to be successfully segmented.
+* **`min_mask_region_area`**: The minimum area (in pixels) for a segmented mask to be retained.
 
 #### Watershed / MRS (`python_mrs_summed`, `python_mrs_seasonal`)
-* **`mrs_thresh`**: Hierarchical region merging threshold. This is the most sensitive parameter. Lower values (e.g. `0.05` to `0.06`) prevent under-segmentation (yielding smaller, more detailed objects). Higher values (e.g. `0.10` to `0.12`) merge regions to prevent over-segmentation.
-* **`n_segments`**: Number of initial seed points (superpixels) generated by SLIC.
-* **`compactness`**: Shape compactness of the initial seeds. Keep it low (e.g. `0.1`) to allow segments to adapt to long, narrow, or irregular agricultural field shapes.
-* **`ws_compactness`**: Spatial shape constraint on the watershed borders.
+* **`mrs_thresh`**: Hierarchical region merging threshold. This is the most sensitive parameter. Lower values (e.g., `0.05` to `0.06`) prevent under-segmentation, yielding smaller, more detailed objects. Higher values (e.g., `0.10` to `0.12`) merge more regions to prevent over-segmentation.
+* **`n_segments`**: Number of initial seed points (superpixels) generated by SLIC to initialize the watershed markers. Defaults to `20000`.
+* **`compactness`**: Shape compactness constraint for the initial SLIC seeds. Keep this low (e.g., `0.1` or lower) to allow segments to stretch and adapt to long, narrow, or irregular agricultural field shapes.
+* **`ws_compactness`**: Spatial boundary constraint on the Watershed algorithm itself. Lower values allow borders to follow weak edges.
+* **`tile_size` & `buffer`**: Processing block dimension (`4096`) and overlap boundary (`256`) to ensure seamless segmentation.
 
 #### OTB Mean-Shift (`otb_meanshift_summed`)
-* **`spatialr`**: Spatial radius of the neighborhood in pixels.
-* **`ranger`**: Spectral radius (backscatter similarity distance in dB).
-* **`minsize`**: Minimum segment size in pixels.
-* **`ram`**: RAM memory limit allocated to OTB in MB.
+* **`spatialr`**: Spatial radius of the neighborhood in pixels. Determines the maximum spatial distance between pixels to be merged.
+* **`ranger`**: Spectral radius (backscatter similarity distance in dB). Controls how similar backscatter values must be to merge pixels.
+* **`minsize`**: Minimum segment size in pixels. Merges any segments smaller than this value with their neighbor to clean up slivers.
+* **`ram`**: RAM memory limit allocated to Orfeo ToolBox in MB.
+* **`tilesizex` & `tilesizey`**: Tile dimensions for processing large raster files.
 
 #### Felzenszwalb (`python_felzenszwalb`)
-* **`scale`**: Parameter controlling the size of generated segments. Higher values yield larger segments.
-* **`sigma`**: Width of the Gaussian smoothing pre-filter.
+* **`scale`**: Controls the size of the generated segments (larger scale = larger segments).
+* **`sigma`**: Width of the Gaussian smoothing pre-filter. Higher values smooth out radar speckle noise but blur parcel boundaries.
 * **`min_size`**: Minimum segment size in pixels.
+* **`tile_size` & `buffer`**: Processing block dimension (`4096`) and overlap boundary (`256`).
+
+#### SLIC (`python_slic`)
+* **`n_segments`**: The target number of superpixel segments to generate across each tile.
+* **`compactness`**: Balances color proximity and space proximity. Higher values make superpixels more regularly shaped/grid-like (square), while lower values allow them to conform to irregular crop boundaries.
+* **`slic_sigma`**: Width of Gaussian smoothing pre-filter to reduce speckle noise.
+* **`tile_size` & `buffer`**: Processing block dimension (`4096`) and overlap boundary (`256`).
+
+#### LPIS boundary rasterization (`lpis`)
+* **No parameters**: This method relies entirely on official external cadastral GIS boundary vectors (`.gpkg` or `.shp`). It queries the intersecting parcels within the spatial footprint, reprojects them, and rasterizes them by burning their unique database primary key (FID / ID) as the pixel value.
 
 ---
 
@@ -480,9 +496,11 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 ### Step 6: Object-based classification
 * **Description and logic**: Splits the clipped image stack into homogeneous agricultural parcel objects, extracts statistical or deep learning features for each object over the Sentinel-1 timeline, trains a machine learning or deep learning classifier, and performs tiled prediction across the entire track.
 * **Algorithm options**:
-  - **Option A (ANN-SAM / LPIS)** - `1_classify_ann_sam.py`: The primary neural network classifier script. It supports two segmentation modes:
-    - **SAM mode (`--seg_mode sam`)**: Employs Meta AI's Segment Anything Model (SAM) for deep learning-based boundary delineation (requires GPU / PyTorch).
-    - **LPIS mode (`--seg_mode lpis`)**: Instantly rasterizes local vector land parcel databases (e.g. BRP in the Netherlands or ARiMR in Poland) to use exact parcel boundaries as classification objects.
+  - **Option A (ANN-SAM / LPIS / MRS / Felzenszwalb / SLIC / OTB)** - `1_classify_ann_sam.py`: The primary neural network classifier script. It supports 7 segmentation methods selectable interactively in the CLI or starting directly using `--seg_mode`:
+    - **`--seg_mode sam`**: Employs Meta AI's Segment Anything Model (SAM) for deep learning-based boundary delineation (requires GPU / PyTorch).
+    - **`--seg_mode lpis`**: Instantly rasterizes cadastral or land parcel vector databases (e.g. BRP in the Netherlands or ARiMR in Poland) placed in `auxiliary_files/shapefiles_samples/{COUNTRY}/` to use exact parcel boundaries as classification objects.
+    - **`--seg_mode mrs_summed`** / **`mrs_seasonal`** / **`otb_meanshift`** / **`felzenszwalb`** / **`slic`**: Launches the pipeline pointing directly to the corresponding dynamic segmentation files.
+    - *Note on Naming Suffixes*: Output files, models, and metrics will automatically update to use the selected suffix (e.g., `*_classified_mrs_summed.tif`), preventing file collisions and allowing side-by-side comparisons of different segmentations on the same track.
 
     *The object-based classification workflow using SAM is structured as follows:*
 
@@ -498,11 +516,14 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 * **Prerequisites and config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, model checkpoints if running SAM/Prithvi, and OTB binary installation in `bin/OTB-6.2.0-Win64/` if running OTB classification.
 * **Launch command**:
   ```bash
-  # Run ANN-SAM classifier (SAM segmentation mode):
+  # Run ANN-SAM classifier (with SAM segmentation):
   python 2_classifier/1_classify_ann_sam.py --track PL/orbit_12 --seg_mode sam
 
-  # Run ANN-SAM classifier (LPIS boundaries mode):
+  # Run ANN-SAM classifier (with LPIS vector boundaries):
   python 2_classifier/1_classify_ann_sam.py --track PL/orbit_12 --seg_mode lpis
+
+  # Run ANN-SAM classifier (with Watershed on summed dB):
+  python 2_classifier/1_classify_ann_sam.py --track PL/orbit_12 --seg_mode mrs_summed
 
   # Run NASA-IBM Prithvi-SAR Classifier:
   python 2_classifier/1_classify_prithvi_sar.py --track PL/orbit_12
@@ -511,13 +532,13 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
   python 2_classifier/1_classify_otb.py --track PL/orbit_12
   ```
 * **Produced Outputs**:
-  - Segmentation Map: `workingDir/{track}/classification_results/segmentation/{file_prefix}_segmentation.tif`
-  - Training/Validation Split Points: `.../samples/learn.shp` and `.../samples/control.shp`
-  - Extracted Features: `.../samples/{file_prefix}_[prithvi_]learn_features.csv`
-  - Trained Classifier: `.../train_model/{file_prefix}_[prithvi_]model.pkl`
-  - Raw Outputs: `.../classification/{file_prefix}_[prithvi_]classified.tif` and `..._confidence_map.tif`
-  - Masked Outputs: `.../classification/{file_prefix}_[prithvi_]classified_masked.tif` and `..._confidence_masked.tif`
-  - Classification Accuracy Report: `.../classification/{file_prefix}_[prithvi_]metrics.xlsx`
+  - Segmentation Map: `workingDir/{track}/classification_results/segmentation/{file_prefix}_segmentation_{suffix}.tif`
+  - Training/Validation Split Points: `.../samples/learn_{suffix}.shp` and `.../samples/control_{suffix}.shp`
+  - Extracted Features: `.../samples/{file_prefix}_learn_features_{suffix}.csv`
+  - Trained Classifier: `.../train_model/{file_prefix}_model_{suffix}.pkl`
+  - Raw Outputs: `.../classification/{file_prefix}_classified_{suffix}.tif` and `..._confidence_map_{suffix}.tif`
+  - Masked Outputs: `.../classification/{file_prefix}_classified_masked_{suffix}.tif` and `..._confidence_masked_{suffix}.tif`
+  - Classification Accuracy Report: `.../classification/{file_prefix}_metrics_{suffix}.xlsx`
 
 ---
 
