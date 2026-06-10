@@ -347,10 +347,10 @@ except ImportError:
 #   --seg_mode       : Initial segmentation mode. Choose:
 #                      * 'sam'  (default, uses Meta AI SAM or other dynamically computed segmentation)
 #                      * 'lpis' (rasterization of actual cadastral parcel boundaries from vector GPKG/SHP databases)
-#                      Note: In the interactive menu, you can dynamically switch between any of the 7 supported
+#                      Note: In the interactive menu, you can dynamically switch between any of the 6 supported
 #                            segmentation methods. The output filenames, models, and metric spreadsheets
 #                            will automatically update to include a suffix matching the selected method
-#                            (e.g., '_sam', '_lpis', '_mrs_summed', '_mrs_seasonal', '_otb_meanshift',
+#                            (e.g., '_sam', '_lpis', '_mrs_summed', '_otb_meanshift',
 #                            '_felzenszwalb', '_slic'). This prevents file name collisions.
 #   --mask_variant   : Agricultural crop mask variant. Choose:
 #                      * 'allcrops' (full cropland mask including all 18+ classes, recommended for NL)
@@ -475,7 +475,6 @@ class ProcessingPipeline:
             'sam': 'python_sam',
             'lpis': 'lpis',
             'mrs_summed': 'python_mrs_summed',
-            'mrs_seasonal': 'python_mrs_seasonal',
             'otb_meanshift': 'otb_meanshift_summed',
             'felzenszwalb': 'python_felzenszwalb',
             'slic': 'python_slic'
@@ -527,13 +526,12 @@ class ProcessingPipeline:
     def update_paths(self, method_name):
         """
         Dynamically updates the output file paths based on the selected segmentation method
-        (e.g., 'sam', 'lpis', 'mrs_summed', 'mrs_seasonal', 'otb_meanshift', 'felzenszwalb', 'slic').
+        (e.g., 'sam', 'lpis', 'mrs_summed', 'otb_meanshift', 'felzenszwalb', 'slic').
         """
         suffix_mapping = {
             'python_sam': 'sam',
             'lpis': 'lpis',
             'python_mrs_summed': 'mrs_summed',
-            'python_mrs_seasonal': 'mrs_seasonal',
             'otb_meanshift_summed': 'otb_meanshift',
             'python_felzenszwalb': 'felzenszwalb',
             'python_slic': 'slic'
@@ -572,14 +570,14 @@ class ProcessingPipeline:
                 self.stage1_params.setdefault('sam_checkpoint', str(self.aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'))
                 self.stage1_params.setdefault('sam_model_type', 'vit_h')
                 self.stage1_params.setdefault('sam_device', 'cuda' if (HAS_SAM and torch.cuda.is_available()) else 'cpu')
-            elif method_name in ['python_mrs_summed', 'python_mrs_seasonal', 'python_mrs']:
+            elif method_name in ['python_mrs_summed', 'python_mrs']:
                 self.stage1_params.setdefault('tile_size', 4096)
                 self.stage1_params.setdefault('buffer', 256)
                 self.stage1_params.setdefault('n_segments', 20000)
                 self.stage1_params.setdefault('compactness', 0.1)
                 self.stage1_params.setdefault('ws_compactness', 0.001)
                 self.stage1_params.setdefault('mrs_thresh', 0.08)
-            elif method_name in ['otb_meanshift_summed', 'otb_meanshift_seasonal', 'otb_meanshift']:
+            elif method_name in ['otb_meanshift_summed', 'otb_meanshift']:
                 self.stage1_params.setdefault('spatialr', 4)
                 self.stage1_params.setdefault('ranger', 0.3)
                 self.stage1_params.setdefault('minsize', 20)
@@ -831,112 +829,6 @@ class ProcessingPipeline:
         ds = None
         print(f"    Footprint mask saved to {self.footprint_mask}\n")
 
-    def _create_seasonal_composite(self):
-        """Creates a lightweight 6-band composite (3 evenly spaced dates x 2 pol) from the optimal 'Golden Window' of vegetation."""
-        import re
-        from datetime import datetime
-
-        print("    [INFO] Analyzing radar stack to select the best 3 dates for the 'Golden Vegetation Window'...")
-
-        # Define the Golden Window of vegetation contrast (May 15th to August 15th)
-        start_month, start_day = 5, 15
-        end_month, end_day = 8, 15
-
-        # Open full raster to extract band dates
-        ds = gdal.Open(str(self.ras))
-        if not ds:
-            raise RuntimeError(f"Could not open source raster {self.ras}")
-
-        nbands = ds.RasterCount
-        dates_bands = {}
-
-        # Parse band names (e.g., "Sigma0_VH_05May2024")
-        for i in range(1, nbands + 1):
-            band = ds.GetRasterBand(i)
-            desc = band.GetDescription()
-            m = re.search(r"(\d{2}[A-Za-z]{3}\d{4})", desc)
-            if m:
-                date_str = m.group(1)
-                try:
-                    dt = datetime.strptime(date_str, "%d%b%Y")
-                    if dt not in dates_bands:
-                        dates_bands[dt] = []
-                    dates_bands[dt].append(i)
-                except ValueError:
-                    pass
-
-        if len(dates_bands) < 3:
-            print("    [WARNING] Less than 3 dates found in the stack! Using full raster for segmentation.")
-            return self.ras
-
-        # Sort all discovered dates chronologically
-        all_dates = sorted(list(dates_bands.keys()))
-
-        # Find dates that fall strictly within the Golden Window (irrespective of year)
-        golden_dates = []
-        for d in all_dates:
-            # Create comparable numeric representation of MM.DD
-            day_val = d.month + d.day / 100.0
-            start_val = start_month + start_day / 100.0
-            end_val = end_month + end_day / 100.0
-
-            if start_val <= day_val <= end_val:
-                golden_dates.append(d)
-
-        # Smart selection of exactly 3 dates
-        selected_dates = []
-        if len(golden_dates) >= 3:
-            # We have plenty of optimal summer dates! Let's pick 3 evenly spaced dates
-            # to capture maximum phenomenological difference (start, middle, end of window).
-            idx_step = (len(golden_dates) - 1) / 2.0
-            selected_dates = [golden_dates[int(round(0))],
-                              golden_dates[int(round(idx_step))],
-                              golden_dates[-1]]
-            print(f"    [INFO] Found {len(golden_dates)} dates in the Golden Window (Mid-May to Mid-Aug).")
-        elif len(golden_dates) > 0:
-            # We have 1 or 2 dates in the summer, but we need 3 total.
-            # Pad the rest with the latest available dates just before the window.
-            print(
-                f"    [INFO] Found only {len(golden_dates)} dates in the Golden Window. Padding with latest spring dates.")
-            needed = 3 - len(golden_dates)
-            prior_dates = [d for d in all_dates if d not in golden_dates and d < golden_dates[0]]
-            if len(prior_dates) >= needed:
-                selected_dates = prior_dates[-needed:] + golden_dates
-            else:
-                # If everything fails, just take the 3 most recent dates overall
-                selected_dates = all_dates[-3:]
-        else:
-            # Time series doesn't reach May 15th at all (e.g. early mapping ending in April).
-            # Just take the 3 most recent dates available as they represent the most mature growth.
-            print("    [INFO] No dates found in the Summer Golden Window. Selecting the 3 most recent dates available.")
-            selected_dates = all_dates[-3:]
-
-        # Sort chronologically just to be safe
-        selected_dates.sort()
-
-        selected_bands = []
-        for d in selected_dates:
-            selected_bands.extend(dates_bands[d])
-
-        print(
-            f"    [INFO] Final 3 dates chosen for segmentation composite: {[d.strftime('%Y-%m-%d') for d in selected_dates]}")
-        print(f"    [INFO] Extracting {len(selected_bands)} bands (VH+VV) into a lightweight composite...")
-
-        composite_tif = self.seg_dir / f"{self.file_prefix}_seasonal_composite.tif"
-
-        if not composite_tif.exists():
-            gdal.Translate(
-                str(composite_tif),
-                str(self.ras),
-                bandList=selected_bands,
-                format='GTiff',
-                creationOptions=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
-            )
-            print(f"    [INFO] Seasonal composite saved to {composite_tif}")
-        else:
-            print(f"    [INFO] Seasonal composite already exists.")
-
-        return composite_tif
 
     def _create_summed_composite(self):
         """Creates a single-band composite by summing the log-domain (dB) values of all SAR bands to reduce speckle while preserving low-backscatter crop contrast."""
@@ -1114,17 +1006,11 @@ class ProcessingPipeline:
 
         method = params.get('method', 'otb_meanshift')
 
-        if method in ['otb_meanshift', 'otb_meanshift_seasonal', 'otb_meanshift_summed']:
+        if method in ['otb_meanshift', 'otb_meanshift_summed']:
             print(f"[Stage {stage}/{self.total_stages}] Running OTB Large-Scale Mean-Shift (Vector Mode) [{method}]...")
 
             input_raster_for_seg = self.ras
-            if method == 'otb_meanshift_seasonal':
-                try:
-                    input_raster_for_seg = self._create_seasonal_composite()
-                except Exception as e:
-                    print(f"    [WARNING] Failed to create seasonal composite: {e}. Falling back to full stack.")
-                    input_raster_for_seg = self.ras
-            elif method == 'otb_meanshift_summed':
+            if method == 'otb_meanshift_summed':
                 try:
                     input_raster_for_seg = self._create_summed_composite()
                 except Exception as e:
@@ -1183,7 +1069,7 @@ class ProcessingPipeline:
 
             return
 
-        if method in ['python_felzenszwalb', 'python_slic', 'python_mrs', 'python_mrs_seasonal', 'python_mrs_summed', 'python_sam']:
+        if method in ['python_felzenszwalb', 'python_slic', 'python_mrs', 'python_mrs_summed', 'python_sam']:
             if method != 'python_sam' and not HAS_SKIMAGE:
                 print("Error: scikit-image not installed.")
                 return
@@ -1192,19 +1078,14 @@ class ProcessingPipeline:
                 return
                 
             original_ras = self.ras
-            if method == 'python_mrs_seasonal':
-                try:
-                    self.ras = self._create_seasonal_composite()
-                except Exception as e:
-                    print(f"    [WARNING] Failed to create seasonal composite: {e}. Falling back to full stack.")
-            elif method in ['python_mrs_summed', 'python_sam']:
+            if method in ['python_mrs_summed', 'python_sam', 'python_felzenszwalb', 'python_slic']:
                 try:
                     self.ras = self._create_summed_composite()
                 except Exception as e:
                     print(f"    [WARNING] Failed to create summed composite: {e}. Falling back to full stack.")
             
             # Use appropriate internal method logic
-            internal_method = 'python_mrs' if method in ['python_mrs_seasonal', 'python_mrs_summed'] else method
+            internal_method = 'python_mrs' if method == 'python_mrs_summed' else method
             self._run_python_segmentation_tiled(params, stage, internal_method)
             
             self.ras = original_ras
@@ -1306,7 +1187,15 @@ class ProcessingPipeline:
                         
                     if not np.any(valid_mask): continue
 
-                    img_norm = img_as_float(img)
+                    # Normalize inputs to [0.0, 1.0] using 2%-98% percentiles for robust traditional segmentations
+                    img_norm = np.zeros(img.shape, dtype=np.float32)
+                    for b in range(img.shape[2]):
+                        band_data = img[:, :, b]
+                        p2, p98 = np.percentile(band_data[valid_mask], (2, 98))
+                        if p98 > p2:
+                            img_norm[:, :, b] = np.clip((band_data - p2) / (p98 - p2), 0.0, 1.0)
+                        else:
+                            img_norm[:, :, b] = 0.0
 
                     if method == 'python_sam':
                         import cv2
@@ -2125,23 +2014,21 @@ def get_stage1_params_sam(param_dict):
     print()
     print("  [1] Meta SAM (Deep learning, default) [python_sam]")
     print("  [2] Watershed / MRS on summed dB (Fast traditional) [python_mrs_summed]")
-    print("  [3] Watershed / MRS on seasonal composite [python_mrs_seasonal]")
-    print("  [4] OTB Mean-Shift on summed dB (Fast C++ engine) [otb_meanshift_summed]")
-    print("  [5] Felzenszwalb algorithm on full raster [python_felzenszwalb]")
-    print("  [6] SLIC algorithm on full raster [python_slic]")
-    print("  [7] LPIS boundary rasterization (Cadastral vector data) [lpis]")
+    print("  [3] OTB Mean-Shift on summed dB (Fast C++ engine) [otb_meanshift_summed]")
+    print("  [4] Felzenszwalb algorithm on full raster [python_felzenszwalb]")
+    print("  [5] SLIC algorithm on full raster [python_slic]")
+    print("  [6] LPIS boundary rasterization (Cadastral vector data) [lpis]")
     print("  [Enter] Keep current method")
     
-    choice = input("Choose option (1-7): ").strip()
+    choice = input("Choose option (1-6): ").strip()
     
     method_mapping = {
         '1': 'python_sam',
         '2': 'python_mrs_summed',
-        '3': 'python_mrs_seasonal',
-        '4': 'otb_meanshift_summed',
-        '5': 'python_felzenszwalb',
-        '6': 'python_slic',
-        '7': 'lpis'
+        '3': 'otb_meanshift_summed',
+        '4': 'python_felzenszwalb',
+        '5': 'python_slic',
+        '6': 'lpis'
     }
     
     if choice in method_mapping:
@@ -2156,14 +2043,14 @@ def get_stage1_params_sam(param_dict):
             new_params.setdefault('sam_checkpoint', str(aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'))
             new_params.setdefault('sam_model_type', 'vit_h')
             new_params.setdefault('sam_device', 'cuda' if torch.cuda.is_available() else 'cpu')
-        elif method in ['python_mrs_summed', 'python_mrs_seasonal', 'python_mrs']:
+        elif method in ['python_mrs_summed', 'python_mrs']:
             new_params.setdefault('tile_size', 4096)
             new_params.setdefault('buffer', 256)
             new_params.setdefault('n_segments', 20000)
             new_params.setdefault('compactness', 0.1)
             new_params.setdefault('ws_compactness', 0.001)
             new_params.setdefault('mrs_thresh', 0.08)
-        elif method in ['otb_meanshift_summed', 'otb_meanshift_seasonal', 'otb_meanshift']:
+        elif method in ['otb_meanshift_summed', 'otb_meanshift']:
             new_params.setdefault('spatialr', 4)
             new_params.setdefault('ranger', 0.3)
             new_params.setdefault('minsize', 20)
@@ -2220,9 +2107,9 @@ def get_stage1_params_sam(param_dict):
     show_keys = []
     if method == 'python_sam':
         show_keys = ['tile_size', 'buffer', 'sam_device']
-    elif method in ['python_mrs_summed', 'python_mrs_seasonal', 'python_mrs']:
+    elif method in ['python_mrs_summed', 'python_mrs']:
         show_keys = ['tile_size', 'buffer', 'n_segments', 'compactness', 'ws_compactness', 'mrs_thresh']
-    elif method in ['otb_meanshift_summed', 'otb_meanshift_seasonal', 'otb_meanshift']:
+    elif method in ['otb_meanshift_summed', 'otb_meanshift']:
         show_keys = ['spatialr', 'ranger', 'minsize', 'tilesizex', 'tilesizey', 'ram']
     elif method == 'python_felzenszwalb':
         show_keys = ['tile_size', 'buffer', 'scale', 'sigma', 'min_size']
@@ -2390,7 +2277,7 @@ if __name__ == '__main__':
                         help="Agricultural mask variant: '3class' (spring/winter/rapeseed, default) "
                              "or 'allcrops' (all crops including permanent ones)")
     parser.add_argument('--seg_mode', default='sam',
-                        choices=['sam', 'lpis', 'mrs_summed', 'mrs_seasonal', 'otb_meanshift', 'felzenszwalb', 'slic'],
+                        choices=['sam', 'lpis', 'mrs_summed', 'otb_meanshift', 'felzenszwalb', 'slic'],
                         help="Initial segmentation mode/suffix (default: 'sam'). "
                              "Determines which files (features, model, results) are processed.")
     args = parser.parse_args()
