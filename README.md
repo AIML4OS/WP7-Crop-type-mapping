@@ -285,7 +285,22 @@ You can select individual numbers to execute specific parts of the pipeline and 
 
 ## Segmentation methods and parameter tuning guide
 
-Upon executing `Stage 1` (Segmentation) in the interactive menu of `1_classify_ann.py`, the program presents a sub-menu to select your preferred segmentation method and dynamically configure its parameters. Selecting a method will also dynamically toggle the target outputs and paths between the cadastral boundaries (`_lpis` suffix) and dynamic segmentation results (`_sam` suffix).
+Upon executing `Stage 1` (Segmentation) in the interactive menu of `1_classify_ann.py`, the program presents the following sub-menu to select your preferred segmentation method:
+
+```text
+=== SELECT SEGMENTATION METHOD ===
+  Current method: PYTHON_SAM
+
+  [1] Meta SAM (Deep learning, default) [python_sam]
+  [2] OTB Mean-Shift on summed dB (Fast C++ engine) [otb_meanshift_summed]
+  [3] Felzenszwalb algorithm on full raster [python_felzenszwalb]
+  [4] SLIC algorithm on full raster [python_slic]
+  [5] LPIS boundary rasterization (Cadastral vector data) [lpis]
+  [Enter] Keep current method
+Choose option (1-5): 
+```
+
+Selecting a method will also dynamically toggle the target outputs and paths between the cadastral boundaries (`_lpis` suffix) and dynamic segmentation results (`_sam` suffix).
 
 ### 1. Supported segmentation methods
 
