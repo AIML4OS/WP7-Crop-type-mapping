@@ -347,10 +347,10 @@ except ImportError:
 #   --seg_mode       : Initial segmentation mode. Choose:
 #                      * 'sam'  (default, uses Meta AI SAM or other dynamically computed segmentation)
 #                      * 'lpis' (rasterization of actual cadastral parcel boundaries from vector GPKG/SHP databases)
-#                      Note: In the interactive menu, you can dynamically switch between any of the 6 supported
+#                      Note: In the interactive menu, you can dynamically switch between any of the 5 supported
 #                            segmentation methods. The output filenames, models, and metric spreadsheets
 #                            will automatically update to include a suffix matching the selected method
-#                            (e.g., '_sam', '_lpis', '_mrs_summed', '_otb_meanshift',
+#                            (e.g., '_sam', '_lpis', '_otb_meanshift',
 #                            '_felzenszwalb', '_slic'). This prevents file name collisions.
 #   --mask_variant   : Agricultural crop mask variant. Choose:
 #                      * 'allcrops' (full cropland mask including all 18+ classes, recommended for NL)
@@ -474,7 +474,6 @@ class ProcessingPipeline:
         method_mapping_inv = {
             'sam': 'python_sam',
             'lpis': 'lpis',
-            'mrs_summed': 'python_mrs_summed',
             'otb_meanshift': 'otb_meanshift_summed',
             'felzenszwalb': 'python_felzenszwalb',
             'slic': 'python_slic'
@@ -526,12 +525,11 @@ class ProcessingPipeline:
     def update_paths(self, method_name):
         """
         Dynamically updates the output file paths based on the selected segmentation method
-        (e.g., 'sam', 'lpis', 'mrs_summed', 'otb_meanshift', 'felzenszwalb', 'slic').
+        (e.g., 'sam', 'lpis', 'otb_meanshift', 'felzenszwalb', 'slic').
         """
         suffix_mapping = {
             'python_sam': 'sam',
             'lpis': 'lpis',
-            'python_mrs_summed': 'mrs_summed',
             'otb_meanshift_summed': 'otb_meanshift',
             'python_felzenszwalb': 'felzenszwalb',
             'python_slic': 'slic'
@@ -570,13 +568,6 @@ class ProcessingPipeline:
                 self.stage1_params.setdefault('sam_checkpoint', str(self.aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'))
                 self.stage1_params.setdefault('sam_model_type', 'vit_h')
                 self.stage1_params.setdefault('sam_device', 'cuda' if (HAS_SAM and torch.cuda.is_available()) else 'cpu')
-            elif method_name in ['python_mrs_summed', 'python_mrs']:
-                self.stage1_params.setdefault('tile_size', 4096)
-                self.stage1_params.setdefault('buffer', 256)
-                self.stage1_params.setdefault('n_segments', 20000)
-                self.stage1_params.setdefault('compactness', 0.1)
-                self.stage1_params.setdefault('ws_compactness', 0.001)
-                self.stage1_params.setdefault('mrs_thresh', 0.08)
             elif method_name in ['otb_meanshift_summed', 'otb_meanshift']:
                 self.stage1_params.setdefault('spatialr', 4)
                 self.stage1_params.setdefault('ranger', 0.3)
@@ -1069,7 +1060,7 @@ class ProcessingPipeline:
 
             return
 
-        if method in ['python_felzenszwalb', 'python_slic', 'python_mrs', 'python_mrs_summed', 'python_sam']:
+        if method in ['python_felzenszwalb', 'python_slic', 'python_sam']:
             if method != 'python_sam' and not HAS_SKIMAGE:
                 print("Error: scikit-image not installed.")
                 return
@@ -1078,15 +1069,14 @@ class ProcessingPipeline:
                 return
                 
             original_ras = self.ras
-            if method in ['python_mrs_summed', 'python_sam', 'python_felzenszwalb', 'python_slic']:
+            if method in ['python_sam', 'python_felzenszwalb', 'python_slic']:
                 try:
                     self.ras = self._create_summed_composite()
                 except Exception as e:
                     print(f"    [WARNING] Failed to create summed composite: {e}. Falling back to full stack.")
             
             # Use appropriate internal method logic
-            internal_method = 'python_mrs' if method == 'python_mrs_summed' else method
-            self._run_python_segmentation_tiled(params, stage, internal_method)
+            self._run_python_segmentation_tiled(params, stage, method)
             
             self.ras = original_ras
             return
@@ -1253,26 +1243,6 @@ class ProcessingPipeline:
                     elif method == 'python_slic':
                         segments_buf = slic(img_norm, n_segments=params['n_segments'], compactness=params['compactness'],
                                         sigma=params['slic_sigma'], start_label=1, mask=valid_mask)
-                    elif method == 'python_mrs':
-                        edge_mag = np.zeros(img_norm.shape[:2], dtype=np.float32)
-                        for b in range(img_norm.shape[2]):
-                            edge_mag += sobel(img_norm[:, :, b])
-
-                        markers = slic(img_norm, n_segments=params.get('n_segments', 20000), compactness=params.get('compactness', 0.1), sigma=1)
-                        segments_ws = watershed(edge_mag, markers, mask=valid_mask, compactness=params.get('ws_compactness', 0.001))
-
-                        def weight_mean_color(graph, src, dst, n):
-                            diff = graph.nodes[dst]['mean color'] - graph.nodes[src]['mean color']
-                            return {'weight': np.linalg.norm(diff)}
-
-                        def merge_mean_color(graph, src, dst):
-                            graph.nodes[dst]['total color'] += graph.nodes[src]['total color']
-                            graph.nodes[dst]['pixel count'] += graph.nodes[src]['pixel count']
-                            graph.nodes[dst]['mean color'] = graph.nodes[dst]['total color'] / graph.nodes[dst]['pixel count']
-
-                        rag = rag_mean_color(img_norm, segments_ws)
-                        segments_buf = merge_hierarchical(segments_ws, rag, thresh=params.get('mrs_thresh', 0.08), rag_copy=False,
-                                                          in_place_merge=True, merge_func=merge_mean_color, weight_func=weight_mean_color)
 
                     y_offset = y - y_start_buf
                     x_offset = x - x_start_buf
@@ -2013,22 +1983,20 @@ def get_stage1_params_sam(param_dict):
     print(f"  Current method: {current_method.upper()}")
     print()
     print("  [1] Meta SAM (Deep learning, default) [python_sam]")
-    print("  [2] Watershed / MRS on summed dB (Fast traditional) [python_mrs_summed]")
-    print("  [3] OTB Mean-Shift on summed dB (Fast C++ engine) [otb_meanshift_summed]")
-    print("  [4] Felzenszwalb algorithm on full raster [python_felzenszwalb]")
-    print("  [5] SLIC algorithm on full raster [python_slic]")
-    print("  [6] LPIS boundary rasterization (Cadastral vector data) [lpis]")
+    print("  [2] OTB Mean-Shift on summed dB (Fast C++ engine) [otb_meanshift_summed]")
+    print("  [3] Felzenszwalb algorithm on full raster [python_felzenszwalb]")
+    print("  [4] SLIC algorithm on full raster [python_slic]")
+    print("  [5] LPIS boundary rasterization (Cadastral vector data) [lpis]")
     print("  [Enter] Keep current method")
     
-    choice = input("Choose option (1-6): ").strip()
+    choice = input("Choose option (1-5): ").strip()
     
     method_mapping = {
         '1': 'python_sam',
-        '2': 'python_mrs_summed',
-        '3': 'otb_meanshift_summed',
-        '4': 'python_felzenszwalb',
-        '5': 'python_slic',
-        '6': 'lpis'
+        '2': 'otb_meanshift_summed',
+        '3': 'python_felzenszwalb',
+        '4': 'python_slic',
+        '5': 'lpis'
     }
     
     if choice in method_mapping:
@@ -2043,13 +2011,6 @@ def get_stage1_params_sam(param_dict):
             new_params.setdefault('sam_checkpoint', str(aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'))
             new_params.setdefault('sam_model_type', 'vit_h')
             new_params.setdefault('sam_device', 'cuda' if torch.cuda.is_available() else 'cpu')
-        elif method in ['python_mrs_summed', 'python_mrs']:
-            new_params.setdefault('tile_size', 4096)
-            new_params.setdefault('buffer', 256)
-            new_params.setdefault('n_segments', 20000)
-            new_params.setdefault('compactness', 0.1)
-            new_params.setdefault('ws_compactness', 0.001)
-            new_params.setdefault('mrs_thresh', 0.08)
         elif method in ['otb_meanshift_summed', 'otb_meanshift']:
             new_params.setdefault('spatialr', 4)
             new_params.setdefault('ranger', 0.3)
@@ -2107,8 +2068,6 @@ def get_stage1_params_sam(param_dict):
     show_keys = []
     if method == 'python_sam':
         show_keys = ['tile_size', 'buffer', 'sam_device']
-    elif method in ['python_mrs_summed', 'python_mrs']:
-        show_keys = ['tile_size', 'buffer', 'n_segments', 'compactness', 'ws_compactness', 'mrs_thresh']
     elif method in ['otb_meanshift_summed', 'otb_meanshift']:
         show_keys = ['spatialr', 'ranger', 'minsize', 'tilesizex', 'tilesizey', 'ram']
     elif method == 'python_felzenszwalb':
@@ -2277,7 +2236,7 @@ if __name__ == '__main__':
                         help="Agricultural mask variant: '3class' (spring/winter/rapeseed, default) "
                              "or 'allcrops' (all crops including permanent ones)")
     parser.add_argument('--seg_mode', default='sam',
-                        choices=['sam', 'lpis', 'mrs_summed', 'otb_meanshift', 'felzenszwalb', 'slic'],
+                        choices=['sam', 'lpis', 'otb_meanshift', 'felzenszwalb', 'slic'],
                         help="Initial segmentation mode/suffix (default: 'sam'). "
                              "Determines which files (features, model, results) are processed.")
     args = parser.parse_args()
