@@ -369,6 +369,15 @@ except ImportError:
 #
 # 4. Poland (PL) - Segmentation using LPIS boundaries (ARiMR) and 3-class crop mask:
 #    python 1_classify_ann_sam.py --track PL/orbit_12 --seg_mode lpis --mask_variant 3class
+#
+# 5. Netherlands (NL) - Segmentation using SLIC algorithm and allcrops mask:
+#    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode slic --mask_variant allcrops
+#
+# 6. Netherlands (NL) - Segmentation using Felzenszwalb algorithm and allcrops mask:
+#    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode felzenszwalb --mask_variant allcrops
+#
+# 7. Netherlands (NL) - Segmentation using OTB Mean-Shift and allcrops mask:
+#    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode otb_meanshift --mask_variant allcrops
 # ==============================================================================
 # Base Paths provided by user
 base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
@@ -2210,7 +2219,7 @@ def main_menu(pipeline):
                 print(
                     "\nNOTE: Running 'A' will automatically force recomputation of Stages 5-8 to clear any corrupted old files.")
                 pipeline.stage_0_generate_footprint()
-                # pipeline.stage_1_segmentation(**pipeline.stage1_params)
+                pipeline.stage_1_segmentation(**pipeline.stage1_params)
                 pipeline.stage_2_split_samples(**pipeline.stage2_params)
                 pipeline.stage_3_selection()
                 pipeline.stage_4_train_classifier(**pipeline.stage4_params)
