@@ -359,25 +359,32 @@ except ImportError:
 # LAUNCH EXAMPLES:
 #
 # 1. Netherlands (NL) - Segmentation using actual LPIS boundaries (BRP) and allcrops mask:
-#    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode lpis --mask_variant allcrops
+#    python 1_classify_ann.py --track NL/orbit_88 --seg_mode lpis --mask_variant allcrops
 #
 # 2. Netherlands (NL) - Segmentation using Meta SAM model and allcrops mask:
-#    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode sam --mask_variant allcrops
+#    python 1_classify_ann.py --track NL/orbit_88 --seg_mode sam --mask_variant allcrops
 #
 # 3. Poland (PL) - Segmentation using Meta SAM model and 3-class crop mask:
-#    python 1_classify_ann_sam.py --track PL/orbit_12 --seg_mode sam --mask_variant 3class
+#    python 1_classify_ann.py --track PL/orbit_12 --seg_mode sam --mask_variant 3class
 #
 # 4. Poland (PL) - Segmentation using LPIS boundaries (ARiMR) and 3-class crop mask:
-#    python 1_classify_ann_sam.py --track PL/orbit_12 --seg_mode lpis --mask_variant 3class
+#    python 1_classify_ann.py --track PL/orbit_12 --seg_mode lpis --mask_variant 3class
 #
 # 5. Netherlands (NL) - Segmentation using SLIC algorithm and allcrops mask:
-#    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode slic --mask_variant allcrops
+#    python 1_classify_ann.py --track NL/orbit_88 --seg_mode slic --mask_variant allcrops
 #
 # 6. Netherlands (NL) - Segmentation using Felzenszwalb algorithm and allcrops mask:
-#    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode felzenszwalb --mask_variant allcrops
+#    python 1_classify_ann.py --track NL/orbit_88 --seg_mode felzenszwalb --mask_variant allcrops
 #
 # 7. Netherlands (NL) - Segmentation using OTB Mean-Shift and allcrops mask:
-#    python 1_classify_ann_sam.py --track NL/orbit_88 --seg_mode otb_meanshift --mask_variant allcrops
+#    python 1_classify_ann.py --track NL/orbit_88 --seg_mode otb_meanshift --mask_variant allcrops
+#
+# RUNNING THE ENTIRE PIPELINE (ALL STAGES):
+# To process the entire pipeline (Stages 0-8) sequentially for a specific segmentation method:
+#   1. Run the command with the desired --seg_mode (e.g., --seg_mode slic)
+#   2. In the interactive terminal menu, choose option '[A] Run All Stages'
+#   This will execute the entire footprint, segmentation, training, inference, and accuracy calculation
+#   automatically for the chosen segmentation method.
 # ==============================================================================
 # Base Paths provided by user
 base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")

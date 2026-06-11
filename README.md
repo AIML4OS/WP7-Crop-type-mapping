@@ -205,7 +205,7 @@ In Stage 2, the pipeline automatically splits your `samples.shp` dataset:
 
 ## Interactive menu and stages selector (ANN-SAM)
 
-When you execute the classifier script (`1_classify_ann_sam.py`), the program starts an interactive text menu in your terminal. This gives you absolute control over execution, allowing you to run everything in one go or step-by-step while adjusting hyperparameters.
+When you execute the classifier script (`1_classify_ann.py`), the program starts an interactive text menu in your terminal. This gives you absolute control over execution, allowing you to run everything in one go or step-by-step while adjusting hyperparameters.
 
 ### The pipeline menu layout
 Upon launching the script, the following menu is displayed:
@@ -285,7 +285,7 @@ You can select individual numbers to execute specific parts of the pipeline and 
 
 ## Segmentation methods and parameter tuning guide
 
-Upon executing `Stage 1` (Segmentation) in the interactive menu of `1_classify_ann_sam.py`, the program presents a sub-menu to select your preferred segmentation method and dynamically configure its parameters. Selecting a method will also dynamically toggle the target outputs and paths between the cadastral boundaries (`_lpis` suffix) and dynamic segmentation results (`_sam` suffix).
+Upon executing `Stage 1` (Segmentation) in the interactive menu of `1_classify_ann.py`, the program presents a sub-menu to select your preferred segmentation method and dynamically configure its parameters. Selecting a method will also dynamically toggle the target outputs and paths between the cadastral boundaries (`_lpis` suffix) and dynamic segmentation results (`_sam` suffix).
 
 ### 1. Supported segmentation methods
 
@@ -487,7 +487,7 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 ### Step 6: Object-based classification
 * **Description and logic**: Splits the clipped image stack into homogeneous agricultural parcel objects, extracts statistical or deep learning features for each object over the Sentinel-1 timeline, trains a machine learning or deep learning classifier, and performs tiled prediction across the entire track.
 * **Algorithm options**:
-  - **Option A (ANN-SAM / LPIS / Felzenszwalb / SLIC / OTB)** - `1_classify_ann_sam.py`: The primary neural network classifier script. It supports 5 segmentation methods selectable interactively in the CLI or starting directly using `--seg_mode`:
+  - **Option A (ANN / LPIS / Felzenszwalb / SLIC / OTB)** - `1_classify_ann.py`: The primary neural network classifier script. It supports 5 segmentation methods selectable interactively in the CLI or starting directly using `--seg_mode`:
     - **`--seg_mode sam`**: Employs Meta AI's Segment Anything Model (SAM) for deep learning-based boundary delineation (requires GPU / PyTorch).
     - **`--seg_mode lpis`**: Instantly rasterizes cadastral or land parcel vector databases (e.g. BRP in the Netherlands or ARiMR in Poland) placed in `auxiliary_files/shapefiles_samples/{COUNTRY}/` to use exact parcel boundaries as classification objects.
     - **`--seg_mode otb_meanshift`** / **`felzenszwalb`** / **`slic`**: Launches the pipeline pointing directly to the corresponding dynamic segmentation files.
@@ -507,14 +507,20 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 * **Prerequisites and config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, model checkpoints if running SAM/Prithvi, and OTB binary installation in `bin/OTB-6.2.0-Win64/` if running OTB classification.
 * **Launch command**:
   ```bash
-  # Run ANN-SAM classifier (with SAM segmentation):
-  python 2_classifier/1_classify_ann_sam.py --track PL/orbit_12 --seg_mode sam
+  # Run ANN classifier (with SAM segmentation):
+  python 2_classifier/1_classify_ann.py --track PL/orbit_12 --seg_mode sam
 
-  # Run ANN-SAM classifier (with LPIS vector boundaries):
-  python 2_classifier/1_classify_ann_sam.py --track PL/orbit_12 --seg_mode lpis
+  # Run ANN classifier (with LPIS vector boundaries):
+  python 2_classifier/1_classify_ann.py --track PL/orbit_12 --seg_mode lpis
 
-  # Run ANN-SAM classifier (with Watershed on summed dB):
-  python 2_classifier/1_classify_ann_sam.py --track PL/orbit_12 --seg_mode mrs_summed
+  # Run ANN classifier (with SLIC segmentation):
+  python 2_classifier/1_classify_ann.py --track PL/orbit_12 --seg_mode slic
+
+  # Run ANN classifier (with Felzenszwalb segmentation):
+  python 2_classifier/1_classify_ann.py --track PL/orbit_12 --seg_mode felzenszwalb
+
+  # Run ANN classifier (with OTB Mean-Shift segmentation):
+  python 2_classifier/1_classify_ann.py --track PL/orbit_12 --seg_mode otb_meanshift
 
   # Run NASA-IBM Prithvi-SAR Classifier:
   python 2_classifier/1_classify_prithvi_sar.py --track PL/orbit_12
@@ -522,6 +528,12 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
   # Run OTB Random Forest/SVM Classifier:
   python 2_classifier/1_classify_otb.py --track PL/orbit_12
   ```
+
+* **Running the Entire Pipeline (Option A)**:
+  To run the entire pipeline (all stages 0-8) sequentially for a specific segmentation method (e.g. SLIC):
+  1. Start the script with the desired `--seg_mode` option:
+     `python 2_classifier/1_classify_ann.py --track NL/orbit_88 --seg_mode slic --mask_variant allcrops`
+  2. Select option `[A] Run All Stages` in the interactive console menu. This will execute the entire footprint, segmentation, split, features, ANN, inference, and metric calculations automatically.
 * **Produced Outputs**:
   - Segmentation Map: `workingDir/{track}/classification_results/segmentation/{file_prefix}_segmentation_{suffix}.tif`
   - Training/Validation Split Points: `.../samples/learn_{suffix}.shp` and `.../samples/control_{suffix}.shp`
