@@ -600,9 +600,9 @@ class ProcessingPipeline:
             elif method_name == 'python_slic':
                 self.stage1_params.setdefault('tile_size', 4096)
                 self.stage1_params.setdefault('buffer', 256)
-                self.stage1_params.setdefault('n_segments', 35000)  # Original: 20000
-                self.stage1_params.setdefault('compactness', 0.03)  # Original: 0.1
-                self.stage1_params.setdefault('slic_sigma', 1.0)
+                self.stage1_params.setdefault('n_segments', 45000)  # Tuned 2: 45000, Tuned 1: 35000, Original: 20000
+                self.stage1_params.setdefault('compactness', 0.015) # Tuned 2: 0.015, Tuned 1: 0.03, Original: 0.1
+                self.stage1_params.setdefault('slic_sigma', 1.2)    # Tuned 2: 1.2, Tuned 1: 1.0
 
     def _resolve_agri_mask(self) -> Path:
         """
@@ -2046,9 +2046,9 @@ def get_stage1_params_sam(param_dict):
         elif method == 'python_slic':
             new_params.setdefault('tile_size', 4096)
             new_params.setdefault('buffer', 256)
-            new_params.setdefault('n_segments', 35000)  # Original: 20000
-            new_params.setdefault('compactness', 0.03)  # Original: 0.1
-            new_params.setdefault('slic_sigma', 1.0)
+            new_params.setdefault('n_segments', 45000)  # Tuned 2: 45000, Tuned 1: 35000, Original: 20000
+            new_params.setdefault('compactness', 0.015) # Tuned 2: 0.015, Tuned 1: 0.03, Original: 0.1
+            new_params.setdefault('slic_sigma', 1.2)    # Tuned 2: 1.2, Tuned 1: 1.0
         elif method == 'lpis':
             pass
             
