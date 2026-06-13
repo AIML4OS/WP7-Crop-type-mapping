@@ -1254,7 +1254,10 @@ class ProcessingPipeline:
                             _, indices = distance_transform_edt(segments_buf == 0, return_indices=True)
                             segments_buf[zero_mask_buf] = segments_buf[tuple(indices)][zero_mask_buf]
                     elif method == 'python_felzenszwalb':
-                        segments_buf = felzenszwalb(img_norm, scale=params['scale'], sigma=params['sigma'],
+                        # Add a tiny amount of random noise to break flat zero regions (fixes scikit-image Cython infinite loop)
+                        noise = np.random.normal(0, 1e-6, img_norm.shape).astype(np.float32)
+                        img_norm_noise = img_norm + noise
+                        segments_buf = felzenszwalb(img_norm_noise, scale=params['scale'], sigma=params['sigma'],
                                                 min_size=params['min_size'])
                     elif method == 'python_slic':
                         segments_buf = slic(img_norm, n_segments=params['n_segments'], compactness=params['compactness'],
@@ -2191,7 +2194,11 @@ def main_menu(pipeline):
 
     Enter your choice: 
         """
-        choice = input(menu).strip().upper()
+        try:
+            choice = input(menu).strip().upper()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting interactive menu due to standard input disconnection or interruption.")
+            break
         try:
             if choice == '0':
                 pipeline.stage_0_generate_footprint()
