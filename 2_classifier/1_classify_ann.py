@@ -1473,9 +1473,6 @@ class ProcessingPipeline:
                 except:
                     pass
 
-        seg_ds = None
-        foot_ds = None
-
         if not target_segments:
             print("ERROR: No valid samples found overlapping the raster.")
             return
@@ -1562,6 +1559,12 @@ class ProcessingPipeline:
 
         df_final = pd.DataFrame(feature_data)
         df_final.to_csv(self.sel_csv, index=False)
+        
+        # Close GDAL datasets to release file locks and native handles
+        ds = None
+        seg_ds = None
+        foot_ds = None
+        
         print(f"    Object-Based Features saved to {self.sel_csv}\n")
 
     # --- Stage 4: Train Classifier ---
