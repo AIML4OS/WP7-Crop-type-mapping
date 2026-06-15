@@ -1901,14 +1901,14 @@ class ProcessingPipeline:
                 pass
 
             if fallback_info:
-                # If local model has fewer classes than fallback, or local model has very few samples (e.g. < 500)
-                # and fallback has more, fallback is preferred.
-                if local_classes < fallback_info['n_classes']:
-                    use_fallback = True
-                    reason = f"Local model has fewer classes ({local_classes}) than the best national fallback model ({fallback_info['n_classes']})"
-                elif local_samples < 500 and fallback_info['n_samples'] > local_samples * 2:
-                    use_fallback = True
-                    reason = f"Local model trained on very few samples ({local_samples}) compared to fallback model ({fallback_info['n_samples']})"
+                # Only fallback if the local model is truly insufficient (e.g. < 500 samples or < 5 classes)
+                if local_samples < 500 or local_classes < 5:
+                    if local_classes < fallback_info['n_classes']:
+                        use_fallback = True
+                        reason = f"Local model has fewer classes ({local_classes}) than the best national fallback model ({fallback_info['n_classes']})"
+                    elif fallback_info['n_samples'] > local_samples * 2:
+                        use_fallback = True
+                        reason = f"Local model trained on very few samples ({local_samples}) compared to fallback model ({fallback_info['n_samples']})"
         
         used_fallback = False
         if use_fallback and fallback_path:
