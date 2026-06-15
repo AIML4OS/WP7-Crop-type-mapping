@@ -4,12 +4,12 @@ sys.stderr.reconfigure(encoding='utf-8')
 import os
 
 def test_samgeo():
-    # Sprawdzenie czy pakiet jest zainstalowany
+    # Check if the package is installed
     try:
         from samgeo import SamGeo
     except ImportError:
-        print("BŁĄD: Biblioteka 'segment-geospatial' nie jest zainstalowana!")
-        print("Uruchom poniższą komendę w terminalu, aby ją zainstalować:")
+        print("ERROR: Library 'segment-geospatial' is not installed!")
+        print("Run the command below in your terminal to install it:")
         print("pip install segment-geospatial")
         return
 
@@ -21,17 +21,17 @@ def test_samgeo():
     out_tif = os.path.join(out_dir, "test_samgeo_output_2.tif")
     out_vector = os.path.join(out_dir, "test_samgeo_output_2.gpkg")
     
-    # Przycina obraz dla SAM-Geo - NOWY KAFEL do testów
+    # Crop image for SAM-Geo - NEW TILE for testing
     x_off = 30000
     y_off = 40000
     win_size = 1024
     
     from osgeo import gdal
     import numpy as np
-    print(f"Otwieranie głównego pliku i przycinanie: {input_tif}")
+    print(f"Opening main file and cropping: {input_tif}")
     ds = gdal.Open(input_tif)
     if not ds:
-        print("Błąd odczytu rastra wejściowego.")
+        print("Error reading input raster.")
         return
         
     arr = ds.GetRasterBand(1).ReadAsArray(x_off, y_off, win_size, win_size)
@@ -61,39 +61,39 @@ def test_samgeo():
     crop_ds.FlushCache()
     crop_ds = None
     
-    print(f"Otwieranie pliku: {input_tif}")
+    print(f"Opening file: {input_tif}")
     
-    # Inicjalizacja modelu SAM-Geo (używamy tego samego checkpointu co wcześniej)
+    # SAM-Geo model initialization (using the same checkpoint as before)
     sam_checkpoint = r"D:\AIML_CropMapper_Cloud\auxiliary_files\SAM_models\sam_vit_l_0b3195.pth"
-    print("Ładowanie modelu SAM (segment-geospatial)...")
+    print("Loading SAM model (segment-geospatial)...")
     sam = SamGeo(
         model_type="vit_l",
         checkpoint=sam_checkpoint,
         sam_kwargs={
-            "points_per_side": 96,             # Zwiększona gęstość punktów (więcej małych obiektów)
-            "pred_iou_thresh": 0.55,           # Jeszcze niższy próg akceptacji, żeby wyciągnąć drobnicę
-            "stability_score_thresh": 0.55,    # Niższy próg stabilności
+            "points_per_side": 96,             # Increased point density (more small objects)
+            "pred_iou_thresh": 0.55,           # Even lower acceptance threshold to capture small fields
+            "stability_score_thresh": 0.55,    # Lower stability threshold
             "crop_n_layers": 1,
             "crop_n_points_downscale_factor": 2,
-            "min_mask_region_area": 10         # 10 pikseli - ekstremalna czułość na drobnicę (ziarnicę)
+            "min_mask_region_area": 10         # 10 pixels - extreme sensitivity to small fields
         }
     )
     
-    # Generowanie maski (zapisuje od razu do pliku TIF z zachowaniem georeferencji)
-    print(f"Rozpoczęcie automatycznej segmentacji wycinka: {crop_tif}")
+    # Generate mask (saves directly to TIF file preserving georeference)
+    print(f"Starting automatic segmentation of the crop: {crop_tif}")
     sam.generate(
         source=crop_tif, 
         output=out_tif, 
-        foreground=False,  # WAŻNE: False, bo inaczej Otsu usuwa małe / ciemniejsze pola
-        unique=True,       # Generuj unikalne ID dla każdego segmentu (nie tylko maskę binarną)
-        min_size=10,       # Minimalny obszar segmentu
-        max_size=100000    # Maksymalny obszar (chroni przed maską na cały obraz)
+        foreground=False,  # IMPORTANT: False, otherwise Otsu removes small / darker fields
+        unique=True,       # Generate unique ID for each segment (not just binary mask)
+        min_size=10,       # Minimum segment area
+        max_size=100000    # Maximum area (prevents mask covering the entire image)
     )
     
-    print(f"Pomyślnie wygenerowano raster segmentacji: {out_tif}")
+    print(f"Successfully generated segmentation raster: {out_tif}")
 
-    # Wypełnianie zer (pustych przestrzeni na lądzie/wodzie) jak w zwykłym SAM
-    print("Wypełnianie pustych przestrzeni (NoData) najbliższymi segmentami...")
+    # Filling zeros (empty spaces on land/water) like in standard SAM
+    print("Filling empty spaces (NoData) with nearest segments...")
     from scipy.ndimage import distance_transform_edt
     out_ds = gdal.Open(out_tif, gdal.GA_Update)
     band = out_ds.GetRasterBand(1)
@@ -106,17 +106,17 @@ def test_samgeo():
         band.WriteArray(filled_arr)
         band.FlushCache()
     out_ds = None
-    print("Zakończono wypełnianie pustych przestrzeni.")
+    print("Finished filling empty spaces.")
     
-    # Opcjonalnie: automatyczna konwersja do poligonów (Wektor)
+    # Optional: automatic conversion to polygons (Vector)
     try:
-        print("Konwersja do wektora (GeoPackage)...")
+        print("Converting to vector (GeoPackage)...")
         sam.tiff_to_vector(out_tif, out_vector)
-        print(f"Pomyślnie wygenerowano wektory: {out_vector}")
+        print(f"Successfully generated vectors: {out_vector}")
     except Exception as e:
-        print(f"Nie udało się wyeksportować wektora (być może brakuje biblioteki geopandas): {e}")
+        print(f"Failed to export vector (perhaps geopandas library is missing): {e}")
 
-    print("\nGotowe! Otwórz wygenerowane pliki w QGIS.")
+    print("\nDone! Open the generated files in QGIS.")
 
 if __name__ == '__main__':
     test_samgeo()

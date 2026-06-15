@@ -1,4 +1,4 @@
-# Jak uruchomić skrypt:
+# How to run the script:
 # python 1_classify_prithvi_sar.py --track NL/orbit_88
 # python 1_classify_prithvi_sar.py --track PT/orbit_161
 

@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from osgeo import gdal, gdalconst, ogr, osr
 
-# Jak uruchomić skrypt:
+# How to run the script:
 # python 3_stack_clip.py -t PL/orbit_12
 # python 3_stack_clip.py -t FR/orbit_8 FR/orbit_81 FR/orbit_110
 

@@ -14,7 +14,7 @@ from osgeo import ogr, osr
 import os
 
 # ================= CONFIGURATION =================
-# Jak uruchomić skrypt dla wybranego kraju:
+# How to run the script for a selected country:
 # python 1c_slice_calibration_cdse.py -s 2024-10-15 -e 2024-11-30 -c PL
 # python 1c_slice_calibration_cdse.py -s 2024-10-15 -e 2024-11-30 -c FR
 

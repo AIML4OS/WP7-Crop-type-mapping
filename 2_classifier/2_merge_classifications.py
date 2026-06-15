@@ -1,4 +1,4 @@
-# Jak uruchomić skrypt:
+# How to run the script:
 # python 2_merge_classifications.py --track PL
 # python 2_merge_classifications.py --track FR
 # python 2_merge_classifications.py --track P1

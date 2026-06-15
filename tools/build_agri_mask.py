@@ -1,56 +1,56 @@
 """
 build_agri_mask.py
 ==================
-Rozpakowuje, mozaikuje, przycina i tworzy binarne maski terenow rolnych
-z danych Copernicus HRL Crop Type 2023.
+Unzips, mosaics, clips, and creates binary agricultural masks
+from Copernicus HRL Crop Type 2023 data.
 
-UWAGA: Dane wejściowe należy pobrać RĘCZNIE. Skrypt NIE pobiera ich automatycznie,
-ponieważ portal Copernicus CLMS wymaga uwierzytelnienia użytkownika.
+NOTE: Input data must be downloaded MANUALLY. The script does NOT download it automatically,
+since the Copernicus CLMS portal requires user authentication.
 
-INSTRUKCJA POBIERANIA I PRZYGOTOWANIA DANYCH:
-  1. Zaloguj się na portalu Copernicus Land Monitoring Service (CLMS).
-  2. Wyszukaj i pobierz warstwę "High Resolution Layer: Crop Type 2023" (HRL CTY 2023)
-     dla obszaru interesującego Cię kraju (np. w postaci kafelków ZIP).
-  3. Utwórz katalog (jeśli nie istnieje):
+DOWNLOAD AND DATA PREPARATION INSTRUCTIONS:
+  1. Log in to the Copernicus Land Monitoring Service (CLMS) portal.
+  2. Search for and download the "High Resolution Layer: Crop Type 2023" (HRL CTY 2023) layer
+     for the area of interest (e.g., as ZIP tiles).
+  3. Create the directory (if it doesn't exist):
      auxiliary_files/raster_files/AgriMasks/<COUNTRY>/Results/
-     (gdzie <COUNTRY> to kod kraju, np. PL, FR, IE).
-  4. Umieść pobrane pliki ZIP bezpośrednio w katalogu "Results/".
-  5. Uruchom skrypt (przykład poniżej).
+     (where <COUNTRY> is the country code, e.g., PL, FR, IE).
+  4. Place the downloaded ZIP files directly inside the "Results/" folder.
+  5. Run the script (example below).
 
-Generuje 2 warianty masek (obie BINARNE: 0=brak upraw, 1=uprawy, 255=NoData):
+Generates 2 mask variants (both BINARY: 0=no crops, 1=crops, 255=NoData):
 
-  Wariant A: maska pola uprawne 3-klasowe (jare / oziminy / rzepak ozimy)
-             -> 1 tam gdzie jest jakakolwiek z tych 3 klas
-  Wariant B: maska wszystkich upraw (wlacznie z trwalymi)
-             -> 1 tam gdzie jest jakakolwiek uprawa
+  Variant A: 3-class arable crops mask (spring / winter / winter rapeseed)
+             -> 1 where any of these 3 classes exist
+  Variant B: all crops mask (including permanent crops)
+             -> 1 where any crop exists
 
-UWAGA: Obie maski sa BINARNE (0/1). Wartosc 0 NIE jest tagowana jako NoData.
-       NoData = 255 (obszar poza zakresem danych zrodlowych).
+NOTE: Both masks are BINARY (0/1). The value 0 is NOT tagged as NoData.
+      NoData = 255 (area outside the range of source data).
 
-Uzycie:
+Usage:
   python tools/build_agri_mask.py --country IE
   python tools/build_agri_mask.py --country IE --target_crs EPSG:3857
-  python tools/build_agri_mask.py --country IE --clip_shp sciezka/do/granicy.shp
+  python tools/build_agri_mask.py --country IE --clip_shp path/to/boundary.shp
   python tools/build_agri_mask.py --country IE --no_clip
 
-Struktura katalogow (dane wejsciowe):
+Directory structure (input data):
   auxiliary_files/
     raster_files/
       AgriMasks/
         <COUNTRY>/
-          Results/    <- zip-y z Copernicus CLMS (NALEŻY POBRAĆ RĘCZNIE!)
+          Results/    <- Copernicus CLMS zip files (DOWNLOAD MANUALLY!)
 
     shapefiles_nuts/
       <COUNTRY>/
-        NUTS2_<COUNTRY>.shp  <- granica kraju do przycinania (auto-wykrywana)
+        NUTS2_<COUNTRY>.shp  <- country boundary for clipping (auto-detected)
 
-Wyniki trafiaja do:
+Results are saved to:
   auxiliary_files/
     raster_files/
       AgriMasks/
         <COUNTRY>/
-          <COUNTRY>_agri_mask_3class_<CRS>.tif   <- Wariant A (binarna)
-          <COUNTRY>_agri_mask_allcrops_<CRS>.tif <- Wariant B (binarna)
+          <COUNTRY>_agri_mask_3class_<CRS>.tif   <- Variant A (binary)
+          <COUNTRY>_agri_mask_allcrops_<CRS>.tif <- Variant B (binary)
 """
 
 import os
@@ -63,8 +63,8 @@ from pathlib import Path
 
 
 # -----------------------------------------------------------------------
-# KONFIGURACJA SCIEZEK BAZOWYCH
-# Skrypt jest w: D:/AIML_CropMapper_Cloud/tools/
+# BASE PATH CONFIGURATION
+# Script location: D:/AIML_CropMapper_Cloud/tools/
 # -----------------------------------------------------------------------
 SCRIPT_DIR   = Path(__file__).parent                          # tools/
 PROJECT_ROOT = SCRIPT_DIR.parent                              # D:/AIML_CropMapper_Cloud/
@@ -74,23 +74,23 @@ NUTS_DIR      = AUX_DIR / 'shapefiles_nuts'
 
 
 # -----------------------------------------------------------------------
-# DEFINICJA KLAS HRL CTY 2023
-# Zrodlo: CLMS_HRLVLCC_CTY_R10.qml
+# HRL CTY 2023 CLASS DEFINITIONS
+# Source: CLMS_HRLVLCC_CTY_R10.qml
 # -----------------------------------------------------------------------
 
-# Wariant A: klasy uwzglednianych upraw (1=jare, 2=oziminy, 3=rzepak ozimy)
-# -> maska binarna: te piksele dadza wartosc 1 w wyniku
+# Variant A: Arable crops to include (1=spring crops, 2=winter crops, 3=winter rapeseed)
+# -> binary mask: these pixels will yield a value of 1 in the output
 CLASS_3_INCLUDE = {
-    # Oziminy
-    1110,   # Wheat (pszenica - glownie ozima)
-    1120,   # Barley (jeczmien - czesc ozima)
-    1150,   # Other Cereals (inne zboza ozime)
-    # Rzepak ozimy
+    # Winter crops
+    1110,   # Wheat (mainly winter wheat)
+    1120,   # Barley (partially winter barley)
+    1150,   # Other Cereals (other winter cereals)
+    # Winter rapeseed
     1430,   # Rapeseed
-    # Uprawy jare i pozostale
-    1130,   # Maize (kukurydza)
+    # Spring crops and others
+    1130,   # Maize
     1210,   # Fresh Vegetables
-    1220,   # Dry Pulses (straczkowe)
+    1220,   # Dry Pulses
     1310,   # Potatoes
     1320,   # Sugar Beet
     1410,   # Sunflower
@@ -99,34 +99,34 @@ CLASS_3_INCLUDE = {
     3100,   # Unclassified arable crop
 }
 
-# Wariant B: wszystkie uprawy (wlacznie z trwalymi)
+# Variant B: All crops (including permanent crops)
 ALL_CROPS_INCLUDE = {
-    1110, 1120, 1130, 1140, 1150,   # Zboza
-    1210, 1220,                     # Warzywa i straczkowe
-    1310, 1320,                     # Okopowe
-    1410, 1420, 1430, 1440,         # Oleiste i przemyslowe
-    2100, 2200, 2310, 2320,         # Uprawy trwale (winorosla, oliwki, sady, orzechy)
-    3100, 3200,                     # Nieklasyfikowane uprawy
+    1110, 1120, 1130, 1140, 1150,   # Cereals
+    1210, 1220,                     # Vegetables and pulses
+    1310, 1320,                     # Root crops
+    1410, 1420, 1430, 1440,         # Oilseeds and industrial crops
+    2100, 2200, 2310, 2320,         # Permanent crops (vineyards, olives, orchards, nuts)
+    3100, 3200,                     # Unclassified crops
 }
 
-NODATA_VAL = None   # Brak NoData - identycznie jak EU_arable_areas_mask_3857.tif
-                    # Wartosc 0 = brak upraw / poza zakresem, 1 = uprawy
+NODATA_VAL = None   # No NoData value - identical to EU_arable_areas_mask_3857.tif
+                    # Value 0 = no crops / out of bounds, 1 = crops
 
 
 # -----------------------------------------------------------------------
-# FUNKCJE
+# FUNCTIONS
 # -----------------------------------------------------------------------
 
 def unzip_tiles(results_dir: Path, temp_dir: Path) -> list:
-    """Rozpakowuje wszystkie zip-y z katalogu Results do temp_dir.
-    Zwraca liste sciezek do wypakowanych plikow TIF."""
+    """Unzips all ZIP files from the Results directory into temp_dir.
+    Returns a list of paths to the extracted TIF files."""
     zip_files = sorted(results_dir.glob('*.zip'))
     if not zip_files:
-        print(f"  [UWAGA] Brak plikow ZIP w: {results_dir}")
+        print(f"  [WARNING] No ZIP files found in: {results_dir}")
         return []
 
     tif_files = []
-    print(f"  Rozpakowywanie {len(zip_files)} plikow ZIP...")
+    print(f"  Unzipping {len(zip_files)} ZIP files...")
     for zf_path in zip_files:
         with zipfile.ZipFile(zf_path, 'r') as zf:
             tif_names = [
@@ -143,13 +143,13 @@ def unzip_tiles(results_dir: Path, temp_dir: Path) -> list:
                 tif_files.append(str(out_path))
         print(f"    OK: {zf_path.name}")
 
-    # Sprawdz tez juz wypakowane TIF-y w Results (np. jeden juz byl rozpakowywany recznie)
+    # Check for already extracted TIFs in Results (e.g., if one was already unzipped manually)
     already_tifs = [
         str(p) for p in results_dir.glob('**/*.tif')
         if not p.name.endswith('.aux.xml')
     ]
     if already_tifs and not zip_files:
-        print(f"  Znaleziono {len(already_tifs)} plikow TIF bezposrednio w katalogu Results.")
+        print(f"  Found {len(already_tifs)} TIF files directly in the Results directory.")
         return already_tifs
 
     return tif_files
@@ -157,29 +157,29 @@ def unzip_tiles(results_dir: Path, temp_dir: Path) -> list:
 
 def reclassify_to_binary(src_path: str, dst_path: str, include_set: set):
     """
-    Reklasyfikuje raster do maski binarnej:
-      1 -> piksel nalezacy do klasy w include_set (uprawy)
-      0 -> brak upraw LUB poza zakresem danych (65535 w HRL CTY -> 0)
+    Reclassifies the raster into a binary mask:
+      1 -> pixel belongs to a class in include_set (crops)
+      0 -> no crops OR out of data bounds (65535 in HRL CTY -> 0)
 
-    BRAK wartosci NoData - identycznie jak EU_arable_areas_mask_3857.tif.
-    Wartosc 0 jest poprawna wartoscia (brak upraw), nie NoData.
+    NO NoData value - identical to EU_arable_areas_mask_3857.tif.
+    The value 0 is a valid value (no crops), not NoData.
     """
     from osgeo import gdal
     import numpy as np
 
     ds = gdal.Open(src_path)
     if ds is None:
-        print(f"  BLAD: Nie mozna otworzyc: {src_path}")
+        print(f"  ERROR: Cannot open: {src_path}")
         return
 
     band = ds.GetRasterBand(1)
     data = band.ReadAsArray().astype(np.int32)
 
-    # Binarna maska: 1 = uprawa, 0 = wszystko inne (w tym 65535 = poza kafelkiem)
+    # Binary mask: 1 = crop, 0 = everything else (including 65535 = outside tile)
     out = np.zeros(data.shape, dtype=np.uint8)
     for val in include_set:
         out[data == val] = 1
-    # 65535 (poza zakresem HRL CTY) -> pozostaje 0 (juz ustawione przez zeros)
+    # 65535 (out of HRL CTY bounds) -> remains 0 (already set by zeros)
 
     driver = gdal.GetDriverByName('GTiff')
     out_ds = driver.Create(
@@ -192,17 +192,17 @@ def reclassify_to_binary(src_path: str, dst_path: str, include_set: set):
     out_ds.SetProjection(ds.GetProjection())
     out_band = out_ds.GetRasterBand(1)
     out_band.WriteArray(out)
-    # NIE ustawiamy NoData - identycznie jak EU_arable_areas_mask_3857.tif
+    # We do NOT set NoData - identical to EU_arable_areas_mask_3857.tif
     out_ds.FlushCache()
     out_ds = None
     ds = None
-    print(f"    Reklasyfikacja: {Path(src_path).name} -> {Path(dst_path).name}")
+    print(f"    Reclassification: {Path(src_path).name} -> {Path(dst_path).name}")
 
 
-def _detect_shp_crs(shp_path: str) -> str:
+def _detect_shp_crs(shp_path: str) -> str | None:
     """
-    Wykrywa prawdziwy CRS shapefile na podstawie zakresu wspolrzednych.
-    Uzywane jako obejscie gdy .prj ma blednie zadeklarowany CRS.
+    Detects the true CRS of the shapefile based on the coordinate range.
+    Used as a workaround when the .prj file declares an incorrect CRS.
     """
     from osgeo import ogr
     ds = ogr.Open(shp_path)
@@ -213,9 +213,9 @@ def _detect_shp_crs(shp_path: str) -> str:
     ext = layer.GetExtent()  # (minX, maxX, minY, maxY)
     declared = srs.GetAuthorityCode(None) if srs else None
 
-    # Sprawdz zasiag - EPSG:3857 ma wspolrzedne rzedu milionow (ok. +-20M)
-    # EPSG:3035 ma wspolrzedne rzedu setek tysiecy / kilku milionow
-    # EPSG:4326 ma wspolrzedne +-180 / +-90
+    # Check range - EPSG:3857 has coordinates in millions (approx. +-20M)
+    # EPSG:3035 has coordinates in hundreds of thousands / a few millions
+    # EPSG:4326 has coordinates in range +-180 / +-90
     max_coord = max(abs(ext[0]), abs(ext[1]), abs(ext[2]), abs(ext[3]))
     if max_coord < 180:
         real_crs = 'EPSG:4326'
@@ -225,23 +225,23 @@ def _detect_shp_crs(shp_path: str) -> str:
         real_crs = 'EPSG:3857'
 
     if declared != real_crs.split(':')[1]:
-        print(f"  [UWAGA] CRS w .prj: EPSG:{declared}, wykryty z zasiegu: {real_crs}")
-        print(f"          Zasieg: {ext}, uzyje {real_crs} jako cutlineSRS")
+        print(f"  [WARNING] CRS in .prj: EPSG:{declared}, detected from extent: {real_crs}")
+        print(f"            Extent: {ext}, will use {real_crs} as cutlineSRS")
     return real_crs
 
 
 def mosaic_and_reproject(tif_files: list, output_path: str, target_crs: str,
                          clip_shp: str = None):
     """
-    Mozaikuje kafelki i reprojekcjonuje do target_crs.
-    Wynik: czysty raster binarny 0/1 BEZ zadnej wartosci NoData.
-      0 = brak upraw,  1 = uprawy
-    Uzywa gdal.Warp bezposrednio z lista plikow (bez VRT) aby uniknac
-    problemu z zerowanymi wartosciami przy BuildVRT na Windows.
+    Mosaics the tiles and reprojects them to target_crs.
+    Result: a clean binary raster (0/1) WITHOUT any NoData value.
+      0 = no crops, 1 = crops
+    Uses gdal.Warp directly with the file list (no VRT) to avoid
+    issues with zero values during BuildVRT on Windows.
     """
     from osgeo import gdal
 
-    print(f"  Mozaikowanie + reprojekcja {len(tif_files)} kafelkow do {target_crs}...")
+    print(f"  Mosaicking + reprojecting {len(tif_files)} tiles to {target_crs}...")
 
     warp_kwargs = {
         'format': 'GTiff',
@@ -254,42 +254,36 @@ def mosaic_and_reproject(tif_files: list, output_path: str, target_crs: str,
     }
 
     if clip_shp:
-        print(f"  Przycinanie do granicy przy uzyciu: {clip_shp}")
+        print(f"  Clipping to boundary using: {clip_shp}")
         warp_kwargs['cutlineDSName'] = clip_shp
         warp_kwargs['cropToCutline'] = True
         
-        # Wykrycie i ustawienie odpowiedniego CRS dla cutline (przydatne przy roznych ukladow odniesienia)
+        # Detect and set the correct CRS for the cutline (useful when coordinate systems differ)
         real_shp_crs = _detect_shp_crs(clip_shp)
         if real_shp_crs:
             warp_kwargs['cutlineSRS'] = real_shp_crs
 
-    # gdal.Warp przyjmuje liste plikow bezposrednio - bez VRT
+    # gdal.Warp accepts the list of files directly - no VRT needed
     ds = gdal.Warp(
         output_path,
-        tif_files,          # lista reklasyfikowanych kafelkow w EPSG:3035
+        tif_files,          # list of reclassified tiles in EPSG:3035
         **warp_kwargs
     )
     if ds is None:
-        print(f"  BLAD: gdal.Warp nie powiodl sie!")
+        print(f"  ERROR: gdal.Warp failed!")
         return
     ds.FlushCache()
     ds = None
 
-    print(f"  Zapisano: {output_path}")
-
-
-
-
-
-
+    print(f"  Saved: {output_path}")
 
 
 def resolve_clip_shp(country_code: str) -> str | None:
-    """Szuka pliku SHP z granica kraju w standardowej lokalizacji NUTS."""
+    """Searches for a country boundary shapefile in the standard NUTS directory."""
     nuts_country_dir = NUTS_DIR / country_code
     if not nuts_country_dir.exists():
         return None
-    # Szukaj: NUTS2_<COUNTRY>.shp lub jakiegokolwiek SHP
+    # Search for: NUTS2_<COUNTRY>.shp or any other .shp file
     candidates = [
         nuts_country_dir / f"NUTS2_{country_code}.shp",
         nuts_country_dir / f"NUTS1_{country_code}.shp",
@@ -297,16 +291,16 @@ def resolve_clip_shp(country_code: str) -> str | None:
     ]
     for p in candidates:
         if p.exists():
-            print(f"  Granica kraju: {p}")
+            print(f"  Country boundary: {p}")
             return str(p)
     return None
 
 
 def build_mask_for_country(country_code: str, results_dir: Path, output_dir: Path,
                            target_crs: str, clip_shp: str = None, force: bool = False):
-    """Glowna funkcja: buduje binarne maski dla jednego kraju."""
+    """Main function: builds binary agricultural masks for a given country."""
     print(f"\n{'='*60}")
-    print(f" Przetwarzanie: {country_code}  ({target_crs})")
+    print(f" Processing: {country_code}  ({target_crs})")
     print(f"{'='*60}")
 
     crs_tag = target_crs.replace(':', '').lower().replace('epsg', 'epsg')
@@ -314,27 +308,27 @@ def build_mask_for_country(country_code: str, results_dir: Path, output_dir: Pat
     out_allcrops = output_dir / f"{country_code}_agri_mask_allcrops_{crs_tag}.tif"
 
     if out_3class.exists() and out_allcrops.exists() and not force:
-        print(f"  Maski juz istnieja. Uzyj --force aby wygenerowac ponownie.")
+        print(f"  Masks already exist. Use --force to regenerate.")
         print(f"  {out_3class}")
         print(f"  {out_allcrops}")
         return
 
-    # Uzywamy stalego katalogu intermediate zamiast tempfile.TemporaryDirectory
-    # Na Windows GDAL trzyma uchwyty do plikow otwarte i TemporaryDirectory
-    # nie moze ich usunac - co powoduje ze pliki wyjsciowe sa puste/zerowe.
+    # We use a persistent intermediate directory instead of tempfile.TemporaryDirectory.
+    # On Windows, GDAL keeps file handles open, preventing TemporaryDirectory from deleting them,
+    # which can cause the output files to be empty/zero-sized.
     temp_path = output_dir / "intermediate"
     temp_path.mkdir(parents=True, exist_ok=True)
 
     try:
-        # [1] Rozpakuj
-        print("\n[1/4] Rozpakowywanie ZIP-ow...")
+        # [1] Unzip
+        print("\n[1/4] Unzipping ZIP files...")
         raw_tifs = unzip_tiles(results_dir, temp_path)
         if not raw_tifs:
-            print("  BLAD: Brak plikow TIF po rozpakowaniu!")
+            print("  ERROR: No TIF files found after extraction!")
             return
 
-        # [2] Reklasyfikacja kazdego kafelka -> binarne 0/1
-        print(f"\n[2/4] Reklasyfikacja {len(raw_tifs)} kafelkow (binarna 0/1)...")
+        # [2] Reclassify each tile -> binary 0/1
+        print(f"\n[2/4] Reclassifying {len(raw_tifs)} tiles (binary 0/1)...")
         tifs_3class   = []
         tifs_allcrops = []
 
@@ -347,108 +341,108 @@ def build_mask_for_country(country_code: str, results_dir: Path, output_dir: Pat
             tifs_3class.append(dst_3class)
             tifs_allcrops.append(dst_allcrops)
 
-        # [3] Mozaik + reprojekcja + przycinanie
-        print("\n[3/4] Mozaikowanie, reprojekcja, przycinanie - Wariant A (3-klasowy -> binarny)...")
+        # [3] Mosaic + reproject + clip
+        print("\n[3/4] Mosaicking, reprojecting, clipping - Variant A (3-class -> binary)...")
         mosaic_and_reproject(tifs_3class,   str(out_3class),   target_crs, clip_shp)
 
-        print("\n[3/4] Mozaikowanie, reprojekcja, przycinanie - Wariant B (wszystkie uprawy -> binarny)...")
+        print("\n[3/4] Mosaicking, reprojecting, clipping - Variant B (all crops -> binary)...")
         mosaic_and_reproject(tifs_allcrops, str(out_allcrops), target_crs, clip_shp)
 
     finally:
-        # Usun katalog intermediate po zakonczeniu wszystkich operacji GDAL
+        # Delete intermediate directory after all GDAL operations finish
         import gc
-        gc.collect()   # wymusz zwolnienie uchwytow GDAL
+        gc.collect()   # Force release of GDAL file handles
         try:
             shutil.rmtree(str(temp_path))
-            print(f"\n  Usunieto katalog intermediate: {temp_path}")
+            print(f"\n  Deleted intermediate directory: {temp_path}")
         except Exception as e:
-            print(f"\n  [INFO] Nie mozna usunac intermediate (mozna usunac recznie): {e}")
+            print(f"\n  [INFO] Cannot delete intermediate directory (can be deleted manually): {e}")
 
 
-    # [4] Podsumowanie
-    print("\n[4/4] Gotowe!")
-    for f, label in [(out_3class, "Wariant A (3-klasowy binarny)"),
-                     (out_allcrops, "Wariant B (wszystkie uprawy binarny)")]:
+    # [4] Summary
+    print("\n[4/4] Done!")
+    for f, label in [(out_3class, "Variant A (3-class binary)"),
+                     (out_allcrops, "Variant B (all crops binary)")]:
         size_mb = f.stat().st_size / 1024**2 if f.exists() else 0
         print(f"  {label}: {f}  [{size_mb:.1f} MB]")
 
     print()
-    print("  Legenda (obie maski binarne, brak wartosci NoData):")
-    print("    0 = brak upraw / obszar poza danymi HRL CTY")
-    print("    1 = uprawy")
-    print("    (identyczna struktura jak EU_arable_areas_mask_3857.tif)")
+    print("  Legend (both masks binary, no NoData value):")
+    print("    0 = no crops / area outside HRL CTY data")
+    print("    1 = crops")
+    print("    (identical structure as EU_arable_areas_mask_3857.tif)")
     print()
-    print("  Klasy uwzglednionie w Wariancie A (3-klasowy):")
-    print("    jare:    kukurydza, warzywa, straczkowe, okopowe, oleiste, nieklasyfikowane")
-    print("    oziminy: pszenica, jeczmien, inne zboza ozime")
-    print("    rzepak:  Rapeseed (1430)")
+    print("  Classes included in Variant A (3-class):")
+    print("    spring:  maize, vegetables, pulses, roots, oilseeds, unclassified")
+    print("    winter:  wheat, barley, other winter cereals")
+    print("    rape:    rapeseed (1430)")
 
 
 # -----------------------------------------------------------------------
-# PUNKT WEJSCIA
+# ENTRY POINT
 # -----------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Buduje binarne maski rolnicze z Copernicus HRL CTY 2023',
+        description='Builds binary agricultural masks from Copernicus HRL CTY 2023',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Przyklady:
+Examples:
   python tools/build_agri_mask.py --country IE
   python tools/build_agri_mask.py --country IE --target_crs EPSG:3857
   python tools/build_agri_mask.py --country IE --no_clip
-  python tools/build_agri_mask.py --country IE --clip_shp D:/moja/granica.shp
+  python tools/build_agri_mask.py --country IE --clip_shp D:/my/boundary.shp
   python tools/build_agri_mask.py --country PL --force
         """
     )
     parser.add_argument('--country', '-c', required=True,
-                        help='Kod kraju (IE, AT, PL, DE, ...)')
+                        help='Country code (IE, AT, PL, DE, ...)')
     parser.add_argument('--target_crs', default='EPSG:3857',
-                        help='Docelowy uklad wspolrzednych (domyslnie EPSG:3857)')
+                        help='Target coordinate reference system (default EPSG:3857)')
     parser.add_argument('--clip_shp', default=None,
-                        help='Sciezka do pliku SHP do przycinania (nadpisuje auto-wykrywanie)')
+                        help='Path to shapefile for clipping (overrides auto-detection)')
     parser.add_argument('--no_clip', action='store_true',
-                        help='Nie przycinaj do granic kraju')
+                        help='Do not clip to country boundaries')
     parser.add_argument('--results_dir', default=None,
-                        help='Katalog z plikami ZIP (domyslnie AgriMasks/<COUNTRY>/Results/)')
+                        help='Directory with ZIP files (defaults to AgriMasks/<COUNTRY>/Results/)')
     parser.add_argument('--output_dir', default=None,
-                        help='Katalog wyjsciowy (domyslnie AgriMasks/<COUNTRY>/)')
+                        help='Output directory (defaults to AgriMasks/<COUNTRY>/)')
     parser.add_argument('--force', action='store_true',
-                        help='Nadpisz istniejace pliki wyjsciowe')
+                        help='Overwrite existing output files')
     args = parser.parse_args()
 
     country = args.country.upper()
 
-    # Katalog z danymi ZIP
+    # ZIP directory
     if args.results_dir:
         results_dir = Path(args.results_dir)
     else:
         results_dir = AGRIMASKS_DIR / country / 'Results'
 
-    # Katalog wyjsciowy -> AgriMasks/<COUNTRY>/
+    # Output directory -> AgriMasks/<COUNTRY>/
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
         output_dir = AGRIMASKS_DIR / country
 
     if not results_dir.exists():
-        print(f"BLAD: Katalog z danymi nie istnieje: {results_dir}")
+        print(f"ERROR: Data directory does not exist: {results_dir}")
         sys.exit(1)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Granica do przycinania
+    # Boundary for clipping
     clip_shp = None
     if args.no_clip:
-        print("  Przycinanie wylaczone (--no_clip)")
+        print("  Clipping disabled (--no_clip)")
     elif args.clip_shp:
         clip_shp = args.clip_shp
     else:
         clip_shp = resolve_clip_shp(country)
         if clip_shp is None:
-            print(f"  [INFO] Brak pliku SHP granicy dla '{country}' w {NUTS_DIR / country}")
-            print(f"  Maska NIE bedzie przycinana do granic kraju.")
-            print(f"  Uzyj --clip_shp lub dodaj plik do: {NUTS_DIR / country / f'NUTS2_{country}.shp'}")
+            print(f"  [INFO] Country boundary shapefile not found for '{country}' in {NUTS_DIR / country}")
+            print(f"  The mask will NOT be clipped to the country boundaries.")
+            print(f"  Use --clip_shp or add the file to: {NUTS_DIR / country / f'NUTS2_{country}.shp'}")
 
     build_mask_for_country(
         country_code=country,

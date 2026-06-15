@@ -12,11 +12,11 @@ from osgeo import ogr, osr
 import os
 
 # ================= CONFIGURATION =================
-# Jak uruchomić skrypt dla wybranego kraju (np. Polski - PL, Francji - FR, Austrii - AT):
+# How to run the script for a selected country (e.g., Poland - PL, France - FR, Austria - AT):
 # python 1a_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -c PL
 # python 1a_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -c FR
 #
-# Jak uruchomić skrypt dla konkretnej orbity (np. 161 dla Holandii):
+# How to run the script for a specific orbit (e.g., 161 for Netherlands):
 # python 1a_slice_calibration.py -s 2024-10-15 -e 2025-09-15 -c NL -o 161
 
 GPT_EXE = os.environ.get("SNAP_GPT_EXE", r"D:/Program Files/esa-snap/bin/gpt.exe")
