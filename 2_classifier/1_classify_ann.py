@@ -399,9 +399,8 @@ TOTAL_STAGES = 8
 # --- Main Pipeline Class ---
 
 class ProcessingPipeline:
-    def __init__(self, track, mask_variant='3class', seg_mode='sam'):
+    def __init__(self, track, mask_variant=None, seg_mode='sam'):
         self.track = track
-        self.mask_variant = mask_variant  # '3class' or 'allcrops'
         self.seg_mode = seg_mode          # 'sam' or 'lpis'
         
         # Dedicated support for dynamic tracks per country (e.g. PL/orbit_12 or 2-letter country code)
@@ -413,6 +412,15 @@ class ProcessingPipeline:
         else:
             print(f"Error: Track '{track}' does not contain country code and is not a 2-letter country code.")
             sys.exit(1)
+
+        # Dynamic default for mask_variant based on country if not explicitly specified
+        if mask_variant is None:
+            if self.country == 'NL':
+                self.mask_variant = 'allcrops'
+            else:
+                self.mask_variant = '3class'
+        else:
+            self.mask_variant = mask_variant
 
         self.total_stages = TOTAL_STAGES
         print(f"Initializing pipeline for Track: {self.track}, Country: {self.country}, Segmentation: {self.seg_mode.upper()}")
@@ -2515,10 +2523,10 @@ def main_menu(pipeline):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Modular OBIA Pipeline (True Object-Based Training)")
     parser.add_argument('--track', required=True, help="Processing track name (e.g. NL/orbit_88 or PT/orbit_161)")
-    parser.add_argument('--mask_variant', default='3class',
+    parser.add_argument('--mask_variant', default=None,
                         choices=['3class', 'allcrops'],
-                        help="Agricultural mask variant: '3class' (spring/winter/rapeseed, default) "
-                             "or 'allcrops' (all crops including permanent ones)")
+                        help="Agricultural mask variant: '3class' (default for PL) "
+                             "or 'allcrops' (default for NL)")
     parser.add_argument('--seg_mode', default='sam',
                         choices=['sam', 'lpis', 'otb_meanshift', 'felzenszwalb', 'slic'],
                         help="Initial segmentation mode/suffix (default: 'sam'). "
