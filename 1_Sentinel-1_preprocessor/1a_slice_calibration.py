@@ -15,6 +15,9 @@ import os
 # Jak uruchomić skrypt dla wybranego kraju (np. Polski - PL, Francji - FR, Austrii - AT):
 # python 1a_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -c PL
 # python 1a_slice_calibration.py -s 2024-10-15 -e 2024-11-30 -c FR
+#
+# Jak uruchomić skrypt dla konkretnej orbity (np. 161 dla Holandii):
+# python 1a_slice_calibration.py -s 2024-10-15 -e 2025-09-15 -c NL -o 161
 
 GPT_EXE = os.environ.get("SNAP_GPT_EXE", r"D:/Program Files/esa-snap/bin/gpt.exe")
 
@@ -772,6 +775,7 @@ def main():
     parser.add_argument('-s', '--start_date', required=True, help="Start date YYYY-MM-DD")
     parser.add_argument('-e', '--end_date', required=True, help="End date YYYY-MM-DD")
     parser.add_argument('-c', '--country', required=True, help="Country code (e.g. AT, IE, NL, PT...) for automatic orbit selection.")
+    parser.add_argument('-o', '--orbit', type=int, help="Specify a single relative orbit number to process (skips auto-discovery).")
 
     args = parser.parse_args()
 
@@ -809,8 +813,13 @@ def main():
         sys.exit(1)
 
     # Optimize orbit selection dynamically
-    optimizer = CountryOrbitOptimizer(repo, country_geom)
-    selected_orbits, selected_pass = optimizer.discover_and_optimize(start, country_code=country_code)
+    if args.orbit:
+        selected_orbits = [args.orbit]
+        selected_pass = None
+        logging.info(f"Using manually specified orbit: {selected_orbits}")
+    else:
+        optimizer = CountryOrbitOptimizer(repo, country_geom)
+        selected_orbits, selected_pass = optimizer.discover_and_optimize(start, country_code=country_code)
 
     if not selected_orbits:
         logging.error(f"No optimal orbits found for country {country_code}.")

@@ -1962,8 +1962,9 @@ class ProcessingPipeline:
             total_samples=total_samples
         )
         # Calculate training bias P_train introduced by class weights:
-        # weight = sqrt(total / (n_classes * count))
-        train_bias = np.array([math.sqrt(total_samples / (n_classes * class_counts.get(c, 1))) for c in classes])
+        # Since class weights scale loss by w_c = sqrt(total_samples / (n_classes * count_c)),
+        # the effective training sample size is count_c * w_c proportional to sqrt(count_c).
+        train_bias = np.array([math.sqrt(class_counts.get(c, 1)) for c in classes])
         p_train = train_bias / np.sum(train_bias)
         
         # Exact Bayesian correction factor: P_true / P_train
@@ -1972,8 +1973,9 @@ class ProcessingPipeline:
         # Apply SATMIROL power smoothing factor (0.7) to prevent over-correction
         correction = np.power(correction, 0.7)
         
-        # [NEW] Cap extreme multipliers to prevent "black hole" effect for dominant classes (like Grassland)
-        correction = np.clip(correction, 0.3, 1.5)
+        # Cap extreme multipliers to prevent division by zero or extreme noise, but keep bounds wide enough
+        # so that true class priors (like Grassland with 72%) can be correctly reflected.
+        correction = np.clip(correction, 0.01, 10.0)
         
         priors_arr = correction / np.sum(correction)
 

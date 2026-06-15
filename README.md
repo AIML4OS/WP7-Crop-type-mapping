@@ -472,6 +472,9 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
   # Cloud-Optimized GeoTIFF (COG) Calibration (Preferred local run):
   python 1_Sentinel-1_preprocessor/1b_slice_calibration_cog.py -s 2024-10-15 -e 2024-11-30 -c PL
 
+  # Cloud-Optimized GeoTIFF (COG) Calibration for a single specific orbit (e.g., Orbit 161 for Netherlands):
+  python 1_Sentinel-1_preprocessor/1b_slice_calibration_cog.py -s 2024-10-15 -e 2025-09-15 -c NL -o 161
+
   # Copernicus Data Space Ecosystem (CDSE) Calibration and Downloader:
   python 1_Sentinel-1_preprocessor/1c_slice_calibration_cdse.py -s 2024-10-15 -e 2024-11-30 -c PL
   ```
@@ -479,6 +482,7 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
   - `-s` : Start date (`YYYY-MM-DD`)
   - `-e` : End date (`YYYY-MM-DD`)
   - `-c` : 2-letter NUTS0 country code (e.g. `PL` for Poland)
+  - `-o` : (Optional) Specify a single relative orbit number (e.g. `161`) to process, bypassing the automatic orbit discovery and optimization stage.
   - `-d` : (Optional for CDSE) Custom download directory path to cache SAFE files. Defaults to `workingDir/S1_downloads`.
 
 * **Produced Outputs**:

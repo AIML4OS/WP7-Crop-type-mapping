@@ -1140,7 +1140,9 @@ class ProcessingPipeline:
         
         correction = p_true / (p_train + 1e-9)
         correction = np.power(correction, 0.7)
-        correction = np.clip(correction, 0.3, 1.5)
+        # Cap extreme multipliers to prevent division by zero or extreme noise, but keep bounds wide enough
+        # so that true class priors (like Grassland with 72%) can be correctly reflected.
+        correction = np.clip(correction, 0.01, 10.0)
         priors_arr = correction / np.sum(correction)
         # ---------------------------------
 
