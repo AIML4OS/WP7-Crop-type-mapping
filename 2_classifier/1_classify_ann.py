@@ -1590,10 +1590,25 @@ class ProcessingPipeline:
         print(f"[Stage {stage}/{self.total_stages}] Training ANN...")
 
         df = pd.read_csv(self.sel_csv)
+        local_samples = len(df)
+        local_classes = df['crop_id'].nunique()
+
+        # Check if local dataset is too small to train a viable model
+        if local_samples < 500 or local_classes < 5:
+            print(f"\n[Fallback System] WARNING: Local training dataset is too small (Samples: {local_samples}, Classes: {local_classes}).")
+            print(f"[Fallback System] Local model training is bypassed. Stage 5 (Inference) will automatically use the best national pre-trained model.")
+            # Delete any existing local model file to ensure fallback triggers in Stage 5
+            if self.model_pkl.exists():
+                try:
+                    self.model_pkl.unlink()
+                except Exception as e:
+                    print(f"    [WARNING] Failed to remove old local model file: {e}")
+            return
+
         feat_cols = [c for c in df.columns if c not in ['crop_id', 'seg_id']]
         self.feat_cols = feat_cols
 
-        print(f"    Original samples: {len(df)}")
+        print(f"    Original samples: {local_samples}")
 
         X = df[feat_cols].values
         y = df['crop_id'].values
