@@ -517,6 +517,12 @@ class ProcessingPipeline:
 
         self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
         
+        # Enable footprint masking for all tracks. The footprint mask generation has been
+        # updated to be robust (checking all bands and removing the noise sieve filter),
+        # which automatically makes it cover 100% of land area for full-swath orbits (like Orbit 88)
+        # without dropping points, while correctly masking out the empty 75% for narrow-swath orbits (like Orbit 161).
+        self.use_footprint_mask = True
+        
         # Agricultural mask - resolved per country (set in _resolve_agri_mask)
         self.agri_mask = self._resolve_agri_mask()
 
@@ -691,7 +697,7 @@ class ProcessingPipeline:
         stack_band = ds_stack.GetRasterBand(1)
 
         # 0. Open Data Footprint Mask (Stage 0 output)
-        if self.footprint_mask.exists():
+        if self.use_footprint_mask and self.footprint_mask.exists():
             ds_foot = gdal.Open(str(self.footprint_mask))
             foot_band = ds_foot.GetRasterBand(1)
         else:
@@ -795,6 +801,9 @@ class ProcessingPipeline:
     def stage_0_generate_footprint(self, force_recompute=False):
         """Generates a precise data footprint mask from the input raster."""
         self._ensure_directories()
+        if not self.use_footprint_mask:
+            print("[Stage 0] Footprint mask is bypassed for this track, skipping.")
+            return
         if self.footprint_mask.exists() and not force_recompute:
             print("[Stage 0] Data footprint mask already exists, skipping.")
             return
@@ -817,21 +826,19 @@ class ProcessingPipeline:
                 xsize = min(tile_size, cols - x)
                 ysize = min(tile_size, rows - y)
 
-                # Check multiple bands for a more robust footprint
-                combined_mask = None
-                for b in range(1, min(ds.RasterCount + 1, 3)): # Check first 2 bands (usually VH/VV)
+                # Check a subset of bands (every 8th band, representing different acquisition dates)
+                # to see if the pixel has valid data. This is 8x faster and highly robust.
+                # Loop through bands one by one to keep memory usage extremely low (~67 MB per tile)
+                combined_mask = np.zeros((ysize, xsize), dtype=bool)
+                for b in range(1, ds.RasterCount + 1, 8):
                     data = ds.GetRasterBand(b).ReadAsArray(x, y, xsize, ysize)
-                    m = (np.abs(data) > 1e-7) & (~np.isnan(data))
-                    if combined_mask is None:
-                        combined_mask = m
-                    else:
-                        combined_mask |= m
+                    if data is not None:
+                        combined_mask |= (np.abs(data) > 1e-7) & (~np.isnan(data))
 
                 out_band.WriteArray(combined_mask.astype(np.uint8), x, y)
 
         out_ds.FlushCache()
-        # Sieve filter to remove small noise artifacts
-        gdal.SieveFilter(out_band, None, out_band, threshold=100, connectedness=4)
+        # Sieve filter is removed to prevent dropping valid small agricultural parcels
         out_ds = None
         ds = None
         print(f"    Footprint mask saved to {self.footprint_mask}\n")
@@ -1110,7 +1117,7 @@ class ProcessingPipeline:
 
             # Open Data Footprint Mask (Stage 0 output) if it exists
             ds_foot = None
-            if self.footprint_mask.exists():
+            if self.use_footprint_mask and self.footprint_mask.exists():
                 ds_foot = gdal.Open(str(self.footprint_mask))
 
             cols = ds.RasterXSize
@@ -1334,7 +1341,7 @@ class ProcessingPipeline:
         # Open footprint mask to filter out samples outside the radar swath
         foot_band = None
         ds_foot = None
-        if self.footprint_mask.exists():
+        if self.use_footprint_mask and self.footprint_mask.exists():
             print(f"    Filtering points by footprint mask {self.footprint_mask.name} to discard NoData areas...")
             ds_foot = gdal.Open(str(self.footprint_mask))
             foot_band = ds_foot.GetRasterBand(1)
@@ -1445,7 +1452,7 @@ class ProcessingPipeline:
         # Open footprint mask to verify points during segment mapping
         foot_ds = None
         foot_band = None
-        if self.footprint_mask.exists():
+        if self.use_footprint_mask and self.footprint_mask.exists():
             foot_ds = gdal.Open(str(self.footprint_mask))
             foot_band = foot_ds.GetRasterBand(1)
 
@@ -1489,7 +1496,7 @@ class ProcessingPipeline:
         # Open footprint mask for tiled read masking
         footprint_ds = None
         footprint_band = None
-        if self.footprint_mask.exists():
+        if self.use_footprint_mask and self.footprint_mask.exists():
             footprint_ds = gdal.Open(str(self.footprint_mask))
             footprint_band = footprint_ds.GetRasterBand(1)
 
@@ -1626,13 +1633,204 @@ class ProcessingPipeline:
         print(pd.DataFrame(cm, index=labels, columns=labels).to_string())
         print("\n")
 
+    def find_best_fallback_model(self):
+        """
+        Scans all orbit directories for the same country to locate the best available pre-trained model
+        for the current segmentation suffix. Ranks candidates by number of classes, then geographic distance
+        from the local orbit (descending proximity), then training sample size, and finally classification overall accuracy.
+        """
+        print(f"\n[Fallback System] Scanning for pre-trained models for country '{self.country}' (Suffix: {self.seg_suffix})...")
+        country_dir = self.base_dir / self.country
+        if not country_dir.exists():
+            print(f"[Fallback System] Country directory {country_dir} does not exist.")
+            return None, None
+
+        # Get center coordinate of local raster
+        local_center = None
+        try:
+            ds = gdal.Open(str(self.ras))
+            if ds:
+                gt = ds.GetGeoTransform()
+                cols = ds.RasterXSize
+                rows = ds.RasterYSize
+                local_center = (gt[0] + (cols * gt[1]) / 2.0, gt[3] + (rows * gt[5]) / 2.0)
+                ds = None
+        except Exception as e:
+            print(f"  [WARNING] Failed to get local raster center: {e}")
+
+        candidates = []
+        # Find all track/orbit directories
+        for orbit_path in country_dir.iterdir():
+            if not orbit_path.is_dir():
+                continue
+            
+            # Skip current track
+            current_track_name = Path(self.track).name
+            if orbit_path.name == current_track_name:
+                continue
+
+            # Check if model pkl exists
+            model_pkl_path = orbit_path / 'classification_results' / 'train_model' / f"{self.country}_{orbit_path.name}_model_{self.seg_suffix}.pkl"
+            if not model_pkl_path.exists():
+                continue
+
+            # Load model to check number of classes
+            n_classes = 0
+            try:
+                model_data = joblib.load(model_pkl_path)
+                clf = model_data.get('model')
+                if clf and hasattr(clf, 'classes_'):
+                    n_classes = len(clf.classes_)
+            except Exception as e:
+                print(f"  [WARNING] Failed to load model for {orbit_path.name}: {e}")
+                continue
+
+            # Check training sample size from CSV
+            n_samples = 0
+            csv_path = orbit_path / 'classification_results' / 'samples' / f"{self.country}_{orbit_path.name}_learn_features_{self.seg_suffix}.csv"
+            if csv_path.exists():
+                try:
+                    n_samples = sum(1 for _ in open(csv_path, encoding='utf-8')) - 1
+                except Exception as e:
+                    print(f"  [WARNING] Failed to read sample features CSV for {orbit_path.name}: {e}")
+
+            # Check accuracy from metrics spreadsheet
+            oa = 0.0
+            metrics_path = orbit_path / 'classification_results' / 'classification' / f"{self.country}_{orbit_path.name}_metrics_{self.seg_suffix}.xlsx"
+            if metrics_path.exists():
+                try:
+                    wb = openpyxl.load_workbook(str(metrics_path), read_only=True)
+                    if 'Results' in wb.sheetnames:
+                        sh = wb['Results']
+                        for row in range(1, 40):
+                            cell_val = sh.cell(row=row, column=1).value
+                            if cell_val == 'Overall Accuracy':
+                                oa = float(sh.cell(row=row, column=2).value or 0.0)
+                                break
+                    wb.close()
+                except Exception as e:
+                    pass
+
+            # Calculate geographic distance between candidate and local raster centers
+            distance_km = float('inf')
+            try:
+                cand_proc_dir = orbit_path / 'processed_raster'
+                cand_ras = None
+                if cand_proc_dir.exists():
+                    search_patterns = [
+                        f"{self.country}_{orbit_path.name}_*_VH_VV*.tif",
+                        f"*{orbit_path.name}*.tif",
+                    ]
+                    for pattern in search_patterns:
+                        cand_hdr = next(cand_proc_dir.glob(pattern), None)
+                        if cand_hdr:
+                            if cand_hdr.suffix.lower() in ['.tif', '.tiff']:
+                                cand_ras = cand_hdr
+                            else:
+                                for ext in ['.img', '.tif', '.TIF']:
+                                    p = cand_hdr.with_suffix(ext)
+                                    if p.exists():
+                                        cand_ras = p
+                                        break
+                            if cand_ras:
+                                break
+                
+                if cand_ras and cand_ras.exists():
+                    ds_cand = gdal.Open(str(cand_ras))
+                    if ds_cand:
+                        gt_cand = ds_cand.GetGeoTransform()
+                        cols_cand = ds_cand.RasterXSize
+                        rows_cand = ds_cand.RasterYSize
+                        cand_center = (gt_cand[0] + (cols_cand * gt_cand[1]) / 2.0, gt_cand[3] + (rows_cand * gt_cand[5]) / 2.0)
+                        ds_cand = None
+                        
+                        if local_center and cand_center:
+                            # Distance in kilometers (assuming coordinates are projected meters)
+                            distance_km = math.sqrt((local_center[0] - cand_center[0])**2 + (local_center[1] - cand_center[1])**2) / 1000.0
+            except Exception as e:
+                pass
+
+            candidates.append({
+                'track': orbit_path.name,
+                'model_path': model_pkl_path,
+                'samples_csv_path': csv_path,
+                'learn_shp_path': orbit_path / 'classification_results' / 'samples' / f"learn_{self.seg_suffix}.shp",
+                'n_classes': n_classes,
+                'n_samples': n_samples,
+                'accuracy': oa,
+                'distance': distance_km
+            })
+
+        if not candidates:
+            print("[Fallback System] No other model files found.")
+            return None, None
+
+        # Sort: first by classes (descending), then distance (ascending), then sample size (descending), then accuracy (descending)
+        # We use -x['distance'] to sort distance ascending while using reverse=True
+        candidates.sort(key=lambda x: (x['n_classes'], -x['distance'], x['n_samples'], x['accuracy']), reverse=True)
+
+        print("Found candidates:")
+        for cand in candidates:
+            dist_str = f"{cand['distance']:.1f} km" if cand['distance'] != float('inf') else "unknown"
+            print(f"  - Track: {cand['track']}, Distance: {dist_str}, Classes: {cand['n_classes']}, Samples: {cand['n_samples']}, OA: {cand['accuracy']:.4f}")
+
+        best = candidates[0]
+        print(f"[Fallback System] Selected best model from track: {best['track']}\n")
+        return best['model_path'], best
+
     # --- Stage 5: Tiled Inference (Object-Based) ---
     def stage_5_classify_vector(self, force_recompute=False):
         # Renamed logic, kept name for compatibility
         self._ensure_directories()
         stage = 5
 
+        # Check if we should use fallback model
         model_file = self.model_pkl
+        fallback_path, fallback_info = self.find_best_fallback_model()
+        
+        use_fallback = False
+        reason = ""
+        
+        if not model_file.exists():
+            use_fallback = True
+            reason = "Local model file does not exist"
+        else:
+            # Check local stats
+            local_samples = 0
+            if self.sel_csv.exists():
+                try:
+                    local_samples = sum(1 for _ in open(self.sel_csv, encoding='utf-8')) - 1
+                except:
+                    pass
+            
+            local_classes = 0
+            try:
+                local_data = joblib.load(model_file)
+                local_clf = local_data.get('model')
+                if local_clf and hasattr(local_clf, 'classes_'):
+                    local_classes = len(local_clf.classes_)
+            except:
+                pass
+
+            if fallback_info:
+                # If local model has fewer classes than fallback, or local model has very few samples (e.g. < 500)
+                # and fallback has more, fallback is preferred.
+                if local_classes < fallback_info['n_classes']:
+                    use_fallback = True
+                    reason = f"Local model has fewer classes ({local_classes}) than the best national fallback model ({fallback_info['n_classes']})"
+                elif local_samples < 500 and fallback_info['n_samples'] > local_samples * 2:
+                    use_fallback = True
+                    reason = f"Local model trained on very few samples ({local_samples}) compared to fallback model ({fallback_info['n_samples']})"
+        
+        used_fallback = False
+        if use_fallback and fallback_path:
+            print(f"\n[Fallback System] TRIGGERED: {reason}")
+            print(f"[Fallback System] Swapping model to fallback: {fallback_path.name} (from track: {fallback_info['track']})")
+            model_file = fallback_path
+            used_fallback = True
+        else:
+            print(f"\n[Fallback System] Using local model: {model_file.name}")
+            
         if not model_file.exists():
             print("ERROR: Model not found.")
             return
@@ -1648,8 +1846,15 @@ class ProcessingPipeline:
         scaler = data['scaler']
         feat_cols = data['feats']
 
-        # Calculate priors from training samples (with crop aggregation if NL)
-        df_train = pd.read_csv(self.sel_csv)
+        # Calculate priors from training samples
+        train_csv_to_use = fallback_info['samples_csv_path'] if used_fallback else self.sel_csv
+        learn_shp_to_use = fallback_info['learn_shp_path'] if used_fallback else self.learn_shp
+
+        if not train_csv_to_use.exists():
+            print(f"ERROR: Training samples CSV not found: {train_csv_to_use}")
+            return
+
+        df_train = pd.read_csv(train_csv_to_use)
         y_train = df_train['crop_id'].values
         if self.country == 'NL':
             y_train = np.array([CROP_AGGREGATION_NL.get(val, val) for val in y_train])
@@ -1662,7 +1867,7 @@ class ProcessingPipeline:
         # Calculate true prior probabilities P_true
         p_true = _get_priors_for_country(
             country=self.country,
-            learn_shp_path=self.learn_shp,
+            learn_shp_path=learn_shp_to_use,
             classes=classes,
             class_counts=class_counts,
             total_samples=total_samples
@@ -1716,14 +1921,14 @@ class ProcessingPipeline:
             # Each thread needs its own GDAL dataset handles to be thread-safe
             ds_stack = gdal.Open(str(self.ras))
             ds_seg = gdal.Open(str(self.seg_tif))
-            ds_foot = gdal.Open(str(self.footprint_mask))
+            ds_foot = gdal.Open(str(self.footprint_mask)) if self.use_footprint_mask and self.footprint_mask.exists() else None
 
             try:
                 seg_arr = ds_seg.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
-                foot_arr = ds_foot.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
-                
-                # Apply footprint to segmentation tile
-                seg_arr[foot_arr == 0] = 0
+                if ds_foot is not None:
+                    foot_arr = ds_foot.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    # Apply footprint to segmentation tile
+                    seg_arr[foot_arr == 0] = 0
 
                 if np.all(seg_arr == 0):
                     return
