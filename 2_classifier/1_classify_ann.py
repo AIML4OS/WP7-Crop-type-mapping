@@ -600,9 +600,9 @@ class ProcessingPipeline:
             elif method_name == 'python_slic':
                 self.stage1_params.setdefault('tile_size', 4096)
                 self.stage1_params.setdefault('buffer', 256)
-                self.stage1_params.setdefault('n_segments', 45000)  # Tuned 2: 45000, Tuned 1: 35000, Original: 20000
-                self.stage1_params.setdefault('compactness', 0.015) # Tuned 2: 0.015, Tuned 1: 0.03, Original: 0.1
-                self.stage1_params.setdefault('slic_sigma', 1.2)    # Tuned 2: 1.2, Tuned 1: 1.0
+                self.stage1_params.setdefault('n_segments', 35000)  # Tuned 1: 35000, Original: 20000
+                self.stage1_params.setdefault('compactness', 0.03)  # Tuned 1: 0.03, Original: 0.1
+                self.stage1_params.setdefault('slic_sigma', 1.0)    # Tuned 1: 1.0
 
     def _resolve_agri_mask(self) -> Path:
         """
@@ -1260,7 +1260,11 @@ class ProcessingPipeline:
                         segments_buf = felzenszwalb(img_norm_noise, scale=params['scale'], sigma=params['sigma'],
                                                 min_size=params['min_size'])
                     elif method == 'python_slic':
-                        segments_buf = slic(img_norm, n_segments=params['n_segments'], compactness=params['compactness'],
+                        max_tile_pixels = (tile_size + 2 * buffer) ** 2
+                        pixels_per_segment = max_tile_pixels / params['n_segments']
+                        active_pixels = np.sum(valid_mask)
+                        n_segments_dynamic = max(1, int(active_pixels / pixels_per_segment))
+                        segments_buf = slic(img_norm, n_segments=n_segments_dynamic, compactness=params['compactness'],
                                         sigma=params['slic_sigma'], start_label=1, mask=valid_mask)
 
                     y_offset = y - y_start_buf
@@ -1327,6 +1331,14 @@ class ProcessingPipeline:
         rows = ds_seg.RasterYSize
         seg_band = ds_seg.GetRasterBand(1)
 
+        # Open footprint mask to filter out samples outside the radar swath
+        foot_band = None
+        ds_foot = None
+        if self.footprint_mask.exists():
+            print(f"    Filtering points by footprint mask {self.footprint_mask.name} to discard NoData areas...")
+            ds_foot = gdal.Open(str(self.footprint_mask))
+            foot_band = ds_foot.GetRasterBand(1)
+
         # Reproject points if CRS differs
         from pyproj import CRS
         if raster_proj and gdf.crs:
@@ -1344,6 +1356,13 @@ class ProcessingPipeline:
         for px, py in zip(pxs, pys):
             if 0 <= px < cols and 0 <= py < rows:
                 try:
+                    # Filter out points that fall outside the active radar footprint
+                    if foot_band is not None:
+                        is_active = foot_band.ReadAsArray(int(px), int(py), 1, 1)[0, 0] > 0
+                        if not is_active:
+                            seg_ids.append(0)
+                            continue
+                    
                     val = seg_band.ReadAsArray(int(px), int(py), 1, 1)[0, 0]
                     seg_ids.append(val)
                 except:
@@ -1353,6 +1372,7 @@ class ProcessingPipeline:
 
         gdf['seg_id'] = seg_ids
         ds_seg = None  # Close dataset
+        ds_foot = None  # Close dataset
 
         # Keep only points that fall into a valid segment (seg_id > 0)
         gdf_valid = gdf[gdf['seg_id'] > 0].copy()
@@ -1422,6 +1442,13 @@ class ProcessingPipeline:
         seg_ds = gdal.Open(str(self.seg_tif))
         seg_band = seg_ds.GetRasterBand(1)
 
+        # Open footprint mask to verify points during segment mapping
+        foot_ds = None
+        foot_band = None
+        if self.footprint_mask.exists():
+            foot_ds = gdal.Open(str(self.footprint_mask))
+            foot_band = foot_ds.GetRasterBand(1)
+
         target_segments = {}
 
         xs = gdf.geometry.x.values
@@ -1434,11 +1461,20 @@ class ProcessingPipeline:
         for px, py, crop_id in zip(pxs, pys, crop_ids):
             if 0 <= px < cols and 0 <= py < rows:
                 try:
+                    # Skip points outside the active footprint
+                    if foot_band is not None:
+                        is_active = foot_band.ReadAsArray(int(px), int(py), 1, 1)[0, 0] > 0
+                        if not is_active:
+                            continue
+                    
                     seg_id = seg_band.ReadAsArray(int(px), int(py), 1, 1)[0, 0]
                     if seg_id > 0:
                         target_segments[seg_id] = crop_id
                 except:
                     pass
+
+        seg_ds = None
+        foot_ds = None
 
         if not target_segments:
             print("ERROR: No valid samples found overlapping the raster.")
@@ -1452,6 +1488,13 @@ class ProcessingPipeline:
         sums = {tid: np.zeros(nbands, dtype=np.float64) for tid in target_ids_set}
         sums_sq = {tid: np.zeros(nbands, dtype=np.float64) for tid in target_ids_set}
         counts = {tid: 0 for tid in target_ids_set}
+
+        # Open footprint mask for tiled read masking
+        footprint_ds = None
+        footprint_band = None
+        if self.footprint_mask.exists():
+            footprint_ds = gdal.Open(str(self.footprint_mask))
+            footprint_band = footprint_ds.GetRasterBand(1)
 
         tile_size = 2048
 
@@ -1474,15 +1517,25 @@ class ProcessingPipeline:
                 stack_tile = ds.ReadAsArray(x, y, xsize, ysize)
                 stack_tile = np.nan_to_num(stack_tile, copy=False)
 
+                foot_arr = None
+                if footprint_band is not None:
+                    foot_arr = footprint_band.ReadAsArray(x, y, xsize, ysize) > 0
+
                 for tid in intersect_ids:
                     mask = (seg_arr == tid)
+                    if foot_arr is not None:
+                        mask = mask & foot_arr
+                    
                     pixel_count = np.sum(mask)
+                    if pixel_count == 0:
+                        continue
                     counts[tid] += pixel_count
                     for b in range(nbands):
                         vals = stack_tile[b][mask]
                         sums[tid][b] += np.sum(vals)
                         sums_sq[tid][b] += np.sum(vals ** 2)
 
+        footprint_ds = None
         print("\n    Aggregation complete. Formatting features...")
 
         valid_tids = [tid for tid in target_ids_set if counts[tid] > 0]
@@ -2046,9 +2099,9 @@ def get_stage1_params_sam(param_dict):
         elif method == 'python_slic':
             new_params.setdefault('tile_size', 4096)
             new_params.setdefault('buffer', 256)
-            new_params.setdefault('n_segments', 45000)  # Tuned 2: 45000, Tuned 1: 35000, Original: 20000
-            new_params.setdefault('compactness', 0.015) # Tuned 2: 0.015, Tuned 1: 0.03, Original: 0.1
-            new_params.setdefault('slic_sigma', 1.2)    # Tuned 2: 1.2, Tuned 1: 1.0
+            new_params.setdefault('n_segments', 35000)  # Tuned 1: 35000, Original: 20000
+            new_params.setdefault('compactness', 0.03)  # Tuned 1: 0.03, Original: 0.1
+            new_params.setdefault('slic_sigma', 1.0)    # Tuned 1: 1.0
         elif method == 'lpis':
             pass
             
