@@ -247,10 +247,35 @@ def main():
 
     # --- compute metrics & areas --------------------------------------------
     print("Calculating metrics and areas...")
-    ctrl_shp = out_dir / 'samples' / 'control.shp'
-    if not ctrl_shp.exists():
-        ctrl_shp = base_dir / base_tr / 'classification_results' / 'samples' / 'control.shp'
-    ctrl     = gpd.read_file(str(ctrl_shp))
+    import pandas as pd
+    ctrl_list = []
+    for tr, country, _, _ in tracks:
+        track_ctrl_shp = base_dir / tr / 'classification_results' / 'samples' / f"control{suffix}.shp"
+        if not track_ctrl_shp.exists():
+            track_ctrl_shp = base_dir / tr / 'classification_results' / 'samples' / 'control.shp'
+        if track_ctrl_shp.exists():
+            try:
+                gdf = gpd.read_file(str(track_ctrl_shp))
+                if not gdf.empty:
+                    ctrl_list.append(gdf)
+                    print(f"  Loaded {len(gdf)} control points from {tr}")
+            except Exception as e:
+                print(f"  [WARNING] Failed to load control points from {tr}: {e}")
+                
+    if ctrl_list:
+        ctrl = pd.concat(ctrl_list, ignore_index=True)
+        # Drop duplicates based on geometry to avoid double-counting in overlap zones
+        before_len = len(ctrl)
+        ctrl = ctrl.drop_duplicates(subset=['geometry'])
+        print(f"Merged control points: {len(ctrl)} total (dropped {before_len - len(ctrl)} duplicates)")
+    else:
+        # Fallback to the country-wide main samples database (if exists) or error
+        national_samples_shp = base_dir.parent / 'auxiliary_files' / 'shapefiles_samples' / base_country / 'samples.shp'
+        if national_samples_shp.exists():
+            print(f"No track-specific control shapefiles found. Falling back to national main samples: {national_samples_shp}")
+            ctrl = gpd.read_file(str(national_samples_shp))
+        else:
+            raise FileNotFoundError(f"No control shapefiles found and national fallback not found at {national_samples_shp}")
     inv      = gdal.InvGeoTransform(gt_global)
 
     x_coords = ctrl.geometry.x.values
