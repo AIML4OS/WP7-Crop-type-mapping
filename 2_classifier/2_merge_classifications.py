@@ -13,6 +13,12 @@ from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 import openpyxl
 from openpyxl.styles import Font
 
+# Crop aggregation mapping for the Netherlands (NL) to reduce semantic confusion
+CROP_AGGREGATION_NL = {
+    2: 5,   # Clover -> Grassland
+    7: 5,   # Lucerne -> Grassland
+}
+
 # Discover tracks logic
 
 def find_masked_files(base_dir: Path, tr: str, country: str, suffix: str = ""):
@@ -280,6 +286,12 @@ def main():
 
     x_coords = ctrl.geometry.x.values
     y_coords = ctrl.geometry.y.values
+
+    # Crop aggregation for NL to reduce semantic confusion and match model classes
+    if base_country == 'NL':
+        print("Applying crop aggregation for Netherlands validation labels...")
+        ctrl['crop_id'] = ctrl['crop_id'].apply(lambda val: CROP_AGGREGATION_NL.get(val, val))
+
     crop_ids = ctrl['crop_id'].values
 
     px_vals = (inv[0] + inv[1]*x_coords + inv[2]*y_coords).astype(int)
