@@ -274,6 +274,7 @@ You can select individual numbers to execute specific parts of the pipeline and 
 
 - **Choice `5` (Stage 5: Object-Based Inference)**:
   - Runs classification on every segment across the full raster tiles. This is performed block-by-block to prevent memory exhaustion (OOM).
+  - **Pre-trained Model Fallback System**: If the local orbit track has insufficient training data (fewer classes or < 500 samples) or its model file is missing, the inference stage automatically scans the country's subfolders and loads the "best" available pre-trained model for the active segmentation mode. Candidates are ranked by crop class completeness, geographic proximity (Euclidean distance between raster centers), training sample count, and Overall Accuracy. Bayesian priors are automatically updated to match the fallback model's training distribution.
 
 - **Choice `6` and `7` (Stage 6 and 7: Cropland Masking)**:
   - Applies the binary agricultural mask (generated in Step 2) and data footprint to the final classification and confidence GeoTIFFs.
