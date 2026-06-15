@@ -201,6 +201,20 @@ In Stage 2, the pipeline automatically splits your `samples.shp` dataset:
 - **70%** of the points are randomly selected and saved as `learn.shp` (for model training).
 - **30%** of the points are saved as `control.shp` (for independent model validation and confusion matrix generation).
 
+### 5. Crop Prior Probabilities (priors.json)
+To apply prior probability correction (Bayesian priors correction) in Stage 5, the pipeline requires statistical crop proportions representing the real-world agricultural acreage of each crop in the target country.
+- **Name-based Configuration**: Create a `priors.json` file inside `auxiliary_files/shapefiles_samples/{COUNTRY}/priors.json` or directly in the track directory. 
+- **Mapping Mechanism**: Instead of hardcoding values by arbitrary `crop_id`, write names (e.g., `"grassland": 0.7214, "maize": 0.0847`). The pipeline automatically scans the reference shapefile attributes, extracts crop names, and pairs them with correct IDs at run-time.
+- **Automatic Priors Generator**: You can generate a correct `priors.json` from a raw, unbalanced country-wide LPIS vector dataset by running:
+  ```bash
+  python tools/generate_priors_from_lpis.py --input "path/to/raw_lpis.shp" --output "auxiliary_files/shapefiles_samples/{COUNTRY}/priors.json" --crop_col crop_name
+  ```
+
+### 6. Dynamic Crop Aggregation (Netherlands NL)
+To reduce semantic confusion (e.g. between Grassland, Clover, and Lucerne), the pipeline dynamically aggregates minor legume classes into the dominant grassland class:
+- **Dynamic Matching**: If the country is `NL`, the script parses names in the shapefile attribute table. If a crop name contains keywords like `clover`, `klaver`, `lucerne`, or `luzerne`, it is dynamically mapped to the ID of the grassland class in that shapefile at run-time.
+- **Robustness**: This avoids ID mismatches between different training datasets and prevents errors when calculating validation metrics.
+
 ---
 
 ## Interactive menu and stages selector (ANN-SAM)
