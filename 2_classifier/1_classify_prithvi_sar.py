@@ -31,37 +31,110 @@ CROP_AGGREGATION_NL = {
     7: 5,   # Lucerne -> Grassland
 }
 
+def get_crop_aggregation(country, learn_shp_path):
+    aggregation = {}
+    if country == 'NL' and learn_shp_path and os.path.exists(learn_shp_path):
+        try:
+            import geopandas as gpd
+            gdf = gpd.read_file(str(learn_shp_path), engine="pyogrio")
+            if 'crop_id' in gdf.columns and 'crop_name' in gdf.columns:
+                id_to_name = dict(zip(gdf['crop_id'].astype(int), gdf['crop_name'].astype(str).str.lower()))
+                
+                # Find ID of grassland
+                grassland_id = None
+                for cid, name in id_to_name.items():
+                    if "grassland" in name or "grass" in name:
+                        grassland_id = cid
+                        break
+                
+                if grassland_id is not None:
+                    for cid, name in id_to_name.items():
+                        if any(k in name for k in ["clover", "klaver", "lucerne", "luzerne"]):
+                            aggregation[cid] = grassland_id
+        except Exception as e:
+            print(f"    [WARNING] Failed to dynamically construct NL crop aggregation: {e}")
+            
+    if not aggregation and country == 'NL':
+        aggregation = CROP_AGGREGATION_NL
+        
+    return aggregation
+
 def _get_priors_for_country(country, learn_shp_path, classes, class_counts, total_samples, priors_file_override=None):
     # Try custom JSON override first
+    priors_json_path = None
     if priors_file_override and os.path.exists(priors_file_override):
+        priors_json_path = Path(priors_file_override)
+    else:
+        # Resolve project root relative to learn_shp_path
+        if learn_shp_path:
+            p = Path(learn_shp_path).resolve()
+            for parent in p.parents:
+                aux_dir = parent / 'auxiliary_files'
+                if aux_dir.exists():
+                    aux_priors = aux_dir / 'shapefiles_samples' / country / 'priors.json'
+                    if aux_priors.exists():
+                        priors_json_path = aux_priors
+                        break
+            
+            # Fallback to track_dir/priors.json
+            if not priors_json_path:
+                track_dir = Path(learn_shp_path).parent.parent
+                track_priors = track_dir / f"priors_{country}.json"
+                if not track_priors.exists():
+                    track_priors = track_dir / "priors.json"
+                if track_priors.exists():
+                    priors_json_path = track_priors
+
+    if priors_json_path and priors_json_path.exists():
         try:
-            with open(priors_file_override, 'r') as f:
+            import json
+            with open(priors_json_path, 'r') as f:
                 custom_priors = json.load(f)
-            p_true = np.array([float(custom_priors.get(str(c), custom_priors.get(int(c), 1e-5))) for c in classes])
+            print(f"    Loaded name-based priors from {priors_json_path}")
+            
+            # Read crop names from shapefile
+            id_to_name = {}
+            if learn_shp_path and os.path.exists(learn_shp_path):
+                try:
+                    import geopandas as gpd
+                    gdf = gpd.read_file(str(learn_shp_path), engine="pyogrio")
+                    if 'crop_id' in gdf.columns and 'crop_name' in gdf.columns:
+                        id_to_name = dict(zip(gdf['crop_id'].astype(int), gdf['crop_name'].astype(str).str.lower()))
+                except Exception as e:
+                    print(f"    [WARNING] Could not read crop names from shapefile: {e}")
+            
+            # Build priors map dynamically
+            raw_priors = {}
+            sorted_keys = sorted(custom_priors.keys(), key=len, reverse=True)
+            for cid, name in id_to_name.items():
+                matched_val = 1e-5
+                for key in sorted_keys:
+                    if key.lower() in name or name in key.lower():
+                        matched_val = float(custom_priors[key])
+                        break
+                raw_priors[cid] = matched_val
+                
+            for key, val in custom_priors.items():
+                try:
+                    cid = int(key)
+                    raw_priors[cid] = float(val)
+                except ValueError:
+                    pass
+            
+            # Apply aggregation
+            crop_aggregation = get_crop_aggregation(country, learn_shp_path)
+            aggregated_priors = {}
+            for cid, val in raw_priors.items():
+                mapped_cid = crop_aggregation.get(cid, cid)
+                aggregated_priors[mapped_cid] = aggregated_priors.get(mapped_cid, 0.0) + val
+                
+            p_true = np.array([aggregated_priors.get(c, 1e-5) for c in classes])
             p_true = p_true / np.sum(p_true)
-            print(f"    Loaded custom priors from {priors_file_override}")
             return p_true
         except Exception as e:
-            print(f"    [WARNING] Failed to load custom priors file: {e}")
+            print(f"    [WARNING] Failed to load name-based priors: {e}")
 
-    # Check for general priors_<country>.json in track folder
-    if learn_shp_path:
-        track_dir = Path(learn_shp_path).parent.parent
-        custom_file = track_dir / f"priors_{country}.json"
-        if not custom_file.exists():
-            custom_file = track_dir / "priors.json"
-        if custom_file.exists():
-            try:
-                with open(custom_file, 'r') as f:
-                    custom_priors = json.load(f)
-                p_true = np.array([float(custom_priors.get(str(c), custom_priors.get(int(c), 1e-5))) for c in classes])
-                p_true = p_true / np.sum(p_true)
-                print(f"    Loaded custom priors from {custom_file}")
-                return p_true
-            except Exception as e:
-                print(f"    [WARNING] Failed to load custom priors: {e}")
-
-    # NL specific priors
+    # NL specific priors fallback
     if country == 'NL':
         real_priors_nl = {
             1: 0.0030, 2: 0.0015, 3: 0.0775, 4: 0.0057, 5: 0.7214,
@@ -69,14 +142,15 @@ def _get_priors_for_country(country, learn_shp_path, classes, class_counts, tota
             11: 0.0073, 12: 0.0087, 13: 0.0255, 14: 0.0023, 15: 0.0149,
             16: 0.0058, 17: 0.0044, 18: 0.0006, 19: 0.0034, 20: 0.0178
         }
-        # Aggregate to match the model's classes (which might be aggregated)
+        crop_aggregation = get_crop_aggregation(country, learn_shp_path)
         aggregated_priors = {}
         for cid, val in real_priors_nl.items():
-            mapped_cid = CROP_AGGREGATION_NL.get(cid, cid)
+            mapped_cid = crop_aggregation.get(cid, cid)
             aggregated_priors[mapped_cid] = aggregated_priors.get(mapped_cid, 0.0) + val
         p_true = np.array([aggregated_priors.get(c, 1e-5) for c in classes])
         p_true = p_true / np.sum(p_true)
         return p_true
+
 
     # PL & any other country - dynamic estimation using keyword-based field sizes
     id_to_name = {}
@@ -985,7 +1059,8 @@ class ProcessingPipeline:
 
         if self.country == 'NL':
             print("    Applying crop aggregation for Netherlands training labels...")
-            y = np.array([CROP_AGGREGATION_NL.get(val, val) for val in y])
+            crop_aggregation = get_crop_aggregation(self.country, self.learn_shp)
+            y = np.array([crop_aggregation.get(val, val) for val in y])
 
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
@@ -1043,7 +1118,8 @@ class ProcessingPipeline:
         y_train = df_learn['crop_id'].values
         if self.country == 'NL':
             print("    Applying crop aggregation for Netherlands priors...")
-            y_train = np.array([CROP_AGGREGATION_NL.get(val, val) for val in y_train])
+            crop_aggregation = get_crop_aggregation(self.country, self.learn_shp)
+            y_train = np.array([crop_aggregation.get(val, val) for val in y_train])
 
         class_counts = pd.Series(y_train).value_counts().to_dict()
         classes = clf.classes_
@@ -1357,7 +1433,8 @@ class ProcessingPipeline:
         true_labels = gdf['crop_id'].values
         if self.country == 'NL':
             print("    Applying crop aggregation for Netherlands validation labels...")
-            true_labels = np.array([CROP_AGGREGATION_NL.get(val, val) for val in true_labels])
+            crop_aggregation = get_crop_aggregation(self.country, self.control_shp)
+            true_labels = np.array([crop_aggregation.get(val, val) for val in true_labels])
 
         pred_labels = []
         valid_indices = []
@@ -1368,7 +1445,8 @@ class ProcessingPipeline:
                 val = int(band.ReadAsArray(int(px), int(py), 1, 1)[0, 0])
                 if val > 0:
                     if self.country == 'NL':
-                        val = CROP_AGGREGATION_NL.get(val, val)
+                        crop_aggregation = get_crop_aggregation(self.country, self.control_shp)
+                        val = crop_aggregation.get(val, val)
                     pred_labels.append(val)
                     valid_indices.append(i)
 

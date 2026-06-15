@@ -19,6 +19,34 @@ CROP_AGGREGATION_NL = {
     7: 5,   # Lucerne -> Grassland
 }
 
+def get_crop_aggregation(country, learn_shp_path):
+    aggregation = {}
+    if country == 'NL' and learn_shp_path and os.path.exists(learn_shp_path):
+        try:
+            import geopandas as gpd
+            gdf = gpd.read_file(str(learn_shp_path), engine="pyogrio")
+            if 'crop_id' in gdf.columns and 'crop_name' in gdf.columns:
+                id_to_name = dict(zip(gdf['crop_id'].astype(int), gdf['crop_name'].astype(str).str.lower()))
+                
+                # Find ID of grassland
+                grassland_id = None
+                for cid, name in id_to_name.items():
+                    if "grassland" in name or "grass" in name:
+                        grassland_id = cid
+                        break
+                
+                if grassland_id is not None:
+                    for cid, name in id_to_name.items():
+                        if any(k in name for k in ["clover", "klaver", "lucerne", "luzerne"]):
+                            aggregation[cid] = grassland_id
+        except Exception as e:
+            print(f"    [WARNING] Failed to dynamically construct NL crop aggregation: {e}")
+            
+    if not aggregation and country == 'NL':
+        aggregation = CROP_AGGREGATION_NL
+        
+    return aggregation
+
 # Discover tracks logic
 
 def find_masked_files(base_dir: Path, tr: str, country: str, suffix: str = ""):
@@ -290,7 +318,19 @@ def main():
     # Crop aggregation for NL to reduce semantic confusion and match model classes
     if base_country == 'NL':
         print("Applying crop aggregation for Netherlands validation labels...")
-        ctrl['crop_id'] = ctrl['crop_id'].apply(lambda val: CROP_AGGREGATION_NL.get(val, val))
+        ref_shp = None
+        for tr, _, _, _ in tracks:
+            track_ctrl_shp = base_dir / tr / 'classification_results' / 'samples' / f"control{suffix}.shp"
+            if not track_ctrl_shp.exists():
+                track_ctrl_shp = base_dir / tr / 'classification_results' / 'samples' / 'control.shp'
+            if track_ctrl_shp.exists():
+                ref_shp = track_ctrl_shp
+                break
+        if not ref_shp:
+            ref_shp = base_dir.parent / 'auxiliary_files' / 'shapefiles_samples' / base_country / 'samples.shp'
+            
+        crop_aggregation = get_crop_aggregation(base_country, ref_shp)
+        ctrl['crop_id'] = ctrl['crop_id'].apply(lambda val: crop_aggregation.get(val, val))
 
     crop_ids = ctrl['crop_id'].values
 
