@@ -3,11 +3,6 @@
 # Standard Country-Wide Merge (combines all processed orbits for the country):
 # python 2_merge_classifications.py --track PL
 # python 2_merge_classifications.py --track NL --suffix _lpis
-#
-# Testing/Debugging Single Orbit Merge (processes only the specified orbit folder):
-# python 2_merge_classifications.py --track NL/orbit_161 --suffix _lpis
-# python 2_merge_classifications.py --track NL/orbit_88 --suffix _lpis
-# python 2_merge_classifications.py --track PL/orbit_12 --suffix _sam
 
 import argparse
 import os

@@ -590,9 +590,6 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 
   # Merge Prithvi-SAR classifications:
   python 2_classifier/2_merge_classifications.py --track PL --suffix _prithvi
-
-  # Testing/Debugging Single Orbit Merge (processes only the specified orbit folder):
-  python 2_classifier/2_merge_classifications.py --track NL/orbit_161 --suffix _lpis
   ```
 * **Produced Outputs**:
   - Merged Classification Raster: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_classification[_SUFFIX].tif`
