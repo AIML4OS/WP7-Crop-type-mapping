@@ -276,11 +276,11 @@ def resolve_prithvi_model():
     return mae_path, weights_path
 
 
-def load_prithvi_encoder(weights_path):
+def load_prithvi_encoder(weights_path, device="cpu"):
     """Instantiates the PrithviViT encoder and loads the pre-trained weights."""
     from prithvi_mae import PrithviViT
     
-    print("[Prithvi Loader] Instantiating PrithviViT model (100M config)...")
+    print(f"[Prithvi Loader] Instantiating PrithviViT model (100M config) on device {device}...")
     # 100M configuration parameters from config.json
     model = PrithviViT(
         img_size=224,
@@ -293,7 +293,7 @@ def load_prithvi_encoder(weights_path):
     )
     
     print(f"[Prithvi Loader] Loading weights from {weights_path}...")
-    state_dict = torch.load(weights_path, map_location="cpu")
+    state_dict = torch.load(weights_path, map_location=device)
     
     # Strip the 'encoder.' prefix to match PrithviViT's keys
     encoder_state_dict = {}
@@ -302,9 +302,11 @@ def load_prithvi_encoder(weights_path):
             encoder_state_dict[k.replace("encoder.", "")] = v
             
     model.load_state_dict(encoder_state_dict, strict=True)
+    model.to(device)
     model.eval()
-    print("[Prithvi Loader] Model successfully loaded and ready for feature extraction.")
+    print(f"[Prithvi Loader] Model successfully loaded on {device} and ready for feature extraction.")
     return model
+
 
 
 def prepare_segment_patch(raster_ds, segment_mask, bbox, target_size=(224, 224)):
@@ -390,8 +392,9 @@ def prepare_segment_patch(raster_ds, segment_mask, bbox, target_size=(224, 224))
 
 
 class ProcessingPipeline:
-    def __init__(self, track):
+    def __init__(self, track, seg_mode='sam'):
         self.track = track
+        self.seg_mode = seg_mode.lower()
         normalized_track = track.replace('\\', '/')
         if '/' in normalized_track:
             self.country = normalized_track.split('/')[0].upper()
@@ -402,7 +405,7 @@ class ProcessingPipeline:
             sys.exit(1)
 
         self.total_stages = TOTAL_STAGES
-        print(f"Initializing Prithvi-SAR pipeline for Track: {self.track}, Country: {self.country}")
+        print(f"Initializing Prithvi-SAR pipeline for Track: {self.track}, Country: {self.country}, Mode: {self.seg_mode}")
 
         self.sanitized_track = self.track.replace('/', '_').replace('\\', '_')
         if self.sanitized_track.upper().startswith(self.country.upper() + "_"):
@@ -447,8 +450,9 @@ class ProcessingPipeline:
             raise FileNotFoundError(f"Processing directory does not exist: {self.proc_dir}")
 
         # --- 3. Define all output file paths ---
-        self.seg_tif = self.seg_dir / f"{self.file_prefix}_segmentation.tif"
-        self.seg_shp = self.seg_dir / f"{self.file_prefix}_segmentation.sqlite"
+        suffix = f"_{self.seg_mode}"
+        self.seg_tif = self.seg_dir / f"{self.file_prefix}_segmentation{suffix}.tif"
+        self.seg_shp = self.seg_dir / f"{self.file_prefix}_segmentation{suffix}.sqlite"
 
         # Samples
         samples_base = self.aux_dir / 'shapefiles_samples'
@@ -473,28 +477,20 @@ class ProcessingPipeline:
             print(f"\nCRITICAL WARNING: Could not find 'samples.shp' inside {samples_base}")
             self.sample_shp = samples_base / self.file_prefix / "samples.shp"
 
-        # Output paths
-        self.learn_shp = self.samples_dir / 'learn.shp'
-        self.control_shp = self.samples_dir / 'control.shp'
-        self.sel_csv = self.samples_dir / f"{self.file_prefix}_prithvi_learn_features.csv"
+        # Output paths (initialized in update_paths)
+        self.learn_shp = None
+        self.control_shp = None
+        self.sel_csv = None
+        self.class_tif = None
+        self.conf_tif = None
+        self.masked_class = None
+        self.masked_conf = None
+        self.metrics_fp = None
 
-        # Classification outputs
-        self.class_tif = self.class_dir / f"{self.file_prefix}_prithvi_classified.tif"
-        self.conf_tif = self.class_dir / f"{self.file_prefix}_prithvi_confidence_map.tif"
-
-        self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
-        self.masked_class = self.class_dir / f"{self.file_prefix}_prithvi_classified_masked.tif"
-        self.masked_conf = self.class_dir / f"{self.file_prefix}_prithvi_confidence_masked.tif"
-        self.metrics_fp = self.class_dir / f"{self.file_prefix}_prithvi_metrics.xlsx"
-
-        self.agri_mask = self._resolve_agri_mask()
-        self.stage1_params = {
-            'method': 'python_sam',
-            'tile_size': 2048,
-            'buffer': 128,
-            'sam_checkpoint': str(self.aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'),
-            'sam_model_type': 'vit_h',
-            'sam_device': 'cuda' if (HAS_TORCH and torch.cuda.is_available()) else 'cpu'
+        self.stage1_params = {}
+        self.stage2_params = {
+            'learn_frac': 0.7,
+            'random_state': 42
         }
         self.stage4_params = {
             'sk_hidden_sizes': '128,64',
@@ -504,6 +500,18 @@ class ProcessingPipeline:
             'sk_max_iter': 500,
             'balance_threshold': 1000
         }
+
+        # Map seg_mode to method_name
+        mode_to_method = {
+            'sam': 'python_sam',
+            'slic': 'python_slic',
+            'lpis': 'lpis'
+        }
+        method_name = mode_to_method.get(self.seg_mode, 'python_sam')
+
+        self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
+        self.update_paths(method_name)
+        self.agri_mask = self._resolve_agri_mask()
 
     def _ensure_directories(self):
         for d in [self.out_dir, self.samples_dir, self.model_dir, self.seg_dir, self.class_dir]:
@@ -524,6 +532,51 @@ class ProcessingPipeline:
         else:
             print(f"    [WARNING] No agricultural mask found for country '{self.country}'.")
             return None
+
+    def update_paths(self, method_name):
+        """
+        Dynamically updates the output file paths based on the selected segmentation method
+        (e.g., 'python_sam', 'lpis', 'python_slic').
+        """
+        suffix_mapping = {
+            'python_sam': 'sam',
+            'lpis': 'lpis',
+            'python_slic': 'slic'
+        }
+        
+        self.seg_suffix = suffix_mapping.get(method_name, 'sam')
+        self.seg_mode = 'lpis' if method_name == 'lpis' else 'sam'
+        
+        suffix = f"_{self.seg_suffix}"
+        
+        self.seg_tif = self.seg_dir / f"{self.file_prefix}_segmentation{suffix}.tif"
+        self.seg_shp = self.seg_dir / f"{self.file_prefix}_segmentation{suffix}.sqlite"
+        self.learn_shp = self.samples_dir / f"learn{suffix}.shp"
+        self.control_shp = self.samples_dir / f"control{suffix}.shp"
+        self.sel_csv = self.samples_dir / f"{self.file_prefix}_prithvi_learn_features{suffix}.csv"
+        self.class_tif = self.class_dir / f"{self.file_prefix}_prithvi_classified{suffix}.tif"
+        self.conf_tif = self.class_dir / f"{self.file_prefix}_prithvi_confidence_map{suffix}.tif"
+        self.masked_class = self.class_dir / f"{self.file_prefix}_prithvi_classified_masked{suffix}.tif"
+        self.masked_conf = self.class_dir / f"{self.file_prefix}_prithvi_confidence_masked{suffix}.tif"
+        self.metrics_fp = self.class_dir / f"{self.file_prefix}_prithvi_metrics{suffix}.xlsx"
+        
+        print(f"    [INFO] Switched segmentation mode to: {self.seg_mode.upper()} (Suffix: {self.seg_suffix})")
+        print(f"    Updated output paths accordingly (e.g. classification output: {self.class_tif.name})")
+
+        # Keep stage1_params consistent with mode
+        self.stage1_params['method'] = method_name
+        if method_name == 'python_sam':
+            self.stage1_params.setdefault('tile_size', 2048)
+            self.stage1_params.setdefault('buffer', 128)
+            self.stage1_params.setdefault('sam_checkpoint', str(self.aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'))
+            self.stage1_params.setdefault('sam_model_type', 'vit_h')
+            self.stage1_params.setdefault('sam_device', 'cuda' if (HAS_TORCH and torch.cuda.is_available()) else 'cpu')
+        elif method_name == 'python_slic':
+            self.stage1_params.setdefault('tile_size', 2048)
+            self.stage1_params.setdefault('buffer', 64)
+            self.stage1_params.setdefault('n_segments', 15000)
+            self.stage1_params.setdefault('compactness', 0.1)
+            self.stage1_params.setdefault('slic_sigma', 1.5)
 
     # --- Stage 0: Robust Data Footprint ---
     def stage_0_generate_footprint(self, force_recompute=False):
@@ -633,28 +686,148 @@ class ProcessingPipeline:
         print(f"    [INFO] Summed composite saved to {composite_tif}")
         return composite_tif
 
-    # --- Stage 1: Segmentation (SAM) ---
-    def stage_1_segmentation(self, force_recompute=False):
+    # --- Stage 1: Segmentation (LPIS, SLIC, or SAM) ---
+    def stage_1_segmentation(self, force_recompute=False, **kwargs):
         stage = 1
         if self.seg_tif.exists() and not force_recompute:
             print(f"[Stage {stage}/{self.total_stages}] Segmentation Raster already exists, skipping.\n")
             return
 
-        print(f"[Stage {stage}/{self.total_stages}] Generating object segmentation using SAM...")
-        if not HAS_SAM:
-            print("ERROR: segment-geospatial (samgeo) is not installed. Standalone SAM segmentation requires it.")
+        self._ensure_directories()
+
+        # [LPIS Mode]: Rasterize vector parcel boundaries
+        if self.seg_mode == 'lpis':
+            print(f"[Stage {stage}/{self.total_stages}] Running LPIS (Parcel Boundary) Rasterization...")
+            lpis_dir = self.aux_dir / 'shapefiles_samples' / self.country
+            lpis_candidates = list(lpis_dir.glob("*.gpkg")) + list(lpis_dir.glob("*.shp"))
+            lpis_candidates = [p for p in lpis_candidates if p.name not in ['samples.shp', 'learn.shp', 'control.shp', 'samples_all.shp']]
+            
+            if not lpis_candidates:
+                raise FileNotFoundError(f"No LPIS vector file (.gpkg/.shp) found in {lpis_dir}")
+            
+            lpis_file = lpis_candidates[0]
+            print(f"    LPIS file selected: {lpis_file}")
+            
+            ds_ras = gdal.Open(str(self.ras))
+            cols = ds_ras.RasterXSize
+            rows = ds_ras.RasterYSize
+            gt = ds_ras.GetGeoTransform()
+            proj = ds_ras.GetProjection()
+            
+            minx = gt[0]
+            maxy = gt[3]
+            maxx = minx + gt[1] * cols
+            miny = maxy + gt[5] * rows
+            
+            try:
+                from pyogrio import read_info, read_dataframe
+                info = read_info(str(lpis_file))
+                lpis_crs = info.get('crs')
+            except ImportError:
+                import geopandas as gpd
+                gdf_temp = gpd.read_file(str(lpis_file), rows=1)
+                lpis_crs = gdf_temp.crs.to_string() if gdf_temp.crs else None
+                info = {'fid_column': None}
+                
+            srs_target = osr.SpatialReference()
+            srs_target.ImportFromWkt(proj)
+            target_epsg = srs_target.GetAttrValue("AUTHORITY", 1)
+            if not target_epsg:
+                target_epsg = "3857"
+            
+            from pyproj import Transformer
+            print(f"    LPIS CRS: {lpis_crs}")
+            
+            transformer = Transformer.from_crs(f"EPSG:{target_epsg}", lpis_crs, always_xy=True)
+            p1 = transformer.transform(minx, miny)
+            p2 = transformer.transform(maxx, maxy)
+            lpis_bbox = (min(p1[0], p2[0]), min(p1[1], p2[1]), max(p1[0], p2[0]), max(p1[1], p2[1]))
+            
+            print(f"    Querying LPIS with spatial filter bbox: {lpis_bbox}")
+            try:
+                gdf = read_dataframe(str(lpis_file), bbox=lpis_bbox)
+            except ImportError:
+                import geopandas as gpd
+                gdf = gpd.read_file(str(lpis_file), bbox=lpis_bbox)
+                
+            print(f"    Loaded {len(gdf)} intersecting parcels. Reprojecting to EPSG:{target_epsg}...")
+            gdf_target = gdf.to_crs(f"EPSG:{target_epsg}")
+            
+            fid_col = info.get('fid_column') if isinstance(info, dict) else None
+            if fid_col and fid_col in gdf_target.columns:
+                id_col = fid_col
+            elif 'id' in gdf_target.columns:
+                id_col = 'id'
+            elif 'id_0' in gdf_target.columns:
+                id_col = 'id_0'
+            else:
+                id_col = None
+
+            if id_col is None:
+                gdf_target['lpis_id'] = np.arange(1, len(gdf_target) + 1)
+                id_col = 'lpis_id'
+            else:
+                gdf_target[id_col] = pd.to_numeric(gdf_target[id_col], errors='coerce').fillna(0).astype(np.int32)
+                if gdf_target[id_col].sum() == 0 or gdf_target[id_col].nunique() < len(gdf_target):
+                    gdf_target['lpis_id'] = np.arange(1, len(gdf_target) + 1)
+                    id_col = 'lpis_id'
+            
+            temp_gpkg = self.seg_dir / f"temp_lpis_{self.sanitized_track}.gpkg"
+            gdf_target.geometry = gdf_target.geometry.force_2d()
+            gdf_target.to_file(str(temp_gpkg), driver="GPKG", engine="pyogrio")
+            
+            driver = gdal.GetDriverByName("GTiff")
+            ds_out = driver.Create(
+                str(self.seg_tif),
+                cols, rows, 1,
+                gdal.GDT_Int32,
+                options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
+            )
+            ds_out.SetGeoTransform(gt)
+            ds_out.SetProjection(proj)
+            
+            band = ds_out.GetRasterBand(1)
+            band.SetNoDataValue(0)
+            band.Fill(0)
+            
+            print(f"    Rasterizing parcels to {self.seg_tif.name} (burning column '{id_col}')...")
+            gdal.Rasterize(ds_out, str(temp_gpkg), attribute=id_col)
+            
+            ds_out.FlushCache()
+            ds_out = None
+            ds_ras = None
+            
+            if os.path.exists(temp_gpkg):
+                os.remove(temp_gpkg)
+                    
+            print(f"Completed stage {stage}: LPIS rasterized.\n")
             return
 
-        self._ensure_directories()
-        
-        # Create summed composite first
+        # [Image-based Segmentation Mode]: Generate summed composite
         original_ras = self.ras
         try:
             self.ras = self._create_summed_composite()
         except Exception as e:
             print(f"    [WARNING] Failed to create summed composite: {e}. Falling back to full stack.")
             
-        self._run_python_segmentation_tiled(self.stage1_params, stage, 'python_sam')
+        if self.seg_mode == 'slic':
+            print(f"[Stage {stage}/{self.total_stages}] Running SLIC superpixels segmentation...")
+            slic_params = {
+                'method': 'python_slic',
+                'tile_size': 2048,
+                'buffer': 64,
+                'n_segments': 15000,
+                'compactness': 0.1,
+                'slic_sigma': 1.5
+            }
+            self._run_python_segmentation_tiled(slic_params, stage, 'python_slic')
+        else:
+            print(f"[Stage {stage}/{self.total_stages}] Running SAM-Geo segmentation...")
+            if not HAS_SAM:
+                print("ERROR: segment-geospatial (samgeo) is not installed. Standalone SAM segmentation requires it.")
+                return
+            self._run_python_segmentation_tiled(self.stage1_params, stage, 'python_sam')
+            
         self.ras = original_ras
 
     def _run_python_segmentation_tiled(self, params, stage, method):
@@ -801,6 +974,14 @@ class ProcessingPipeline:
                         if np.any(zero_mask_buf) and np.any(segments_buf > 0):
                             _, indices = distance_transform_edt(segments_buf == 0, return_indices=True)
                             segments_buf[zero_mask_buf] = segments_buf[tuple(indices)][zero_mask_buf]
+                    elif method == 'python_slic':
+                        from skimage.segmentation import slic
+                        max_tile_pixels = (tile_size + 2 * buffer) ** 2
+                        pixels_per_segment = max_tile_pixels / params['n_segments']
+                        active_pixels = np.sum(valid_mask)
+                        n_segments_dynamic = max(1, int(active_pixels / pixels_per_segment))
+                        segments_buf = slic(img_norm, n_segments=n_segments_dynamic, compactness=params['compactness'],
+                                            sigma=params['slic_sigma'], start_label=1, mask=valid_mask)
 
                     y_offset = y - y_start_buf
                     x_offset = x - x_start_buf
@@ -838,8 +1019,9 @@ class ProcessingPipeline:
             print(f"ERROR in Python segmentation: {e}")
             raise
 
-    # --- Stage 2: Prepare Point Split ---
-    def stage_2_prepare_points(self, force_recompute=False):
+    def stage_2_prepare_points(self, force_recompute=False, **kwargs):
+        params = self.stage2_params.copy()
+        params.update(kwargs)
         stage = 2
         if self.learn_shp.exists() and self.control_shp.exists() and not force_recompute:
             print("[Stage 2] Split samples already exist, skipping.")
@@ -855,8 +1037,11 @@ class ProcessingPipeline:
             print("ERROR: Column 'crop_id' not found in samples.")
             return
 
-        gdf_shuffled = gdf.sample(frac=1, random_state=42).reset_index(drop=True)
-        split_idx = int(len(gdf_shuffled) * 0.7)
+        learn_frac = params.get('learn_frac', 0.7)
+        random_state = params.get('random_state', 42)
+
+        gdf_shuffled = gdf.sample(frac=1, random_state=random_state).reset_index(drop=True)
+        split_idx = int(len(gdf_shuffled) * learn_frac)
         gdf_learn = gdf_shuffled.iloc[:split_idx]
         gdf_control = gdf_shuffled.iloc[split_idx:]
 
@@ -874,8 +1059,9 @@ class ProcessingPipeline:
         print(f"[Stage {stage}/{self.total_stages}] Extracting deep PRITHVI-SAR features for training segments...")
         
         # Setup and load model
+        device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
         mae_script, weights_path = resolve_prithvi_model()
-        model = load_prithvi_encoder(weights_path)
+        model = load_prithvi_encoder(weights_path, device=device)
         
         if not self.learn_shp.exists():
             print("ERROR: Learn samples not found.")
@@ -967,13 +1153,13 @@ class ProcessingPipeline:
                 
             if len(batch_tensors) == batch_size or (count + len(batch_tensors) == total):
                 # Run Prithvi inference
-                input_batch = torch.stack(batch_tensors, dim=0) # [B, 6, 3, 224, 224]
+                input_batch = torch.stack(batch_tensors, dim=0).to(device) # [B, 6, 3, 224, 224]
                 with torch.no_grad():
                     out = model(input_batch)
                     # Out is a tuple, first item is embeddings: [B, 148, 768]
                     embeddings = out[0]
                     # Mean pool over tokens -> [B, 768]
-                    pooled = embeddings.mean(dim=1).numpy()
+                    pooled = embeddings.mean(dim=1).cpu().numpy()
                     
                 for idx, pooled_feat in enumerate(pooled):
                     curr_seg_id = batch_seg_ids[idx]
@@ -1090,8 +1276,9 @@ class ProcessingPipeline:
         scaler = data['scaler']
         
         # Load Prithvi-SAR
+        device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
         mae_script, weights_path = resolve_prithvi_model()
-        model = load_prithvi_encoder(weights_path)
+        model = load_prithvi_encoder(weights_path, device=device)
         
         # --- Calculate Bayesian Priors ---
         print("    Calculating Bayesian priors for Prithvi inference...")
@@ -1149,6 +1336,7 @@ class ProcessingPipeline:
 
         tile_size = 2048
         write_lock = threading.Lock()
+        gpu_lock = threading.Lock()
 
         # Load entire segmentation database
         seg_ds = gdal.Open(str(self.seg_tif))
@@ -1209,10 +1397,11 @@ class ProcessingPipeline:
                         continue
                         
                     if len(batch_tensors) == batch_size:
-                        input_batch = torch.stack(batch_tensors, dim=0)
-                        with torch.no_grad():
-                            out = model(input_batch)
-                            pooled = out[0].mean(dim=1).numpy()
+                        input_batch = torch.stack(batch_tensors, dim=0).to(device)
+                        with gpu_lock:
+                            with torch.no_grad():
+                                out = model(input_batch)
+                                pooled = out[0].mean(dim=1).cpu().numpy()
                         for idx, p_f in enumerate(pooled):
                             features.append(p_f)
                             valid_ids.append(batch_ids[idx])
@@ -1220,10 +1409,11 @@ class ProcessingPipeline:
                         batch_ids = []
                         
                 if batch_tensors:
-                    input_batch = torch.stack(batch_tensors, dim=0)
-                    with torch.no_grad():
-                        out = model(input_batch)
-                        pooled = out[0].mean(dim=1).numpy()
+                    input_batch = torch.stack(batch_tensors, dim=0).to(device)
+                    with gpu_lock:
+                        with torch.no_grad():
+                            out = model(input_batch)
+                            pooled = out[0].mean(dim=1).cpu().numpy()
                     for idx, p_f in enumerate(pooled):
                         features.append(p_f)
                         valid_ids.append(batch_ids[idx])
@@ -1473,56 +1663,290 @@ class ProcessingPipeline:
         print(f"    Overall Accuracy: {accuracy:.4f}\n")
 
 
+# --- Interactive Menu Helpers ---
+
+SAM_MODELS = {
+    '1': {'name': 'vit_b  (Small, ~375 MB, FAST,   ~2 GB VRAM - recommended for testing)',
+           'model_type': 'vit_b',  'checkpoint': 'sam_vit_b_01ec64.pth',
+           'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth'},
+    '2': {'name': 'vit_l  (Medium, ~1.2 GB, MEDIUM, ~6 GB VRAM)',
+           'model_type': 'vit_l',  'checkpoint': 'sam_vit_l_0b3195.pth',
+           'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth'},
+    '3': {'name': 'vit_h  (Huge,  ~2.4 GB, SLOW,   ~10 GB VRAM - highest accuracy)',
+           'model_type': 'vit_h',  'checkpoint': 'sam_vit_h_4b8939.pth',
+           'url': 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth'},
+}
+
+
+def get_stage1_params_sam(param_dict):
+    """Interactive menu for selecting the segmentation method and Stage 1 parameters."""
+    new_params = param_dict.copy()
+    current_method = new_params.get('method', 'python_sam')
+    
+    print("\n=== SELECT SEGMENTATION METHOD ===")
+    print(f"  Current method: {current_method.upper()}")
+    print()
+    print("  [1] Meta SAM (Deep learning, default) [python_sam]")
+    print("  [2] SLIC algorithm on full raster [python_slic]")
+    print("  [3] LPIS boundary rasterization (Cadastral vector data) [lpis]")
+    print("  [Enter] Keep current method")
+    
+    choice = input("Choose option (1-3): ").strip()
+    
+    method_mapping = {
+        '1': 'python_sam',
+        '2': 'python_slic',
+        '3': 'lpis'
+    }
+    
+    if choice in method_mapping:
+        new_params['method'] = method_mapping[choice]
+        method = new_params['method']
+        print(f"  Selected method: {method.upper()}")
+        
+        # Initialize default values for the selected method if they don't exist
+        if method == 'python_sam':
+            new_params.setdefault('tile_size', 2048)
+            new_params.setdefault('buffer', 128)
+            new_params.setdefault('sam_checkpoint', str(aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'))
+            new_params.setdefault('sam_model_type', 'vit_h')
+            new_params.setdefault('sam_device', 'cuda' if (HAS_TORCH and torch.cuda.is_available()) else 'cpu')
+        elif method == 'python_slic':
+            new_params.setdefault('tile_size', 2048)
+            new_params.setdefault('buffer', 64)
+            new_params.setdefault('n_segments', 15000)
+            new_params.setdefault('compactness', 0.1)
+            new_params.setdefault('slic_sigma', 1.5)
+        elif method == 'lpis':
+            pass
+            
+    method = new_params.get('method', 'python_sam')
+    
+    # Specific interactive choice for SAM models
+    if method == 'python_sam':
+        current_type = new_params.get('sam_model_type', 'vit_h')
+        current_ckpt = new_params.get('sam_checkpoint', 'sam_vit_h_4b8939.pth')
+        print("\n  Available SAM models:")
+        for k, v in SAM_MODELS.items():
+            marker = " <-- current" if v['model_type'] == current_type else ""
+            print(f"    [{k}] {v['name']}{marker}")
+        print()
+        
+        sam_choice = input("Choose SAM model (1/2/3) or Enter to keep current: ").strip()
+        if sam_choice in SAM_MODELS:
+            selected = SAM_MODELS[sam_choice]
+            new_params['sam_model_type'] = selected['model_type']
+            
+            sam_models_dir = aux_dir / 'SAM_models'
+            ckpt_fn = selected['checkpoint']
+            ckpt_path = sam_models_dir / ckpt_fn
+            new_params['sam_checkpoint'] = str(ckpt_path)
+
+            if not ckpt_path.exists():
+                print(f"\n  [WARNING] Checkpoint weight file '{ckpt_fn}' does not exist in {sam_models_dir}!")
+                print(f"  Download it from: {selected['url']}")
+                proceed = input("  Continue anyway? (y/n) [n]: ").strip().lower()
+                if proceed != 'y':
+                    return None
+            else:
+                print(f"  [OK] Checkpoint weight file '{ckpt_fn}' found.")
+                
+    # Filter parameters to show and edit based on chosen method
+    show_keys = []
+    if method == 'python_sam':
+        show_keys = ['tile_size', 'buffer', 'sam_device']
+    elif method == 'python_slic':
+        show_keys = ['tile_size', 'buffer', 'n_segments', 'compactness', 'slic_sigma']
+    elif method == 'lpis':
+        show_keys = []
+
+    if method == 'lpis':
+        print("\n  No configurable parameters for LPIS rasterization.")
+        print("  It will use the cadastral vector files in the country folder.")
+    else:
+        print(f"\n--- Edit parameters for: {method.upper()} ---")
+        for key in show_keys:
+            val = new_params.get(key)
+            new_val_str = input(f"  {key} [{val}]: ").strip()
+            if new_val_str:
+                try:
+                    if isinstance(val, bool):
+                        new_params[key] = new_val_str.lower() in ('true', '1', 'y', 'yes')
+                    else:
+                        new_params[key] = type(val)(new_val_str) if val is not None else new_val_str
+                except ValueError:
+                    print("    Invalid value. Keeping default.")
+
+    print("\n--- APPROVED SEGMENTATION PARAMETERS ---")
+    print(f"  Method: {method.upper()}")
+    for key in show_keys:
+        print(f"  {key}: {new_params.get(key)}")
+    print("==========================================\n")
+    return new_params
+
+
+def get_params(param_dict):
+    new_params = param_dict.copy()
+    print("--- Current Parameters ---")
+    for key, val in new_params.items():
+        print(f"  {key}: {val}")
+
+    if input("Change parameters? (y/n) [n]: ").lower() != 'y':
+        return new_params
+
+    for key, val in new_params.items():
+        new_val_str = input(f"Enter new value for '{key}' [{val}]: ")
+        if not new_val_str:
+            continue
+        try:
+            original_type = type(val)
+            new_params[key] = original_type(new_val_str)
+        except ValueError:
+            print(f"Invalid value. Keeping default {val}.")
+    return new_params
+
+
+def get_classifier_params(param_dict):
+    new_params = param_dict.copy()
+    print("--- Current Parameters ---")
+    for key, val in new_params.items():
+        print(f"  {key}: {val}")
+
+    if input("Change parameters? (y/n) [n]: ").lower() != 'y':
+        return new_params
+
+    print(f"\n--- Setting parameters for Sklearn MLPClassifier ---")
+    prefix = 'sk_'
+    for key in new_params.keys():
+        if key.startswith(prefix) or key == 'balance_threshold':
+            val = new_params[key]
+            new_val_str = input(f"Enter new value for '{key}' [{val}]: ")
+            if new_val_str:
+                try:
+                    new_params[key] = type(val)(new_val_str)
+                except ValueError:
+                    print(f"Invalid value.")
+    return new_params
+
+
+def main_menu(pipeline):
+    while True:
+        seg_method = pipeline.stage1_params.get('method', 'python_sam')
+        seg_desc = "LPIS Cadastral Vector Rasterization" if pipeline.seg_mode == 'lpis' else f"SAR Segmentation ({seg_method})"
+        
+        menu = f"""
+    --- Raster-Based OBIA Pipeline (Prithvi-SAR) ---
+    Track: {pipeline.track} ({pipeline.country})
+    Segmentation Mode: {pipeline.seg_mode.upper()} ({seg_method})
+
+    [0] Stage 0: Generate Data Footprint
+    [1] Stage 1: {seg_desc}
+    [2] Stage 2: Prepare Point Split
+    [3] Stage 3: Extract Prithvi-SAR Features
+    [4] Stage 4: Train ANN Classifier
+    [5] Stage 5: Run Inference (Object-based)
+    [6] Stage 6: Apply Agricultural Mask
+    [7] Stage 7: Calculate Validation Metrics
+
+    [A] Run All Stages (Forces overwrite of Stages 5-7)
+    [Q] Quit
+
+    Enter your choice: """
+        try:
+            choice = input(menu).strip().upper()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting interactive menu due to standard input disconnection or interruption.")
+            break
+        try:
+            if choice == '0':
+                pipeline.stage_0_generate_footprint(force_recompute=True)
+            elif choice == '1':
+                new_params = get_stage1_params_sam(pipeline.stage1_params)
+                if new_params is None:
+                    print("  Segmentation parameter setup cancelled.")
+                    continue
+                pipeline.stage1_params.update(new_params)
+                pipeline.update_paths(pipeline.stage1_params['method'])
+                pipeline.stage_1_segmentation(force_recompute=True)
+            elif choice == '2':
+                new_params = get_params(pipeline.stage2_params)
+                pipeline.stage2_params.update(new_params)
+                pipeline.stage_2_prepare_points(force_recompute=True, **pipeline.stage2_params)
+            elif choice == '3':
+                pipeline.stage_3_selection()
+            elif choice == '4':
+                new_params = get_classifier_params(pipeline.stage4_params)
+                pipeline.stage4_params.update(new_params)
+                pipeline.stage_4_train_classifier(**pipeline.stage4_params)
+            elif choice == '5':
+                pipeline.stage_5_classify_vector(force_recompute=True)
+            elif choice == '6':
+                pipeline.stage_6_mask_classification(force_recompute=True)
+            elif choice == '7':
+                pipeline.stage_7_calculate_metrics()
+            elif choice == 'A':
+                print(
+                    "\nNOTE: Running 'A' will automatically force recomputation of Stages 5-7 to clear any corrupted old files.")
+                pipeline.stage_0_generate_footprint(force_recompute=False)
+                pipeline.stage_1_segmentation(force_recompute=False)
+                pipeline.stage_2_prepare_points(force_recompute=False, **pipeline.stage2_params)
+                pipeline.stage_3_selection()
+                pipeline.stage_4_train_classifier(**pipeline.stage4_params)
+                pipeline.stage_5_classify_vector(force_recompute=True)
+                pipeline.stage_6_mask_classification(force_recompute=True)
+                pipeline.stage_7_calculate_metrics()
+            elif choice == 'Q':
+                break
+        except Exception as e:
+            print(f"\n--- ERROR ---: {e}")
+            import traceback
+            traceback.print_exc()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Object-Based Crop Classification using NASA-IBM Prithvi-SAR")
     parser.add_argument('--track', required=True, help="Track name, e.g. NL/orbit_88 or PT/orbit_161")
+    parser.add_argument('--stage', default=None, help="Stage to run: 'A' (all), '0', '1', '2', '3', '4', '5', '6', '7'")
+    parser.add_argument('--seg_mode', default='sam', choices=['sam', 'lpis', 'slic'], help="Segmentation mode: sam, lpis, slic (default: sam)")
     args = parser.parse_args()
 
-    pipeline = ProcessingPipeline(args.track)
+    pipeline = ProcessingPipeline(args.track, seg_mode=args.seg_mode)
     
-    print("\n--- PRITHVI-SAR CLASSIFICATION MENU ---")
-    print("  [1] Stage 0: Generate Data Footprint")
-    print("  [2] Stage 1: Segmentation (SAM)")
-    print("  [3] Stage 2: Prepare Point Split")
-    print("  [4] Stage 3: Extract Prithvi-SAR Features")
-    print("  [5] Stage 4: Train ANN Classifier")
-    print("  [6] Stage 5: Run Inference (Object-based)")
-    print("  [7] Stage 6: Apply Agricultural Mask")
-    print("  [8] Stage 7: Calculate Validation Metrics")
-    
-    print("\n  [A] Run All Stages (Stages 0-7)")
-    print("  [Q] Quit")
-    
-    choice = input("\nEnter choice: ").strip().upper()
-    if choice == 'A':
-        pipeline.stage_0_generate_footprint()
-        pipeline.stage_1_segmentation()
-        pipeline.stage_2_prepare_points()
-        pipeline.stage_3_selection()
-        pipeline.stage_4_train_classifier()
-        pipeline.stage_5_classify_vector(force_recompute=True)
-        pipeline.stage_6_mask_classification(force_recompute=True)
-        pipeline.stage_7_calculate_metrics()
-    elif choice == '1':
-        pipeline.stage_0_generate_footprint(force_recompute=True)
-    elif choice == '2':
-        pipeline.stage_1_segmentation(force_recompute=True)
-    elif choice == '3':
-        pipeline.stage_2_prepare_points(force_recompute=True)
-    elif choice == '4':
-        pipeline.stage_3_selection()
-    elif choice == '5':
-        pipeline.stage_4_train_classifier()
-    elif choice == '6':
-        pipeline.stage_5_classify_vector(force_recompute=True)
-    elif choice == '7':
-        pipeline.stage_6_mask_classification(force_recompute=True)
-    elif choice == '8':
-        pipeline.stage_7_calculate_metrics()
-    elif choice == 'Q':
-        sys.exit(0)
+    choice = args.stage
+    if choice is None:
+        main_menu(pipeline)
     else:
-        print("Invalid choice. Exiting.")
+        choice = choice.strip().upper()
+        print(f"Running in automated mode. Selected Stage/Choice: {choice} (Mode: {pipeline.seg_mode.upper()})")
+        if choice == 'A':
+            pipeline.stage_0_generate_footprint(force_recompute=False)
+            pipeline.stage_1_segmentation(force_recompute=False)
+            pipeline.stage_2_prepare_points(force_recompute=False, **pipeline.stage2_params)
+            pipeline.stage_3_selection()
+            pipeline.stage_4_train_classifier(**pipeline.stage4_params)
+            pipeline.stage_5_classify_vector(force_recompute=True)
+            pipeline.stage_6_mask_classification(force_recompute=True)
+            pipeline.stage_7_calculate_metrics()
+        elif choice == '0':
+            pipeline.stage_0_generate_footprint(force_recompute=True)
+        elif choice == '1':
+            pipeline.stage_1_segmentation(force_recompute=True)
+        elif choice == '2':
+            pipeline.stage_2_prepare_points(force_recompute=True, **pipeline.stage2_params)
+        elif choice == '3':
+            pipeline.stage_3_selection()
+        elif choice == '4':
+            pipeline.stage_4_train_classifier(**pipeline.stage4_params)
+        elif choice == '5':
+            pipeline.stage_5_classify_vector(force_recompute=True)
+        elif choice == '6':
+            pipeline.stage_6_mask_classification(force_recompute=True)
+        elif choice == '7':
+            pipeline.stage_7_calculate_metrics()
+        elif choice == 'Q':
+            sys.exit(0)
+        else:
+            print("Invalid choice. Exiting.")
 
 
 if __name__ == '__main__':
