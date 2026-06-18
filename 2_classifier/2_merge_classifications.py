@@ -1,7 +1,13 @@
 # How to run the script:
+# ---------------------
+# Standard Country-Wide Merge (combines all processed orbits for the country):
 # python 2_merge_classifications.py --track PL
-# python 2_merge_classifications.py --track FR
-# python 2_merge_classifications.py --track P1
+# python 2_merge_classifications.py --track NL --suffix _lpis
+#
+# Testing/Debugging Single Orbit Merge (processes only the specified orbit folder):
+# python 2_merge_classifications.py --track NL/orbit_161 --suffix _lpis
+# python 2_merge_classifications.py --track NL/orbit_88 --suffix _lpis
+# python 2_merge_classifications.py --track PL/orbit_12 --suffix _sam
 
 import argparse
 import os
@@ -13,39 +19,13 @@ from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 import openpyxl
 from openpyxl.styles import Font
 
-# Crop aggregation mapping for the Netherlands (NL) to reduce semantic confusion
-CROP_AGGREGATION_NL = {
-    2: 5,   # Clover -> Grassland
-    7: 5,   # Lucerne -> Grassland
-}
-
 def get_crop_aggregation(country, learn_shp_path):
-    aggregation = {}
-    if country == 'NL' and learn_shp_path and os.path.exists(learn_shp_path):
-        try:
-            import geopandas as gpd
-            gdf = gpd.read_file(str(learn_shp_path), engine="pyogrio")
-            if 'crop_id' in gdf.columns and 'crop_name' in gdf.columns:
-                id_to_name = dict(zip(gdf['crop_id'].astype(int), gdf['crop_name'].astype(str).str.lower()))
-                
-                # Find ID of grassland
-                grassland_id = None
-                for cid, name in id_to_name.items():
-                    if "grassland" in name or "grass" in name:
-                        grassland_id = cid
-                        break
-                
-                if grassland_id is not None:
-                    for cid, name in id_to_name.items():
-                        if any(k in name for k in ["clover", "klaver", "lucerne", "luzerne"]):
-                            aggregation[cid] = grassland_id
-        except Exception as e:
-            print(f"    [WARNING] Failed to dynamically construct NL crop aggregation: {e}")
-            
-    if not aggregation and country == 'NL':
-        aggregation = CROP_AGGREGATION_NL
-        
-    return aggregation
+    """
+    Returns an empty dictionary because the grassland-related classes (Clover/Lucerne)
+    have been directly integrated into Grassland in the shapefile itself.
+    """
+    return {}
+
 
 # Discover tracks logic
 
@@ -74,18 +54,51 @@ def find_masked_files(base_dir: Path, tr: str, country: str, suffix: str = ""):
 def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
     """
     Discovers track folders and their classification/confidence files.
-    Supports both:
-      1. Country-based orbits: Prefix is a country code (e.g. PL, FR).
+    Supports:
+      1. Direct specific orbit path: e.g. NL/orbit_161 or NL_orbit_161.
+      2. Country-based orbits: Prefix is a country code (e.g. PL, FR).
          We scan base_dir/prefix/ for orbit_* folders.
-      2. Legacy tracks: Prefix is a track prefix (e.g. P1, P2).
+      3. Legacy tracks: Prefix is a track prefix (e.g. P1, P2).
          We scan base_dir/ for folders starting with prefix.
      Returns list of (tr, country, cls_fp, conf_fp).
     """
     tracks = []
     prefix_upper = prefix.upper()
-    
+
+    # Case 0: Prefix points directly to a specific orbit directory (e.g. NL/orbit_161 or NL_orbit_161)
+    normalized_prefix = prefix.replace('\\', '/')
+    specific_path = base_dir / normalized_prefix
+    if not specific_path.is_dir() and '_' in normalized_prefix:
+        # Try replacing the first underscore with a slash (e.g. NL_orbit_161 -> NL/orbit_161)
+        alt_prefix = normalized_prefix.replace('_', '/', 1)
+        alt_path = base_dir / alt_prefix
+        if alt_path.is_dir():
+            specific_path = alt_path
+            normalized_prefix = alt_prefix
+
+    if specific_path.is_dir():
+        tr = normalized_prefix
+        parts = tr.split('/')
+        country = parts[0].upper()
+        sanitized = tr.replace('/', '_')
+        
+        track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
+        cls_name  = f"{track_prefix}_classified_masked{suffix}.tif"
+        conf_name = f"{track_prefix}_confidence_masked{suffix}.tif"
+        
+        candidates = [
+            specific_path / 'classification_results' / 'classification',
+            specific_path / 'classification_results'
+        ]
+        for folder in candidates:
+            cls_fp  = folder / cls_name
+            conf_fp = folder / conf_name
+            if cls_fp.exists() and conf_fp.exists():
+                tracks.append((tr, country, cls_fp, conf_fp))
+                break
+
     # Case 1: Prefix is a country code (2 letters)
-    if len(prefix) == 2 and prefix.isalpha():
+    if not tracks and len(prefix) == 2 and prefix.isalpha():
         country = prefix_upper
         country_dir = base_dir / country
         if country_dir.exists():

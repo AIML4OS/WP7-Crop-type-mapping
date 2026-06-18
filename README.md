@@ -584,15 +584,19 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 * **Prerequisites and Config**: Requires masked rasters and `control.shp` from Step 6.
 * **Launch Command**:
   ```bash
-  # Merge standard ANN classifications (Felzenszwalb / SAM):
+  # Standard Country-Wide Merge (combines all processed orbits for the country):
   python 2_classifier/2_merge_classifications.py --track PL
+  python 2_classifier/2_merge_classifications.py --track NL --suffix _lpis
 
   # Merge Prithvi-SAR classifications:
   python 2_classifier/2_merge_classifications.py --track PL --suffix _prithvi
+
+  # Testing/Debugging Single Orbit Merge (processes only the specified orbit folder):
+  python 2_classifier/2_merge_classifications.py --track NL/orbit_161 --suffix _lpis
   ```
 * **Produced Outputs**:
-  - Merged Classification Raster: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_classification[_prithvi].tif`
-  - Country Accuracy Report: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_metrics[_prithvi].xlsx`
+  - Merged Classification Raster: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_classification[_SUFFIX].tif`
+  - Country Accuracy Report: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_metrics[_SUFFIX].xlsx`
 
 ---
 

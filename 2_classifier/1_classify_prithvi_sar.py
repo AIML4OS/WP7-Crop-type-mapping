@@ -25,39 +25,12 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 
-# Crop aggregation mapping for the Netherlands (NL) to reduce semantic confusion
-CROP_AGGREGATION_NL = {
-    2: 5,   # Clover -> Grassland
-    7: 5,   # Lucerne -> Grassland
-}
-
 def get_crop_aggregation(country, learn_shp_path):
-    aggregation = {}
-    if country == 'NL' and learn_shp_path and os.path.exists(learn_shp_path):
-        try:
-            import geopandas as gpd
-            gdf = gpd.read_file(str(learn_shp_path), engine="pyogrio")
-            if 'crop_id' in gdf.columns and 'crop_name' in gdf.columns:
-                id_to_name = dict(zip(gdf['crop_id'].astype(int), gdf['crop_name'].astype(str).str.lower()))
-                
-                # Find ID of grassland
-                grassland_id = None
-                for cid, name in id_to_name.items():
-                    if "grassland" in name or "grass" in name:
-                        grassland_id = cid
-                        break
-                
-                if grassland_id is not None:
-                    for cid, name in id_to_name.items():
-                        if any(k in name for k in ["clover", "klaver", "lucerne", "luzerne"]):
-                            aggregation[cid] = grassland_id
-        except Exception as e:
-            print(f"    [WARNING] Failed to dynamically construct NL crop aggregation: {e}")
-            
-    if not aggregation and country == 'NL':
-        aggregation = CROP_AGGREGATION_NL
-        
-    return aggregation
+    """
+    Returns an empty dictionary because the grassland-related classes (Clover/Lucerne)
+    have been directly integrated into Grassland in the shapefile itself.
+    """
+    return {}
 
 def _get_priors_for_country(country, learn_shp_path, classes, class_counts, total_samples, priors_file_override=None):
     # Try custom JSON override first
@@ -137,17 +110,25 @@ def _get_priors_for_country(country, learn_shp_path, classes, class_counts, tota
     # NL specific priors fallback
     if country == 'NL':
         real_priors_nl = {
-            1: 0.0030, 2: 0.0015, 3: 0.0775, 4: 0.0057, 5: 0.7214,
-            6: 0.0033, 7: 0.0056, 8: 0.0847, 9: 0.0060, 10: 0.0007,
-            11: 0.0073, 12: 0.0087, 13: 0.0255, 14: 0.0023, 15: 0.0149,
-            16: 0.0058, 17: 0.0044, 18: 0.0006, 19: 0.0034, 20: 0.0178
+            1: 0.0030,   # Asparagus
+            2: 0.0034,   # Beans
+            3: 0.0087,   # Beets
+            4: 0.0058,   # Carrots
+            5: 0.0033,   # Chicory
+            6: 0.0023,   # Flax
+            7: 0.0060,   # Flower Bulbs
+            8: 0.7270,   # Grassland
+            9: 0.0847,   # Maize
+            10: 0.0015,  # Oats
+            11: 0.0073,  # Onions
+            12: 0.0044,  # Peas
+            13: 0.0775,  # Potatoes
+            14: 0.0149,  # Spring Barley
+            15: 0.0007,  # Spring Wheat
+            16: 0.0178,  # Winter Barley
+            17: 0.0255   # Winter Wheat
         }
-        crop_aggregation = get_crop_aggregation(country, learn_shp_path)
-        aggregated_priors = {}
-        for cid, val in real_priors_nl.items():
-            mapped_cid = crop_aggregation.get(cid, cid)
-            aggregated_priors[mapped_cid] = aggregated_priors.get(mapped_cid, 0.0) + val
-        p_true = np.array([aggregated_priors.get(c, 1e-5) for c in classes])
+        p_true = np.array([real_priors_nl.get(c, 1e-5) for c in classes])
         p_true = p_true / np.sum(p_true)
         return p_true
 
