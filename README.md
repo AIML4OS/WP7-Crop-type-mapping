@@ -7,6 +7,7 @@ An automated, object-based image analysis (OBIA) pipeline designed to process Se
 2. **Meta AI Segment Anything Model (SAM)**: Used for precise deep-learning-based field boundary delineation (segmentation) under challenging backscatter conditions.
 3. **Orfeo ToolBox (OTB) Classifier**: Integrates OTB's high-performance machine learning suite (Random Forest, Support Vector Machines - SVM) for lightning-fast training and pixel/object classification on large spatial grids.
 4. **Multi-Layer Perceptron (MLP/ANN)**: A classical artificial neural network (scikit-learn and custom architectures) optimized for object-based class prediction.
+5. **NASA Harvest Presto Foundation Model**: A lightweight (~3.32 MB weights) transformer-based foundation model used to extract pixel-level and object-level temporal embeddings from Sentinel-1 SAR profiles.
 
 This version (v2.0) introduces dynamic country-level orbit optimization (using the Set Cover algorithm), separate processing of Ascending/Descending tracks, and automatic country-wide classification merging.
 
@@ -22,7 +23,8 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
 5. [Interactive menu and stages selector (ANN / SAM)](#interactive-menu--stages-selector-ann--sam)
 6. [Segment Anything (SAM) model setup and parameters](#segment-anything-sam-model-setup--parameters)
 7. [NASA-IBM Prithvi-SAR model setup and parameters](#nasa-ibm-prithvi-sar-model-setup--parameters)
-8. [Step-by-step execution guide](#step-by-step-execution-guide)
+8. [NASA Harvest Presto model setup and parameters](#nasa-harvest-presto-model-setup-and-parameters)
+9. [Step-by-step execution guide](#step-by-step-execution-guide)
    - [Step 1: NUTS2 boundary database builder](#step-1-nuts2-boundary-database-builder)
    - [Step 2: Crop mask preparation](#step-2-crop-mask-preparation)
    - [Step 3: Sentinel-1 slice calibration and assembly](#step-3-sentinel-1-slice-calibration-and-assembly)
@@ -30,7 +32,7 @@ This version (v2.0) introduces dynamic country-level orbit optimization (using t
    - [Step 5: Stack spatial clipping](#step-5-stack-spatial-clipping)
    - [Step 6: Object-based classification](#step-6-object-based-classification)
    - [Step 7: Classification merge](#step-7-classification-merge)
-8. [Troubleshooting and performance tuning](#troubleshooting--performance-tuning)
+10. [Troubleshooting and performance tuning](#troubleshooting--performance-tuning)
 
 ---
 
@@ -395,6 +397,21 @@ Prithvi expects 6 spectral bands across 3 temporal frames (total size `[6, 3, 22
 
 ---
 
+## NASA Harvest Presto model setup and parameters
+
+The Presto-SAR crop classifier (`1_classify_presto_sar.py`) utilizes the pre-trained NASA Harvest Presto foundation model for extracting deep temporal representations from Sentinel-1 SAR backscatter profiles.
+
+### 1. Model Weights & Architecture
+- **Architecture**: Defined in `single_file_presto.py` (located in the project root directory).
+- **Model weights**: `default_model.pt` (saved to `auxiliary_files/Presto_models/default_model.pt`). You must download the weights to this directory prior to running the script.
+
+### 2. Input Features and Masking
+- **Sentinel-1 Scaling**: Presto expects S1 backscatter inputs to be scaled using `(dB + 25.0) / 25.0`.
+- **SAR-only Masking**: Since Presto is trained on multi-modal data (Sentinel-1, Sentinel-2, ERA5, etc.), the script automatically pads S1-only inputs, masking out bands 2 to 16, and setting dynamic world class to 9.
+- **Temporal Profiling**: The model is extremely fast (~3.32 MB weights) and runs pixel-level sequence-to-sequence temporal processing, which is aggregated over segmentation shapes to compute object-level embeddings.
+
+---
+
 ### Step-by-step execution guide
 
 This guide details each script in the pipeline, explaining its functionality, requirements, execution commands, and output products.
@@ -538,7 +555,8 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
     ![Prithvi-SAR Object-Based Classification Workflow](auxiliary_files/images/prithvi_classification_v5.png)
 
   - **Option C (OTB RF/SVM)** - `1_classify_otb.py`: Integrates Orfeo ToolBox (OTB) CLI tools. Performs OTB Mean-Shift segmentation on the time-series stack, extracts statistical object features, trains an OTB Random Forest or SVM classifier, and outputs classified shapefiles and rasters.
-* **Prerequisites and config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, model checkpoints if running SAM/Prithvi, and OTB binary installation in `bin/OTB-6.2.0-Win64/` if running OTB classification.
+  - **Option D (NASA Harvest Presto)** - `1_classify_presto_sar.py`: Leverages the NASA Harvest Presto foundation model to extract `128`-dimensional temporal token embeddings from Sentinel-1 profiles. It supports the same segmentation modes (`sam`, `lpis`, `slic`) and is optimized for low memory environments.
+* **Prerequisites and config**: Requires the clipped raster (from Step 5), training sample points at `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp`, model checkpoints if running SAM/Prithvi/Presto, and OTB binary installation in `bin/OTB-6.2.0-Win64/` if running OTB classification.
 * **Launch command**:
   ```bash
   # Run ANN classifier (with SAM segmentation):
@@ -558,6 +576,9 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 
   # Run NASA-IBM Prithvi-SAR Classifier:
   python 2_classifier/1_classify_prithvi_sar.py --track PL/orbit_12
+
+  # Run NASA Harvest Presto Classifier (e.g. with LPIS vector boundaries):
+  python 2_classifier/1_classify_presto_sar.py --track PL/orbit_12 --seg_mode lpis
 
   # Run OTB Random Forest/SVM Classifier:
   python 2_classifier/1_classify_otb.py --track PL/orbit_12
@@ -590,6 +611,9 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
 
   # Merge Prithvi-SAR classifications:
   python 2_classifier/2_merge_classifications.py --track PL --suffix _prithvi
+
+  # Merge Presto-SAR classifications:
+  python 2_classifier/2_merge_classifications.py --track PL --suffix _presto_lpis
   ```
 * **Produced Outputs**:
   - Merged Classification Raster: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_classification[_SUFFIX].tif`
