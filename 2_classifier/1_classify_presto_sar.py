@@ -1378,8 +1378,8 @@ class ProcessingPipeline:
             for x in range(0, cols, tile_size):
                 tiles.append((x, y))
 
-        print(f"    Processing {len(tiles)} tiles in parallel (Threads: 4)...")
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        print(f"    Processing {len(tiles)} tiles in parallel (Threads: 8)...")
+        with ThreadPoolExecutor(max_workers=8) as executor:
             executor.map(lambda t: process_tile(*t), tiles)
 
         ds_cls.GetRasterBand(1).FlushCache()
