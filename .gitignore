@@ -10,3 +10,4 @@ __pycache__/
 2_classifier/*.pth
 scratch/
 scratch/SATMIROL/
+*.log
