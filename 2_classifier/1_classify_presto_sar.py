@@ -1024,7 +1024,7 @@ class ProcessingPipeline:
                         dynamic_world=input_dw,
                         latlons=input_latlons,
                         mask=input_mask,
-                        month=month_tensor,
+                        month=month_tensor.unsqueeze(0).expand(input_x.shape[0], -1),
                         eval_task=True
                     )
                     pooled = features.cpu().numpy()
@@ -1318,7 +1318,7 @@ class ProcessingPipeline:
                                     dynamic_world=input_dw,
                                     latlons=input_latlons,
                                     mask=input_mask,
-                                    month=month_tensor,
+                                    month=month_tensor.unsqueeze(0).expand(input_x.shape[0], -1),
                                     eval_task=True
                                 )
                                 pooled = out.cpu().numpy()
@@ -1343,7 +1343,7 @@ class ProcessingPipeline:
                                 dynamic_world=input_dw,
                                 latlons=input_latlons,
                                 mask=input_mask,
-                                month=month_tensor,
+                                month=month_tensor.unsqueeze(0).expand(input_x.shape[0], -1),
                                 eval_task=True
                             )
                             pooled = out.cpu().numpy()
