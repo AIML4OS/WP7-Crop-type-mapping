@@ -25,8 +25,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-# Limit PyTorch to 1 thread to prevent thread explosion / CPU thrashing when run inside ThreadPoolExecutor
-torch.set_num_threads(1)
+# PyTorch thread limit is configured dynamically inside stage_5_classify_vector
+# to allow multi-threaded CPU acceleration during Stage 1 SAM-Geo segmentation.
 
 def compute_210_features_dict(mean_matrix, std_matrix, nbands=44):
     feature_data = {}
@@ -1862,6 +1862,9 @@ class ProcessingPipeline:
 
     # --- Stage 5: Tiled Inference (Object-Based) ---
     def stage_5_classify_vector(self, force_recompute=False):
+        # Limit PyTorch to 1 thread per worker to prevent CPU thrashing in ThreadPoolExecutor
+        torch.set_num_threads(1)
+        
         # Renamed logic, kept name for compatibility
         self._ensure_directories()
         stage = 5
