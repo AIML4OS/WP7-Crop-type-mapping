@@ -568,8 +568,8 @@ class ProcessingPipeline:
         if method_name == 'python_sam':
             self.stage1_params.setdefault('tile_size', 2048)
             self.stage1_params.setdefault('buffer', 128)
-            self.stage1_params.setdefault('sam_checkpoint', str(self.aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'))
-            self.stage1_params.setdefault('sam_model_type', 'vit_h')
+            self.stage1_params.setdefault('sam_checkpoint', str(self.aux_dir / 'SAM_models' / 'sam_vit_l_0b3195.pth'))
+            self.stage1_params.setdefault('sam_model_type', 'vit_l')
             self.stage1_params.setdefault('sam_device', 'cuda' if (HAS_TORCH and torch.cuda.is_available()) else 'cpu')
         elif method_name == 'python_slic':
             self.stage1_params.setdefault('tile_size', 2048)
@@ -869,12 +869,13 @@ class ProcessingPipeline:
                         checkpoint=params['sam_checkpoint'],
                         device=params['sam_device'],
                         sam_kwargs={
-                            "points_per_side": 96,
-                            "pred_iou_thresh": 0.55,
-                            "stability_score_thresh": 0.55,
+                            "points_per_side": 160,
+                            "pred_iou_thresh": 0.45,
+                            "stability_score_thresh": 0.50,
                             "crop_n_layers": 1,
-                            "crop_n_points_downscale_factor": 2,
-                            "min_mask_region_area": 10
+                            "crop_n_points_downscale_factor": 1,
+                            "min_mask_region_area": 20,
+                            "box_nms_thresh": 0.6
                         }
                     )
                 except Exception as e:
@@ -940,16 +941,18 @@ class ProcessingPipeline:
                             if p98 > p2:
                                 img_8bit[valid_pixels] = ((img_clip[valid_pixels] - p2) / (p98 - p2) * 255).astype(np.uint8)
                                 
-                            # Apply CLAHE to enhance contrast in darker regions (SAR data is very skewed)
-                            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-                            img_clahe = clahe.apply(img_8bit[:, :, 0])
-                            img_8bit[:, :, 0] = img_clahe
-                            
                             # Apply bilateral filter to smooth out speckle noise while preserving sharp boundaries
                             print("    [SAM-Geo] Applying bilateral filter for edge-preserving speckle smoothing...")
                             img_chan = np.ascontiguousarray(img_8bit[:, :, 0])
-                            img_smoothed = cv2.bilateralFilter(img_chan, d=9, sigmaColor=50, sigmaSpace=50)
+                            img_smoothed = cv2.bilateralFilter(img_chan, d=9, sigmaColor=12, sigmaSpace=30)
                             img_8bit[:, :, 0] = img_smoothed
+                            
+                            # Apply CLAHE to enhance contrast if limit > 0 (disabled by default)
+                            clahe_limit = params.get('clahe_limit', 0.0)
+                            if clahe_limit > 0.0:
+                                clahe = cv2.createCLAHE(clipLimit=clahe_limit, tileGridSize=(8,8))
+                                img_clahe = clahe.apply(img_8bit[:, :, 0])
+                                img_8bit[:, :, 0] = img_clahe
                             
                         # SAM requires 3 channel RGB
                         if img_8bit.shape[2] == 1:
@@ -974,6 +977,16 @@ class ProcessingPipeline:
                         if np.any(zero_mask_buf) and np.any(segments_buf > 0):
                             _, indices = distance_transform_edt(segments_buf == 0, return_indices=True)
                             segments_buf[zero_mask_buf] = segments_buf[tuple(indices)][zero_mask_buf]
+                        
+                        segments_buf[~valid_mask] = 0
+                        
+                        # Apply post-processing median filter for boundary regularization
+                        median_size = params.get('median_size', 3)
+                        if median_size > 0:
+                            import scipy.ndimage as ndimage
+                            print(f"    [SAM-Geo] Applying post-processing median filter (size={median_size}) for boundary regularization...")
+                            segments_buf = ndimage.median_filter(segments_buf, size=median_size)
+                            segments_buf[~valid_mask] = 0
                     elif method == 'python_slic':
                         from skimage.segmentation import slic
                         max_tile_pixels = (tile_size + 2 * buffer) ** 2
@@ -1708,8 +1721,8 @@ def get_stage1_params_sam(param_dict):
         if method == 'python_sam':
             new_params.setdefault('tile_size', 2048)
             new_params.setdefault('buffer', 128)
-            new_params.setdefault('sam_checkpoint', str(aux_dir / 'SAM_models' / 'sam_vit_h_4b8939.pth'))
-            new_params.setdefault('sam_model_type', 'vit_h')
+            new_params.setdefault('sam_checkpoint', str(aux_dir / 'SAM_models' / 'sam_vit_l_0b3195.pth'))
+            new_params.setdefault('sam_model_type', 'vit_l')
             new_params.setdefault('sam_device', 'cuda' if (HAS_TORCH and torch.cuda.is_available()) else 'cpu')
         elif method == 'python_slic':
             new_params.setdefault('tile_size', 2048)
@@ -1724,8 +1737,8 @@ def get_stage1_params_sam(param_dict):
     
     # Specific interactive choice for SAM models
     if method == 'python_sam':
-        current_type = new_params.get('sam_model_type', 'vit_h')
-        current_ckpt = new_params.get('sam_checkpoint', 'sam_vit_h_4b8939.pth')
+        current_type = new_params.get('sam_model_type', 'vit_l')
+        current_ckpt = new_params.get('sam_checkpoint', 'sam_vit_l_0b3195.pth')
         print("\n  Available SAM models:")
         for k, v in SAM_MODELS.items():
             marker = " <-- current" if v['model_type'] == current_type else ""
