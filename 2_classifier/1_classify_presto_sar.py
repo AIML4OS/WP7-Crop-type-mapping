@@ -888,10 +888,20 @@ class ProcessingPipeline:
         if not weights_path.exists():
             raise FileNotFoundError(f"Presto model weights not found at {weights_path}")
             
+        # Determine num_dates from raster to handle sequence length dynamically
+        ds_tmp = gdal.Open(str(self.ras))
+        if ds_tmp is None:
+            raise FileNotFoundError(f"Raster not found: {self.ras}")
+        nbands = ds_tmp.RasterCount
+        num_dates = nbands // 2
+        ds_tmp = None
+
         import single_file_presto
-        model = single_file_presto.Presto.construct()
+        model = single_file_presto.Presto.construct(max_sequence_length=max(24, num_dates))
         state_dict = torch.load(weights_path, map_location=device)
-        model.load_state_dict(state_dict, strict=True)
+        state_dict.pop('encoder.pos_embed', None)
+        state_dict.pop('decoder.pos_embed', None)
+        model.load_state_dict(state_dict, strict=False)
         model.to(device)
         model.eval()
         
@@ -1147,10 +1157,20 @@ class ProcessingPipeline:
         device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
         weights_path = presto_dir / "default_model.pt"
         
+        # Determine num_dates from raster to handle sequence length dynamically
+        ds_tmp = gdal.Open(str(self.ras))
+        if ds_tmp is None:
+            raise FileNotFoundError(f"Raster not found: {self.ras}")
+        nbands = ds_tmp.RasterCount
+        num_dates = nbands // 2
+        ds_tmp = None
+
         import single_file_presto
-        model = single_file_presto.Presto.construct()
+        model = single_file_presto.Presto.construct(max_sequence_length=max(24, num_dates))
         state_dict = torch.load(weights_path, map_location=device)
-        model.load_state_dict(state_dict, strict=True)
+        state_dict.pop('encoder.pos_embed', None)
+        state_dict.pop('decoder.pos_embed', None)
+        model.load_state_dict(state_dict, strict=False)
         model.to(device)
         model.eval()
         
