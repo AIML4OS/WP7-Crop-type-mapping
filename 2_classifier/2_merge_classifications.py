@@ -24,6 +24,16 @@ def get_crop_aggregation(country, learn_shp_path):
 
 # Discover tracks logic
 
+def get_masked_filenames(track_prefix, suffix):
+    if suffix.startswith('_presto'):
+        s_clean = suffix[7:]  # remove '_presto'
+        return f"{track_prefix}_presto_classified_masked{s_clean}.tif", f"{track_prefix}_presto_confidence_masked{s_clean}.tif"
+    elif suffix.startswith('_prithvi'):
+        s_clean = suffix[8:]  # remove '_prithvi'
+        return f"{track_prefix}_prithvi_classified_masked{s_clean}.tif", f"{track_prefix}_prithvi_confidence_masked{s_clean}.tif"
+    else:
+        return f"{track_prefix}_classified_masked{suffix}.tif", f"{track_prefix}_confidence_masked{suffix}.tif"
+
 def find_masked_files(base_dir: Path, tr: str, country: str, suffix: str = ""):
     """
     Look for [{country}_{tr}_classified_masked{suffix}.tif,
@@ -37,8 +47,7 @@ def find_masked_files(base_dir: Path, tr: str, country: str, suffix: str = ""):
         base_dir / tr / 'classification_results' / 'classification',
         base_dir / tr / 'classification_results'
     ]
-    cls_name  = f"{country}_{tr}_classified_masked{suffix}.tif"
-    conf_name = f"{country}_{tr}_confidence_masked{suffix}.tif"
+    cls_name, conf_name = get_masked_filenames(f"{country}_{tr}", suffix)
     for folder in candidates:
         cls_fp  = folder / cls_name
         conf_fp = folder / conf_name
@@ -78,8 +87,7 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
         sanitized = tr.replace('/', '_')
         
         track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
-        cls_name  = f"{track_prefix}_classified_masked{suffix}.tif"
-        conf_name = f"{track_prefix}_confidence_masked{suffix}.tif"
+        cls_name, conf_name = get_masked_filenames(track_prefix, suffix)
         
         candidates = [
             specific_path / 'classification_results' / 'classification',
@@ -104,8 +112,7 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
                 sanitized = tr.replace('/', '_').replace('\\', '_')
                 
                 track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
-                cls_name  = f"{track_prefix}_classified_masked{suffix}.tif"
-                conf_name = f"{track_prefix}_confidence_masked{suffix}.tif"
+                cls_name, conf_name = get_masked_filenames(track_prefix, suffix)
                 
                 candidates = [
                     sub / 'classification_results' / 'classification',
@@ -135,8 +142,7 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
             
             sanitized = tr.replace('/', '_').replace('\\', '_')
             track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
-            cls_name  = f"{track_prefix}_classified_masked{suffix}.tif"
-            conf_name = f"{track_prefix}_confidence_masked{suffix}.tif"
+            cls_name, conf_name = get_masked_filenames(track_prefix, suffix)
             
             candidates = [
                 base_dir / tr / 'classification_results' / 'classification',
