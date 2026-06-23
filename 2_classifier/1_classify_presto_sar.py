@@ -1464,6 +1464,14 @@ class ProcessingPipeline:
         else:
             print("    WARNING: Arable mask not found. Only applying data footprint mask.")
 
+        if not self.class_tif.exists() or not self.conf_tif.exists():
+            print("ERROR: Classification outputs not found. Run Stage 5 first.")
+            if ds_mask:
+                ds_mask = None
+            if temp_mask_vrt and os.path.exists(temp_mask_vrt):
+                os.remove(temp_mask_vrt)
+            return
+
         ds_foot = gdal.Open(str(self.footprint_mask))
         ds_cls = gdal.Open(str(self.class_tif))
         ds_conf = gdal.Open(str(self.conf_tif))
