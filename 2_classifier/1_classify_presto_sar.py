@@ -1576,31 +1576,108 @@ class ProcessingPipeline:
         
         labels = sorted(list(set(true_labels) | set(pred_labels)))
         cm = confusion_matrix(true_labels, pred_labels, labels=labels)
-        precision, recall, f1, support = precision_recall_fscore_support(true_labels, pred_labels, labels=labels, zero_division=0)
+        precisions, recalls, f1s, _ = precision_recall_fscore_support(
+            true_labels, pred_labels, labels=labels, zero_division=0
+        )
+
+        total = np.sum(cm)
+        oa = np.trace(cm) / total
+        sum_po = oa
+        sum_pe = np.sum(np.sum(cm, axis=0) * np.sum(cm, axis=1)) / (total ** 2)
+        kappa = (sum_po - sum_pe) / (1 - sum_pe) if (1 - sum_pe) != 0 else np.nan
+
+        resx, resy = abs(gt[1]), abs(gt[5])
+        area_ha = resx * resy / 10000
+
+        # Read the classified raster for area calculations
+        ds_metrics = gdal.Open(str(self.masked_class))
+        band_metrics = ds_metrics.GetRasterBand(1)
+        arr = band_metrics.ReadAsArray()
+        ds_metrics = None
+
+        if arr is not None:
+            unique_classes, counts = np.unique(arr[arr > 0], return_counts=True)
+            class_areas = dict(zip(unique_classes, counts))
+            areas = [{'Class': c, 'Area_ha': round(class_areas.get(c, 0) * area_ha, 2)} for c in labels]
+        else:
+            areas = [{'Class': c, 'Area_ha': 0} for c in labels]
 
         wb = openpyxl.Workbook()
-        ws_summary = wb.active
-        ws_summary.title = "Summary Metrics"
-        ws_summary.append(["Class ID", "Precision", "Recall", "F1-Score", "Support"])
-        
-        for idx, lbl in enumerate(labels):
-            ws_summary.append([lbl, precision[idx], recall[idx], f1[idx], int(support[idx])])
+        sh = wb.active
+        sh.title = 'Results'
 
-        total_correct = np.sum(np.diag(cm))
-        total_samples = np.sum(cm)
-        accuracy = total_correct / total_samples if total_samples > 0 else 0
-        
-        ws_summary.append([])
-        ws_summary.append(["Overall Accuracy", accuracy])
+        sh.cell(row=1, column=1, value='Confusion Matrix').font = Font(bold=True)
+        sh.cell(row=2, column=1, value='True \\ Pred').font = Font(bold=True)
+        for j, lbl in enumerate(labels, start=2):
+            sh.cell(row=2, column=j, value=lbl).font = Font(bold=True)
+        for i, lbl in enumerate(labels, start=3):
+            sh.cell(row=i, column=1, value=lbl).font = Font(bold=True)
+            for j, _ in enumerate(labels):
+                sh.cell(row=i, column=j + 2, value=int(cm[i - 3, j]))
 
-        ws_cm = wb.create_sheet(title="Confusion Matrix")
-        ws_cm.append(["True \\ Pred"] + labels)
-        for idx, row in enumerate(cm):
-            ws_cm.append([labels[idx]] + list(map(int, row)))
+        # Compute weighted overall accuracy
+        weighted_oa = None
+        try:
+            df_train = pd.read_csv(self.sel_csv)
+            y_train = df_train['crop_id'].values
+            if self.country == 'NL':
+                crop_aggregation = get_crop_aggregation(self.country, self.learn_shp)
+                y_train = np.array([crop_aggregation.get(val, val) for val in y_train])
+            
+            train_classes = sorted(list(set(y_train)))
+            train_class_counts = pd.Series(y_train).value_counts()
+            train_total_samples = len(y_train)
+            
+            p_true_all = _get_priors_for_country(
+                country=self.country,
+                learn_shp_path=self.learn_shp,
+                classes=train_classes,
+                class_counts=train_class_counts,
+                total_samples=train_total_samples
+            )
+            p_true_dict = dict(zip(train_classes, p_true_all))
+            
+            active_priors = np.array([p_true_dict.get(lbl, 1e-5) for lbl in labels])
+            active_priors = active_priors / np.sum(active_priors)
+            
+            weighted_oa = np.sum(active_priors * recalls)
+            print(f"    Weighted Overall Accuracy ({self.country} Area-Adjusted): {weighted_oa:.4f}")
+        except Exception as e:
+            print(f"    [WARNING] Could not compute Weighted Overall Accuracy: {e}")
 
-        wb.save(self.metrics_fp)
+        base = 4 + len(labels)
+        sh.cell(row=base, column=1, value='Overall Accuracy').font = Font(bold=True)
+        sh.cell(row=base, column=2, value=round(oa, 4))
+        sh.cell(row=base + 1, column=1, value='Kappa').font = Font(bold=True)
+        sh.cell(row=base + 1, column=2, value=round(kappa, 4))
+
+        if weighted_oa is not None:
+            sh.cell(row=base + 2, column=1, value='Weighted Overall Accuracy').font = Font(bold=True)
+            sh.cell(row=base + 2, column=2, value=round(weighted_oa, 4))
+            start = base + 4
+        else:
+            start = base + 3
+        headers = ['Class', 'Producer Acc (Recall)', 'User Acc (Precision)', 'F1-score']
+        for j, h in enumerate(headers, start=1):
+            sh.cell(row=start, column=j, value=h).font = Font(bold=True)
+        for idx, c in enumerate(labels):
+            row_idx = start + 1 + idx
+            sh.cell(row=row_idx, column=1, value=c)
+            sh.cell(row=row_idx, column=2, value=round(recalls[idx], 4))
+            sh.cell(row=row_idx, column=3, value=round(precisions[idx], 4))
+            sh.cell(row=row_idx, column=4, value=round(f1s[idx], 4))
+
+        ar0 = start + 1 + len(labels) + 1
+        sh.cell(row=ar0, column=1, value='Areas (ha)').font = Font(bold=True)
+        sh.cell(row=ar0 + 1, column=1, value='Class').font = Font(bold=True)
+        sh.cell(row=ar0 + 1, column=2, value='Area_ha').font = Font(bold=True)
+        for idx, a in enumerate(areas, start=ar0 + 2):
+            sh.cell(row=idx, column=1, value=a['Class'])
+            sh.cell(row=idx, column=2, value=a['Area_ha'])
+
+        wb.save(str(self.metrics_fp))
         print(f"    Metrics successfully saved to {self.metrics_fp}")
-        print(f"    Overall Accuracy: {accuracy:.4f}\n")
+        print(f"    Overall Accuracy: {oa:.4f}\n")
 
 
 # --- Interactive Menu Helpers ---
