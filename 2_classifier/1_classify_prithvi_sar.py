@@ -810,7 +810,7 @@ class ProcessingPipeline:
         except Exception as e:
             print(f"    [WARNING] Failed to create summed composite: {e}. Falling back to full stack.")
             
-        if self.seg_mode == 'slic':
+        if self.seg_suffix == 'slic':
             print(f"[Stage {stage}/{self.total_stages}] Running SLIC superpixels segmentation...")
             slic_params = {
                 'method': 'python_slic',
