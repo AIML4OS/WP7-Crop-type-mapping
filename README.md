@@ -416,7 +416,7 @@ The Presto-SAR crop classifier (`1_classify_presto_sar.py`) utilizes the pre-tra
 
 ## Presto-SAR Hybrid model setup and parameters
 
-The Presto-SAR Hybrid crop classifier (`1_classify_presto_hybrid.py`) combines the strength of direct physical SAR measurements and the joint multi-modal representations learned by the Presto foundation model. It is designed to maximize crop classification accuracy in cloudy regions (like Central-Western Europe) where obtaining clean Sentinel-2 optical composites is challenging, and doing so is unnecessary since the model implicitly reconstructs optical priors.
+The Presto-SAR Hybrid crop classifier (`1_classify_ann_presto_hybrid.py`) combines the strength of direct physical SAR measurements and the joint multi-modal representations learned by the Presto foundation model. It is designed to maximize crop classification accuracy in cloudy regions (like Central-Western Europe) where obtaining clean Sentinel-2 optical composites is challenging, and doing so is unnecessary since the model implicitly reconstructs optical priors.
 
 ### 1. The Cross-Modal Latent Reconstruction Concept
 - **The Challenge**: Central-Western Europe is highly cloudy. Manual cloud-masking and temporal composting/interpolation are noisy and miss critical crop growth stages.
@@ -599,7 +599,7 @@ Before running the classification pipeline, the Sentinel-1 SAR scenes are downlo
   python 2_classifier/1_classify_presto_sar.py --track PL/orbit_12 --seg_mode lpis
 
   # Run NASA Harvest Presto Hybrid Classifier (e.g. with LPIS vector boundaries):
-  python 2_classifier/1_classify_presto_hybrid.py --track PL/orbit_12 --seg_mode lpis
+  python 2_classifier/1_classify_ann_presto_hybrid.py --track PL/orbit_12 --seg_mode lpis
 
   # Run OTB Random Forest/SVM Classifier:
   python 2_classifier/1_classify_otb.py --track PL/orbit_12

@@ -1,6 +1,6 @@
 # How to run the script:
-# python 1_classify_presto_hybrid.py --track NL/orbit_88 --seg_mode sam
-# python 1_classify_presto_hybrid.py --track PT/orbit_161 --seg_mode sam
+# python 1_classify_ann_presto_hybrid.py --track NL/orbit_88 --seg_mode slic
+# python 1_classify_ann_presto_hybrid.py --track PT/orbit_161 --seg_mode slic
 
 import os
 import argparse
@@ -573,9 +573,9 @@ class ProcessingPipeline:
         elif method_name == 'python_slic':
             self.stage1_params.setdefault('tile_size', 2048)
             self.stage1_params.setdefault('buffer', 64)
-            self.stage1_params.setdefault('n_segments', 15000)
-            self.stage1_params.setdefault('compactness', 0.1)
-            self.stage1_params.setdefault('slic_sigma', 1.5)
+            self.stage1_params.setdefault('n_segments', 32000)  # Original: 15000, Tuned: 32000
+            self.stage1_params.setdefault('compactness', 0.05)  # Original: 0.1, Tuned: 0.05
+            self.stage1_params.setdefault('slic_sigma', 1.5)    # Original: 1.5, Tuned: 1.5
 
     # --- Stage 0: Robust Data Footprint ---
     def stage_0_generate_footprint(self, force_recompute=False):
@@ -795,9 +795,9 @@ class ProcessingPipeline:
                 'method': 'python_slic',
                 'tile_size': 2048,
                 'buffer': 64,
-                'n_segments': 15000,
-                'compactness': 0.1,
-                'slic_sigma': 1.5
+                'n_segments': 32000,  # Original: 15000, Tuned: 32000
+                'compactness': 0.05,  # Original: 0.1, Tuned: 0.05
+                'slic_sigma': 1.5     # Original: 1.5, Tuned: 1.5
             }
             self._run_python_segmentation_tiled(slic_params, stage, 'python_slic')
         else:
@@ -1907,9 +1907,9 @@ def get_stage1_params_sam(param_dict):
         elif method == 'python_slic':
             new_params.setdefault('tile_size', 2048)
             new_params.setdefault('buffer', 64)
-            new_params.setdefault('n_segments', 15000)
-            new_params.setdefault('compactness', 0.1)
-            new_params.setdefault('slic_sigma', 1.5)
+            new_params.setdefault('n_segments', 32000)  # Original: 15000, Tuned: 32000
+            new_params.setdefault('compactness', 0.05)  # Original: 0.1, Tuned: 0.05
+            new_params.setdefault('slic_sigma', 1.5)    # Original: 1.5, Tuned: 1.5
             
     method = new_params.get('method', 'python_sam')
     
