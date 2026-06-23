@@ -25,7 +25,10 @@ def get_crop_aggregation(country, learn_shp_path):
 # Discover tracks logic
 
 def get_masked_filenames(track_prefix, suffix):
-    if suffix.startswith('_presto'):
+    if suffix.startswith('_presto_hybrid'):
+        s_clean = suffix[14:]  # remove '_presto_hybrid'
+        return f"{track_prefix}_presto_hybrid_classified_masked{s_clean}.tif", f"{track_prefix}_presto_hybrid_confidence_masked{s_clean}.tif"
+    elif suffix.startswith('_presto'):
         s_clean = suffix[7:]  # remove '_presto'
         return f"{track_prefix}_presto_classified_masked{s_clean}.tif", f"{track_prefix}_presto_confidence_masked{s_clean}.tif"
     elif suffix.startswith('_prithvi'):
