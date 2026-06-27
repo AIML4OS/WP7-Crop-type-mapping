@@ -638,11 +638,12 @@ class ProcessingPipeline:
             self.stage1_params['method'] = method_name
             # Initialize default values for the selected method in stage1_params if they don't exist
             if method_name == 'python_sam':
-                self.stage1_params.setdefault('tile_size', 2048)
-                self.stage1_params.setdefault('buffer', 128)
-                self.stage1_params.setdefault('sam_checkpoint', str(self.aux_dir / 'SAM_models' / 'sam_vit_l_0b3195.pth'))
-                self.stage1_params.setdefault('sam_model_type', 'vit_l')
+                self.stage1_params.setdefault('tile_size', 1024)
+                self.stage1_params.setdefault('buffer', 64)
+                self.stage1_params.setdefault('sam_checkpoint', str(self.aux_dir / 'SAM_models' / 'sam_vit_b_01ec64.pth'))
+                self.stage1_params.setdefault('sam_model_type', 'vit_b')
                 self.stage1_params.setdefault('sam_device', 'cuda' if (HAS_SAM and torch.cuda.is_available()) else 'cpu')
+                self.stage1_params.setdefault('points_per_side', 64)
             elif method_name in ['otb_meanshift_summed', 'otb_meanshift']:
                 self.stage1_params.setdefault('spatialr', 4)
                 self.stage1_params.setdefault('ranger', 0.3)
@@ -1201,7 +1202,7 @@ class ProcessingPipeline:
                         checkpoint=params['sam_checkpoint'],
                         device=params['sam_device'],
                         sam_kwargs={
-                            "points_per_side": 160,
+                            "points_per_side": params.get('points_per_side', 64),
                             "pred_iou_thresh": 0.45,
                             "stability_score_thresh": 0.50,
                             "crop_n_layers": 1,
@@ -2376,11 +2377,12 @@ def get_stage1_params_sam(param_dict):
         
         # Initialize default values for the selected method if they don't exist
         if method == 'python_sam':
-            new_params.setdefault('tile_size', 2048)
-            new_params.setdefault('buffer', 128)
-            new_params.setdefault('sam_checkpoint', str(aux_dir / 'SAM_models' / 'sam_vit_l_0b3195.pth'))
-            new_params.setdefault('sam_model_type', 'vit_l')
+            new_params.setdefault('tile_size', 1024)
+            new_params.setdefault('buffer', 64)
+            new_params.setdefault('sam_checkpoint', str(aux_dir / 'SAM_models' / 'sam_vit_b_01ec64.pth'))
+            new_params.setdefault('sam_model_type', 'vit_b')
             new_params.setdefault('sam_device', 'cuda' if torch.cuda.is_available() else 'cpu')
+            new_params.setdefault('points_per_side', 64)
         elif method in ['otb_meanshift_summed', 'otb_meanshift']:
             new_params.setdefault('spatialr', 4)
             new_params.setdefault('ranger', 0.3)
@@ -2407,8 +2409,8 @@ def get_stage1_params_sam(param_dict):
     
     # Specific interactive choice for SAM models
     if method == 'python_sam':
-        current_type = new_params.get('sam_model_type', 'vit_l')
-        current_ckpt = new_params.get('sam_checkpoint', 'sam_vit_l_0b3195.pth')
+        current_type = new_params.get('sam_model_type', 'vit_b')
+        current_ckpt = new_params.get('sam_checkpoint', 'sam_vit_b_01ec64.pth')
         print("\n  Available SAM models:")
         for k, v in SAM_MODELS.items():
             marker = " <-- current" if v['model_type'] == current_type else ""
