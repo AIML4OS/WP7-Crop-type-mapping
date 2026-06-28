@@ -1662,17 +1662,9 @@ class ProcessingPipeline:
             for x in range(0, cols, tile_size):
                 tiles.append((x, y))
 
-        print(f"    Processing {len(tiles)} tiles in parallel (Threads: 8)...")
-        # Restrict threads to 1 during inference inside ThreadPoolExecutor to prevent thread contention
-        if HAS_TORCH:
-            orig_threads = torch.get_num_threads()
-            torch.set_num_threads(1)
-            
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        print(f"    Processing {len(tiles)} tiles sequentially (using all CPU cores via PyTorch internal threads)...")
+        with ThreadPoolExecutor(max_workers=1) as executor:
             executor.map(lambda t: process_tile(*t), tiles)
-
-        if HAS_TORCH:
-            torch.set_num_threads(orig_threads)
 
         ds_cls.GetRasterBand(1).FlushCache()
         ds_conf.GetRasterBand(1).FlushCache()
