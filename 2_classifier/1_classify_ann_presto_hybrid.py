@@ -868,6 +868,8 @@ class ProcessingPipeline:
                     xsize_buf = x_end_buf - x_start_buf
                     ysize_buf = y_end_buf - y_start_buf
 
+                    print(f"    Processing Tile: x={x}, y={y} (buffered {xsize_buf}x{ysize_buf})")
+
                     img_list = []
                     for b in range(1, nbands + 1):
                         band = ds.GetRasterBand(b)
