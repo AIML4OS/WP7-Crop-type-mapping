@@ -835,6 +835,9 @@ class ProcessingPipeline:
 
             sam_geo = None
             if method == 'python_sam':
+                if HAS_TORCH:
+                    import torch
+                    torch.set_num_threads(8)  # Limit CPU threads to 8 to prevent deadlock and optimize OpenMP scaling
                 from samgeo import SamGeo
                 print(f"    Loading SAM-Geo model ({params['sam_model_type']}) to {params['sam_device']}...")
                 sam_geo = SamGeo(

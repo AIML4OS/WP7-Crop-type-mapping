@@ -1,8 +1,26 @@
 # How to run the script:
 # ---------------------
-# Standard Country-Wide Merge (combines all processed orbits for the country):
-# python 2_merge_classifications.py --track PL
-# python 2_merge_classifications.py --track NL --suffix _lpis
+# Country-Wide Merge (combines all processed orbits for a country e.g. NL, PL, PT)
+#
+# 1. Standard ANN classification (suffix depends on segmentation mode):
+#    python 2_merge_classifications.py --track NL --suffix _lpis
+#    python 2_merge_classifications.py --track NL --suffix _slic
+#    python 2_merge_classifications.py --track NL --suffix _sam
+#
+# 2. NASA Harvest Presto classification:
+#    python 2_merge_classifications.py --track NL --suffix _presto_lpis
+#    python 2_merge_classifications.py --track NL --suffix _presto_slic
+#    python 2_merge_classifications.py --track NL --suffix _presto_sam
+#
+# 3. NASA Harvest Presto + SAR Hybrid classification:
+#    python 2_merge_classifications.py --track NL --suffix _presto_hybrid_lpis
+#    python 2_merge_classifications.py --track NL --suffix _presto_hybrid_slic
+#    python 2_merge_classifications.py --track NL --suffix _presto_hybrid_sam
+#
+# 4. Prithvi Foundation Model classification:
+#    python 2_merge_classifications.py --track NL --suffix _prithvi_lpis
+#    python 2_merge_classifications.py --track NL --suffix _prithvi_slic
+#    python 2_merge_classifications.py --track NL --suffix _prithvi_sam
 
 import argparse
 import os
