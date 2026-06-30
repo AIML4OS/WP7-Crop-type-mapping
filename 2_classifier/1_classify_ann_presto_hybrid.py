@@ -401,6 +401,126 @@ class TorchMLPClassifier:
             self.model.to(self.device)
 
 
+def sam_worker(tile_info, ras_path, footprint_path, params):
+    try:
+        import os
+        import sys
+        from osgeo import gdal
+        import numpy as np
+        import torch
+        torch.set_num_threads(1)  # Force single thread in worker to prevent OpenMP collisions
+        import cv2
+        cv2.setNumThreads(0)      # Disable cv2 multi-threading
+        
+        from samgeo import SamGeo
+        from skimage.util import img_as_float
+        from scipy.ndimage import distance_transform_edt
+        import scipy.ndimage as ndimage
+        
+        x, y, xsize_valid, ysize_valid, x_start_buf, y_start_buf, xsize_buf, ysize_buf, buffer = tile_info
+        
+        ds = gdal.Open(ras_path, gdal.GA_ReadOnly)
+        nbands = ds.RasterCount
+        
+        img_list = []
+        for b in range(1, nbands + 1):
+            band = ds.GetRasterBand(b)
+            arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+            if arr is None:
+                return x, y, None, None
+            arr = np.nan_to_num(arr)
+            img_list.append(arr)
+            
+        img = np.dstack(img_list)
+        
+        ds_foot = None
+        if footprint_path and os.path.exists(footprint_path):
+            ds_foot = gdal.Open(footprint_path, gdal.GA_ReadOnly)
+            valid_mask_buf = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf) > 0
+            valid_mask = valid_mask_buf
+        else:
+            valid_mask = np.sum(np.abs(img), axis=2) > 0
+            
+        if not np.any(valid_mask):
+            return x, y, None, None
+            
+        sam_geo = SamGeo(
+            model_type=params['sam_model_type'],
+            checkpoint=params['sam_checkpoint'],
+            device=params['sam_device'],
+            sam_kwargs={
+                "points_per_side": params.get('points_per_side', 64),
+                "pred_iou_thresh": 0.45,
+                "stability_score_thresh": 0.50,
+                "crop_n_layers": 1,
+                "crop_n_points_downscale_factor": 1,
+                "min_mask_region_area": 20,
+                "box_nms_thresh": 0.6
+            }
+        )
+        
+        img_8bit = np.zeros(img.shape, dtype=np.uint8)
+        valid_pixels = valid_mask[:, :, np.newaxis]
+        
+        if np.any(valid_pixels):
+            p2, p98 = np.percentile(img[valid_pixels], (2, 98))
+            img_clip = np.clip(img, p2, p98)
+            if p98 > p2:
+                img_8bit[valid_pixels] = ((img_clip[valid_pixels] - p2) / (p98 - p2) * 255).astype(np.uint8)
+                
+            img_chan = np.ascontiguousarray(img_8bit[:, :, 0])
+            img_smoothed = cv2.bilateralFilter(img_chan, d=9, sigmaColor=12, sigmaSpace=30)
+            img_8bit[:, :, 0] = img_smoothed
+            
+            clahe_limit = params.get('clahe_limit', 0.0)
+            if clahe_limit > 0.0:
+                clahe = cv2.createCLAHE(clipLimit=clahe_limit, tileGridSize=(8,8))
+                img_clahe = clahe.apply(img_8bit[:, :, 0])
+                img_8bit[:, :, 0] = img_clahe
+                
+        if img_8bit.shape[2] == 1:
+            img_rgb = np.repeat(img_8bit, 3, axis=2)
+        else:
+            img_rgb = img_8bit[:, :, :3]
+            if img_rgb.shape[2] < 3:
+                img_rgb = np.pad(img_rgb, ((0,0),(0,0),(0, 3-img_rgb.shape[2])), mode='constant')
+                
+        sam_geo.generate(
+            source=img_rgb,
+            output=None,
+            foreground=False,
+            unique=True,
+            min_size=10,
+            max_size=100000
+        )
+        segments_buf = sam_geo.objects.astype(np.int32)
+        
+        zero_mask_buf = (segments_buf == 0) & valid_mask
+        if np.any(zero_mask_buf) and np.any(segments_buf > 0):
+            _, indices = distance_transform_edt(segments_buf == 0, return_indices=True)
+            segments_buf[zero_mask_buf] = segments_buf[tuple(indices)][zero_mask_buf]
+            
+        segments_buf[~valid_mask] = 0
+        
+        median_size = params.get('median_size', 3)
+        if median_size > 0:
+            segments_buf = ndimage.median_filter(segments_buf, size=median_size)
+            segments_buf[~valid_mask] = 0
+            
+        y_offset = y - y_start_buf
+        x_offset = x - x_start_buf
+        segments_buf[~valid_mask] = 0
+        
+        valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+        segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+        segments[~valid_mask_crop] = 0
+        
+        return x, y, segments, valid_mask_crop
+    except Exception as e:
+        print(f"Error in worker process for tile (x={tile_info[0]}, y={tile_info[1]}): {e}")
+        return tile_info[0], tile_info[1], None, None
+
+
 class ProcessingPipeline:
     def __init__(self, track, seg_mode='sam'):
         self.track = track
@@ -833,127 +953,113 @@ class ProcessingPipeline:
             buffer = params.get('buffer', 128)
             global_seg_id = 1
 
-            sam_geo = None
             if method == 'python_sam':
-                if HAS_TORCH:
-                    import torch
-                    torch.set_num_threads(8)  # Limit CPU threads to 8 to prevent deadlock and optimize OpenMP scaling
-                from samgeo import SamGeo
-                print(f"    Loading SAM-Geo model ({params['sam_model_type']}) to {params['sam_device']}...")
-                sam_geo = SamGeo(
-                    model_type=params['sam_model_type'],
-                    checkpoint=params['sam_checkpoint'],
-                    device=params['sam_device'],
-                    sam_kwargs={
-                        "points_per_side": params.get('points_per_side', 64),
-                        "pred_iou_thresh": 0.45,
-                        "stability_score_thresh": 0.50,
-                        "crop_n_layers": 1,
-                        "crop_n_points_downscale_factor": 1,
-                        "min_mask_region_area": 20,
-                        "box_nms_thresh": 0.6
-                    }
-                )
-
-            for y in range(0, rows, tile_size):
-                for x in range(0, cols, tile_size):
-                    xsize_valid = min(tile_size, cols - x)
-                    ysize_valid = min(tile_size, rows - y)
-
-                    x_start_buf = max(0, x - buffer)
-                    y_start_buf = max(0, y - buffer)
-                    x_end_buf = min(cols, x + xsize_valid + buffer)
-                    y_end_buf = min(rows, y + ysize_valid + buffer)
-
-                    xsize_buf = x_end_buf - x_start_buf
-                    ysize_buf = y_end_buf - y_start_buf
-
-                    print(f"    Processing Tile: x={x}, y={y} (buffered {xsize_buf}x{ysize_buf})")
-
-                    img_list = []
-                    for b in range(1, nbands + 1):
-                        band = ds.GetRasterBand(b)
-                        arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
-                        if arr is None:
-                            img_list = None
-                            break
-                        arr = np.nan_to_num(arr)
-                        img_list.append(arr)
-
-                    if img_list is None:
-                        continue
-
-                    img = np.dstack(img_list)
-
-                    if ds_foot:
-                        valid_mask_buf = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf) > 0
-                        valid_mask = valid_mask_buf
-                    else:
-                        valid_mask = np.sum(np.abs(img), axis=2) > 0
-
-                    if not np.any(valid_mask):
-                        continue
-
-                    img_norm = img_as_float(img)
-
-                    if method == 'python_sam':
-                        import cv2
-                        from scipy.ndimage import distance_transform_edt
+                # Run in parallel using ProcessPoolExecutor
+                from concurrent.futures import ProcessPoolExecutor, as_completed
+                
+                # Gather active tiles first
+                tile_tasks = []
+                for y in range(0, rows, tile_size):
+                    for x in range(0, cols, tile_size):
+                        xsize_valid = min(tile_size, cols - x)
+                        ysize_valid = min(tile_size, rows - y)
+                        x_start_buf = max(0, x - buffer)
+                        y_start_buf = max(0, y - buffer)
+                        x_end_buf = min(cols, x + xsize_valid + buffer)
+                        y_end_buf = min(rows, y + ysize_valid + buffer)
+                        xsize_buf = x_end_buf - x_start_buf
+                        ysize_buf = y_end_buf - y_start_buf
                         
-                        img_8bit = np.zeros(img.shape, dtype=np.uint8)
-                        valid_pixels = valid_mask[:, :, np.newaxis]
-                        
-                        if np.any(valid_pixels):
-                            p2, p98 = np.percentile(img[valid_pixels], (2, 98))
-                            img_clip = np.clip(img, p2, p98)
-                            if p98 > p2:
-                                img_8bit[valid_pixels] = ((img_clip[valid_pixels] - p2) / (p98 - p2) * 255).astype(np.uint8)
-                                
-                            # Apply bilateral filter to smooth out speckle noise while preserving sharp boundaries
-                            print("    [SAM-Geo] Applying bilateral filter for edge-preserving speckle smoothing...")
-                            img_chan = np.ascontiguousarray(img_8bit[:, :, 0])
-                            img_smoothed = cv2.bilateralFilter(img_chan, d=9, sigmaColor=12, sigmaSpace=30)
-                            img_8bit[:, :, 0] = img_smoothed
-                            
-                            # Apply CLAHE to enhance contrast if limit > 0 (disabled by default)
-                            clahe_limit = params.get('clahe_limit', 0.0)
-                            if clahe_limit > 0.0:
-                                clahe = cv2.createCLAHE(clipLimit=clahe_limit, tileGridSize=(8,8))
-                                img_clahe = clahe.apply(img_8bit[:, :, 0])
-                                img_8bit[:, :, 0] = img_clahe
-                            
-                        if img_8bit.shape[2] == 1:
-                            img_rgb = np.repeat(img_8bit, 3, axis=2)
+                        # Read footprint chunk to see if active
+                        if ds_foot:
+                            band_foot = ds_foot.GetRasterBand(1)
+                            arr_foot = band_foot.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                            valid_mask = arr_foot > 0 if arr_foot is not None else None
                         else:
-                            img_rgb = img_8bit[:, :, :3]
-                            if img_rgb.shape[2] < 3:
-                                img_rgb = np.pad(img_rgb, ((0,0),(0,0),(0, 3-img_rgb.shape[2])), mode='constant')
-                                
-                        sam_geo.generate(
-                            source=img_rgb,
-                            output=None,
-                            foreground=False,
-                            unique=True,
-                            min_size=10,
-                            max_size=100000
-                        )
-                        segments_buf = sam_geo.objects.astype(np.int32)
-                                    
-                        zero_mask_buf = (segments_buf == 0) & valid_mask
-                        if np.any(zero_mask_buf) and np.any(segments_buf > 0):
-                            _, indices = distance_transform_edt(segments_buf == 0, return_indices=True)
-                            segments_buf[zero_mask_buf] = segments_buf[tuple(indices)][zero_mask_buf]
-                        
-                        segments_buf[~valid_mask] = 0
-                        
-                        # Apply post-processing median filter for boundary regularization
-                        median_size = params.get('median_size', 3)
-                        if median_size > 0:
-                            import scipy.ndimage as ndimage
-                            print(f"    [SAM-Geo] Applying post-processing median filter (size={median_size}) for boundary regularization...")
-                            segments_buf = ndimage.median_filter(segments_buf, size=median_size)
-                            segments_buf[~valid_mask] = 0
-                    elif method == 'python_slic':
+                            band = ds.GetRasterBand(1)
+                            arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                            valid_mask = np.nan_to_num(arr) > 0 if arr is not None else None
+                            
+                        if valid_mask is not None and np.any(valid_mask):
+                            tile_tasks.append((x, y, xsize_valid, ysize_valid, x_start_buf, y_start_buf, xsize_buf, ysize_buf, buffer))
+                            
+                total_tasks = len(tile_tasks)
+                print(f"    Total active tiles to process with SAM: {total_tasks}")
+                
+                max_workers = 8  # Use 8 processes on 16-core CPU
+                print(f"    Processing tiles in parallel using ProcessPoolExecutor (Workers: {max_workers})...")
+                
+                with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(sam_worker, task, str(self.ras), str(self.footprint_mask) if self.footprint_mask.exists() else None, params): task
+                        for task in tile_tasks
+                    }
+                    
+                    completed_count = 0
+                    for future in as_completed(futures):
+                        x, y, segments, valid_mask_crop = future.result()
+                        completed_count += 1
+                        print(f"    [Tile Finished] x={x}, y={y} | Progress: {completed_count}/{total_tasks} tiles ({completed_count/total_tasks*100:.1f}%)")
+                            
+                        if segments is not None:
+                            seg_valid_mask = segments > 0
+                            unique_segs = np.unique(segments[seg_valid_mask])
+                            if len(unique_segs) > 0:
+                                max_seg = segments.max()
+                                mapping = np.zeros(max_seg + 1, dtype=np.int32)
+                                mapping[unique_segs] = np.arange(global_seg_id, global_seg_id + len(unique_segs))
+                                segments = mapping[segments]
+                                segments[~valid_mask_crop] = 0
+                                global_seg_id += len(unique_segs)
+                            else:
+                                segments[~valid_mask_crop] = 0
+                            out_band.WriteArray(segments.astype(np.int32), x, y)
+                        else:
+                            # Write empty array for inactive/failed tiles
+                            for task in tile_tasks:
+                                if task[0] == x and task[1] == y:
+                                    xsize_valid, ysize_valid = task[2], task[3]
+                                    out_band.WriteArray(np.zeros((ysize_valid, xsize_valid), dtype=np.int32), x, y)
+                                    break
+            else:
+                # Original sequential logic for SLIC
+                for y in range(0, rows, tile_size):
+                    for x in range(0, cols, tile_size):
+                        xsize_valid = min(tile_size, cols - x)
+                        ysize_valid = min(tile_size, rows - y)
+                        x_start_buf = max(0, x - buffer)
+                        y_start_buf = max(0, y - buffer)
+                        x_end_buf = min(cols, x + xsize_valid + buffer)
+                        y_end_buf = min(rows, y + ysize_valid + buffer)
+                        xsize_buf = x_end_buf - x_start_buf
+                        ysize_buf = y_end_buf - y_start_buf
+
+                        img_list = []
+                        for b in range(1, nbands + 1):
+                            band = ds.GetRasterBand(b)
+                            arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                            if arr is None:
+                                img_list = None
+                                break
+                            arr = np.nan_to_num(arr)
+                            img_list.append(arr)
+
+                        if img_list is None:
+                            continue
+
+                        img = np.dstack(img_list)
+
+                        if ds_foot:
+                            valid_mask_buf = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf) > 0
+                            valid_mask = valid_mask_buf
+                        else:
+                            valid_mask = np.sum(np.abs(img), axis=2) > 0
+
+                        if not np.any(valid_mask):
+                            continue
+
+                        img_norm = img_as_float(img)
+
                         from skimage.segmentation import slic
                         max_tile_pixels = (tile_size + 2 * buffer) ** 2
                         pixels_per_segment = max_tile_pixels / params['n_segments']
@@ -962,27 +1068,26 @@ class ProcessingPipeline:
                         segments_buf = slic(img_norm, n_segments=n_segments_dynamic, compactness=params['compactness'],
                                             sigma=params['slic_sigma'], start_label=1, mask=valid_mask)
 
-                    y_offset = y - y_start_buf
-                    x_offset = x - x_start_buf
-                    segments_buf[~valid_mask] = 0
+                        y_offset = y - y_start_buf
+                        x_offset = x - x_start_buf
+                        segments_buf[~valid_mask] = 0
 
-                    valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
-                    segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
-                    
-                    seg_valid_mask = segments > 0
-                    unique_segs = np.unique(segments[seg_valid_mask])
-                    if len(unique_segs) > 0:
-                        max_seg = segments.max()
-                        mapping = np.zeros(max_seg + 1, dtype=np.int32)
-                        mapping[unique_segs] = np.arange(global_seg_id, global_seg_id + len(unique_segs))
+                        valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+                        segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
                         
-                        segments = mapping[segments]
-                        segments[~valid_mask_crop] = 0
-                        global_seg_id += len(unique_segs)
-                    else:
-                        segments[~valid_mask_crop] = 0
+                        seg_valid_mask = segments > 0
+                        unique_segs = np.unique(segments[seg_valid_mask])
+                        if len(unique_segs) > 0:
+                            max_seg = segments.max()
+                            mapping = np.zeros(max_seg + 1, dtype=np.int32)
+                            mapping[unique_segs] = np.arange(global_seg_id, global_seg_id + len(unique_segs))
+                            segments = mapping[segments]
+                            segments[~valid_mask_crop] = 0
+                            global_seg_id += len(unique_segs)
+                        else:
+                            segments[~valid_mask_crop] = 0
 
-                    out_band.WriteArray(segments.astype(np.int32), x, y)
+                        out_band.WriteArray(segments.astype(np.int32), x, y)
 
             out_ds.FlushCache()
             out_ds = None
