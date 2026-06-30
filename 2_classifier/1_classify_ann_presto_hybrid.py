@@ -405,6 +405,7 @@ def sam_worker(tile_info, ras_path, footprint_path, params):
     try:
         import os
         import sys
+        import time
         from osgeo import gdal
         import numpy as np
         import torch
@@ -418,6 +419,7 @@ def sam_worker(tile_info, ras_path, footprint_path, params):
         import scipy.ndimage as ndimage
         
         x, y, xsize_valid, ysize_valid, x_start_buf, y_start_buf, xsize_buf, ysize_buf, buffer = tile_info
+        print(f"    [Worker x={x}, y={y}] Started reading tile data...", flush=True)
         
         ds = gdal.Open(ras_path, gdal.GA_ReadOnly)
         nbands = ds.RasterCount
@@ -427,6 +429,7 @@ def sam_worker(tile_info, ras_path, footprint_path, params):
             band = ds.GetRasterBand(b)
             arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
             if arr is None:
+                print(f"    [Worker x={x}, y={y}] Failed to read band {b}!", flush=True)
                 return x, y, None, None
             arr = np.nan_to_num(arr)
             img_list.append(arr)
@@ -442,22 +445,26 @@ def sam_worker(tile_info, ras_path, footprint_path, params):
             valid_mask = np.sum(np.abs(img), axis=2) > 0
             
         if not np.any(valid_mask):
+            print(f"    [Worker x={x}, y={y}] Tile contains no active pixels.", flush=True)
             return x, y, None, None
             
+        print(f"    [Worker x={x}, y={y}] Loading SAM model...", flush=True)
+        t_model_start = time.time()
         sam_geo = SamGeo(
             model_type=params['sam_model_type'],
             checkpoint=params['sam_checkpoint'],
             device=params['sam_device'],
             sam_kwargs={
-                "points_per_side": params.get('points_per_side', 64),
-                "pred_iou_thresh": 0.45,
-                "stability_score_thresh": 0.50,
-                "crop_n_layers": 1,
-                "crop_n_points_downscale_factor": 1,
-                "min_mask_region_area": 20,
-                "box_nms_thresh": 0.6
+                "points_per_side": params.get('points_per_side', 16),
+                "pred_iou_thresh": params.get('pred_iou_thresh', 0.45),
+                "stability_score_thresh": params.get('stability_score_thresh', 0.50),
+                "crop_n_layers": params.get('crop_n_layers', 0),
+                "crop_n_points_downscale_factor": params.get('crop_n_points_downscale_factor', 1),
+                "min_mask_region_area": params.get('min_mask_region_area', 20),
+                "box_nms_thresh": params.get('box_nms_thresh', 0.6)
             }
         )
+        print(f"    [Worker x={x}, y={y}] SAM model loaded in {time.time() - t_model_start:.2f}s.", flush=True)
         
         img_8bit = np.zeros(img.shape, dtype=np.uint8)
         valid_pixels = valid_mask[:, :, np.newaxis]
@@ -485,6 +492,8 @@ def sam_worker(tile_info, ras_path, footprint_path, params):
             if img_rgb.shape[2] < 3:
                 img_rgb = np.pad(img_rgb, ((0,0),(0,0),(0, 3-img_rgb.shape[2])), mode='constant')
                 
+        print(f"    [Worker x={x}, y={y}] Running SAM generate (points_per_side={params.get('points_per_side', 16)})...", flush=True)
+        t_gen_start = time.time()
         sam_geo.generate(
             source=img_rgb,
             output=None,
@@ -493,6 +502,7 @@ def sam_worker(tile_info, ras_path, footprint_path, params):
             min_size=10,
             max_size=100000
         )
+        print(f"    [Worker x={x}, y={y}] SAM generate finished in {time.time() - t_gen_start:.2f}s.", flush=True)
         segments_buf = sam_geo.objects.astype(np.int32)
         
         zero_mask_buf = (segments_buf == 0) & valid_mask
@@ -515,9 +525,10 @@ def sam_worker(tile_info, ras_path, footprint_path, params):
         segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
         segments[~valid_mask_crop] = 0
         
+        print(f"    [Worker x={x}, y={y}] Tile completed successfully.", flush=True)
         return x, y, segments, valid_mask_crop
     except Exception as e:
-        print(f"Error in worker process for tile (x={tile_info[0]}, y={tile_info[1]}): {e}")
+        print(f"Error in worker process for tile (x={tile_info[0]}, y={tile_info[1]}): {e}", flush=True)
         return tile_info[0], tile_info[1], None, None
 
 
@@ -690,7 +701,8 @@ class ProcessingPipeline:
             self.stage1_params.setdefault('sam_checkpoint', str(self.aux_dir / 'SAM_models' / 'sam_vit_b_01ec64.pth'))
             self.stage1_params.setdefault('sam_model_type', 'vit_b')
             self.stage1_params.setdefault('sam_device', 'cuda' if (HAS_TORCH and torch.cuda.is_available()) else 'cpu')
-            self.stage1_params.setdefault('points_per_side', 64)
+            self.stage1_params.setdefault('points_per_side', 16)
+            self.stage1_params.setdefault('crop_n_layers', 0)
         elif method_name == 'python_slic':
             self.stage1_params.setdefault('tile_size', 2048)
             self.stage1_params.setdefault('buffer', 64)
@@ -2092,7 +2104,8 @@ def get_stage1_params_sam(param_dict):
             new_params.setdefault('sam_checkpoint', str(aux_dir / 'SAM_models' / 'sam_vit_b_01ec64.pth'))
             new_params.setdefault('sam_model_type', 'vit_b')
             new_params.setdefault('sam_device', 'cuda' if (HAS_TORCH and torch.cuda.is_available()) else 'cpu')
-            new_params.setdefault('points_per_side', 64)
+            new_params.setdefault('points_per_side', 16)
+            new_params.setdefault('crop_n_layers', 0)
         elif method == 'python_slic':
             new_params.setdefault('tile_size', 2048)
             new_params.setdefault('buffer', 64)
