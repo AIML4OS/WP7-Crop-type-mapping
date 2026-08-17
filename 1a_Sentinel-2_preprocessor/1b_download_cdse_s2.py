@@ -241,7 +241,7 @@ class Sentinel2FinderCDSE:
         env = geom.GetEnvelope() # minX, maxX, minY, maxY
         wkt_poly = f"POLYGON(({env[0]} {env[2]}, {env[1]} {env[2]}, {env[1]} {env[3]}, {env[0]} {env[3]}, {env[0]} {env[2]}))"
 
-        odata_url = (
+        next_url = (
             f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
             f"$filter=Collection/Name eq 'SENTINEL-2' and "
             f"Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'productType' and att/OData.CSC.StringAttribute/Value eq 'S2MSI2A') and "
@@ -250,28 +250,31 @@ class Sentinel2FinderCDSE:
             f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt_poly}')&$top=1000&$orderby=ContentDate/Start asc"
         )
 
+        products = []
         try:
-            resp = requests.get(odata_url, timeout=45)
-            resp.raise_for_status()
-            data = resp.json()
-            products = []
-            for item in data.get('value', []):
-                name = item['Name']
-                tile_match = re.search(r'_T([0-9]{2}[A-Z]{3})_', name)
-                tile_name = tile_match.group(1) if tile_match else "UNKNOWN"
+            while next_url:
+                resp = requests.get(next_url, timeout=45)
+                resp.raise_for_status()
+                data = resp.json()
+                items = data.get('value', [])
+                for item in items:
+                    name = item['Name']
+                    tile_match = re.search(r'_T([0-9]{2}[A-Z]{3})_', name)
+                    tile_name = tile_match.group(1) if tile_match else "UNKNOWN"
 
-                products.append({
-                    'id': item['Id'],
-                    'title': name,
-                    'size': item.get('ContentLength', 0),
-                    'tile': tile_name,
-                    'start_date': item.get('ContentDate', {}).get('Start', ''),
-                    'download_url': f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products({item['Id']})/$value"
-                })
+                    products.append({
+                        'id': item['Id'],
+                        'title': name,
+                        'size': item.get('ContentLength', 0),
+                        'tile': tile_name,
+                        'start_date': item.get('ContentDate', {}).get('Start', ''),
+                        'download_url': f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products({item['Id']})/$value"
+                    })
+                next_url = data.get('@odata.nextLink')
             return products
         except Exception as e:
             logging.error(f"Error querying CDSE: {e}")
-            return []
+            return products
 
 
 def download_single_product(product: Dict, output_dir: Path, username: str, password: str) -> Optional[Path]:
@@ -304,12 +307,25 @@ def download_single_product(product: Dict, output_dir: Path, username: str, pass
 
         resp.raise_for_status()
 
+        total_size = int(resp.headers.get('content-length', product.get('size', 0)))
+        downloaded = 0
+        chunk_size = 1024 * 1024  # 1MB chunk
+
         with open(str(zip_path), 'wb') as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+            for chunk in resp.iter_content(chunk_size=chunk_size):
                 if chunk:
                     f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        pct = (downloaded / total_size) * 100
+                        mb_done = downloaded / (1024 * 1024)
+                        mb_tot = total_size / (1024 * 1024)
+                        sys.stdout.write(f"\r    Downloading: {mb_done:.1f}/{mb_tot:.1f} MB ({pct:.1f}%)    ")
+                        sys.stdout.flush()
+        print("")
         return zip_path
     except Exception as e:
+        print("")
         logging.error(f"Download failed for {product['title']}: {e}")
         if zip_path.exists():
             try: zip_path.unlink()
@@ -390,13 +406,16 @@ def process_orbit_cdse_s2(
     products = finder.search_by_geometry(orbit_geom, start_date, end_date, cloud_cover)
     logging.info(f"Discovered {len(products)} Sentinel-2 products on CDSE intersecting {track_name}.")
 
-    for prod in products:
+    total_prods = len(products)
+    for idx, prod in enumerate(products, start=1):
         tile_upper = prod['tile'].upper()
         dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / prod['title']
 
         check_b02 = dest_prod_tif_dir / f"{prod['title']}_B02_20m.tif"
         if check_b02.exists() and check_b02.stat().st_size > 1024:
             continue
+
+        logging.info(f"[{idx}/{total_prods}] Downloading & Converting: {prod['title']} (Tile: {tile_upper}, Size: {prod['size'] / (1024*1024):.1f} MB)")
 
         tile_raw_dir = dest_track_s2 / tile_upper
         tile_raw_dir.mkdir(parents=True, exist_ok=True)
@@ -407,6 +426,7 @@ def process_orbit_cdse_s2(
             if not zip_file or not zip_file.exists():
                 continue
             try:
+                logging.info(f"    Extracting ZIP archive for {prod['title']}...")
                 with ZipFile(str(zip_file), 'r') as z:
                     z.extractall(str(tile_raw_dir))
                 try: zip_file.unlink()
@@ -417,6 +437,7 @@ def process_orbit_cdse_s2(
                 continue
 
         if unzipped_safe.exists():
+            logging.info(f"    Converting 20m bands to GeoTIFF...")
             convert_safe_to_geotiff(unzipped_safe, dest_prod_tif_dir)
             try: shutil.rmtree(str(unzipped_safe))
             except: pass
