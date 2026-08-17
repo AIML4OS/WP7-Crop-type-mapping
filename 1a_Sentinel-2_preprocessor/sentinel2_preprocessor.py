@@ -188,6 +188,8 @@ def main():
     parser.add_argument('-m', '--mode', choices=['all', 'download', 'process', 'download_only', 'process_only'], default='all', help="Execution mode")
     parser.add_argument('--cloud_cover', type=float, default=80.0, help="Maximum cloud cover (0-100, default: 80)")
     parser.add_argument('--doys', nargs='+', type=int, default=time_series.DEFAULT_DOYS, help="List of target DOY integers")
+    parser.add_argument('--threads', type=int, default=4, help="Worker threads (default: 4)")
+    parser.add_argument('--repo_path', type=str, default=None, help="Override CREODIAS repository path")
     parser.add_argument('--username', default=download_cdse.CDSE_USERNAME, help="CDSE Username")
     parser.add_argument('--password', default=download_cdse.CDSE_PASSWORD, help="CDSE Password")
 
