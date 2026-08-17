@@ -1,0 +1,15 @@
+{
+  "cdse": {
+    "username": "your_email@example.com",
+    "password": "your_password_here"
+  },
+  "paths": {
+    "working_dir": "D:/AIML_CropMapper_Cloud/workingDir",
+    "aux_dir": "D:/AIML_CropMapper_Cloud/auxiliary_files",
+    "snap_gpt_exe": "D:/Program Files/esa-snap/bin/gpt.exe",
+    "snap_auxdata_path": "C:/Users/Administrator/.snap/auxdata",
+    "s1_repo_path": "Y:/Sentinel-1/SAR/IW_GRDH_1S"
+  },
+  "polarisations": ["VH", "VV"],
+  "threads": 4
+}

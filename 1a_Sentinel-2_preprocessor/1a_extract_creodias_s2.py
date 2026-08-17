@@ -28,11 +28,32 @@ from typing import List, Dict, Optional, Tuple
 
 from osgeo import gdal, ogr, osr
 
-# ================= CONFIGURATION =================
 BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir"))
 AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxiliary_files"))
 SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
 S2_REPO_PATH = Path(os.environ.get("S2_REPO_PATH", r"Y:\Sentinel-2\MSI\L2A"))
+
+# Auto-load from JSON configuration files
+try:
+    _root_dir = Path(__file__).resolve().parent.parent
+    _cfg_paths = [
+        Path(__file__).resolve().parent / "config_s2.json",
+        _root_dir / "config.json"
+    ]
+    for _cp in _cfg_paths:
+        if _cp.exists():
+            with open(_cp, 'r', encoding='utf-8') as _f:
+                _data = json.load(_f)
+                if "paths" in _data:
+                    if "working_dir" in _data["paths"]:
+                        BASE_DIR = Path(_data["paths"]["working_dir"])
+                    if "aux_dir" in _data["paths"]:
+                        AUX_DIR = Path(_data["paths"]["aux_dir"])
+                        SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
+                    if "s2_repo_path" in _data["paths"]:
+                        S2_REPO_PATH = Path(_data["paths"]["s2_repo_path"])
+except Exception:
+    pass
 
 S2_BANDS_20M = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B8A', 'B11', 'B12', 'SCL']
 

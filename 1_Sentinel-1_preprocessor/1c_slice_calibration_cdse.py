@@ -19,16 +19,35 @@ import os
 # python 1c_slice_calibration_cdse.py -s 2024-10-15 -e 2024-11-30 -c FR
 
 GPT_EXE = os.environ.get("SNAP_GPT_EXE", r"D:/Program Files/esa-snap/bin/gpt.exe")
-
-# Path to SNAP AuxData
 AUXDATA_PATH = os.environ.get("SNAP_AUXDATA_PATH", r"C:/Users/Administrator/.snap/auxdata")
-
-# Directory where processing results (calibrated/sliced) will be saved
 WORKING_DIR = os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir")
 
 # CDSE Credentials
 CDSE_USERNAME = os.environ.get("CDSE_USERNAME")
 CDSE_PASSWORD = os.environ.get("CDSE_PASSWORD")
+
+# Auto-load from JSON configuration files
+try:
+    _root_dir = pathlib.Path(__file__).resolve().parent.parent
+    _cfg_paths = [
+        pathlib.Path(__file__).resolve().parent / "config_s1.json",
+        _root_dir / "config_cdse.json",
+        _root_dir / "config.json"
+    ]
+    for _cp in _cfg_paths:
+        if _cp.exists():
+            with open(_cp, 'r', encoding='utf-8') as _f:
+                _data = json.load(_f)
+                if not CDSE_USERNAME:
+                    CDSE_USERNAME = _data.get("cdse", {}).get("username") or _data.get("username")
+                if not CDSE_PASSWORD:
+                    CDSE_PASSWORD = _data.get("cdse", {}).get("password") or _data.get("password")
+                if "paths" in _data:
+                    GPT_EXE = _data["paths"].get("snap_gpt_exe", GPT_EXE)
+                    AUXDATA_PATH = _data["paths"].get("snap_auxdata_path", AUXDATA_PATH)
+                    WORKING_DIR = _data["paths"].get("working_dir", WORKING_DIR)
+except Exception:
+    pass
 
 # ================= XML TEMPLATES =================
 

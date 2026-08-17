@@ -1,0 +1,15 @@
+{
+  "cdse": {
+    "username": "your_email@example.com",
+    "password": "your_password_here"
+  },
+  "paths": {
+    "working_dir": "D:/AIML_CropMapper_Cloud/workingDir",
+    "aux_dir": "D:/AIML_CropMapper_Cloud/auxiliary_files",
+    "s2_repo_path": "Y:/Sentinel-2/MSI/L2A"
+  },
+  "spectral_bands": ["B02", "B03", "B04", "B05", "B06", "B07", "B8A", "B11", "B12"],
+  "default_doys": [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287],
+  "max_cloud_cover": 80.0,
+  "threads": 4
+}

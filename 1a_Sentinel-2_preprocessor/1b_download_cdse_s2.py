@@ -37,8 +37,33 @@ BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/wo
 AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxiliary_files"))
 SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
 
-CDSE_USERNAME = os.environ.get("CDSE_USERNAME", "przemyslaw.slesinski@uwm.edu.pl")
-CDSE_PASSWORD = os.environ.get("CDSE_PASSWORD", "382opix3lvi3wDCP2!")
+CDSE_USERNAME = os.environ.get("CDSE_USERNAME", "")
+CDSE_PASSWORD = os.environ.get("CDSE_PASSWORD", "")
+
+# Auto-load from JSON configuration files
+try:
+    _root_dir = Path(__file__).resolve().parent.parent
+    _cfg_paths = [
+        Path(__file__).resolve().parent / "config_s2.json",
+        _root_dir / "config_cdse.json",
+        _root_dir / "config.json"
+    ]
+    for _cp in _cfg_paths:
+        if _cp.exists():
+            with open(_cp, 'r', encoding='utf-8') as _f:
+                _data = json.load(_f)
+                if not CDSE_USERNAME:
+                    CDSE_USERNAME = _data.get("cdse", {}).get("username") or _data.get("username", "")
+                if not CDSE_PASSWORD:
+                    CDSE_PASSWORD = _data.get("cdse", {}).get("password") or _data.get("password", "")
+                if "paths" in _data:
+                    if "working_dir" in _data["paths"]:
+                        BASE_DIR = Path(_data["paths"]["working_dir"])
+                    if "aux_dir" in _data["paths"]:
+                        AUX_DIR = Path(_data["paths"]["aux_dir"])
+                        SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
+except Exception:
+    pass
 
 S2_BANDS_20M = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B8A', 'B11', 'B12', 'SCL']
 
@@ -259,21 +284,30 @@ def download_single_product(product: Dict, output_dir: Path, username: str, pass
     token = CDSETokenManager.get_token(username, password)
     headers = {'Authorization': f'Bearer {token}'}
 
-    session = requests.Session()
-    session.headers.update(headers)
-
+    download_url = product['download_url']
     try:
-        with session.get(product['download_url'], stream=True, timeout=60) as resp:
-            if resp.status_code == 401:
-                token = CDSETokenManager.get_token(username, password)
-                session.headers.update({'Authorization': f'Bearer {token}'})
-                resp = session.get(product['download_url'], stream=True, timeout=60)
+        # Step 1: Request with allow_redirects=False to catch the redirect and preserve Authorization header
+        resp = requests.get(download_url, headers=headers, allow_redirects=False, timeout=30)
+        
+        if resp.status_code == 401:
+            global _cached_token, _token_fetch_time
+            _cached_token = None
+            _token_fetch_time = 0
+            token = CDSETokenManager.get_token(username, password)
+            headers = {'Authorization': f'Bearer {token}'}
+            resp = requests.get(download_url, headers=headers, allow_redirects=False, timeout=30)
 
-            resp.raise_for_status()
-            with open(str(zip_path), 'wb') as f:
-                for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
+        if resp.status_code in [301, 302, 303, 307, 308]:
+            redirect_url = resp.headers.get("Location")
+            if redirect_url:
+                resp = requests.get(redirect_url, headers=headers, stream=True, timeout=60)
+
+        resp.raise_for_status()
+
+        with open(str(zip_path), 'wb') as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
         return zip_path
     except Exception as e:
         logging.error(f"Download failed for {product['title']}: {e}")

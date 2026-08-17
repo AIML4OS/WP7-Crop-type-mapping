@@ -6,6 +6,7 @@ __pycache__/
 *.tif
 *.csv
 *.json
+!*.example.json
 .idea/
 2_classifier/*.pth
 scratch/
