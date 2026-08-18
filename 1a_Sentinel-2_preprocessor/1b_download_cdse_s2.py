@@ -362,7 +362,6 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
         if not band_src.exists():
             band_src = Path(b02_str.replace('B02', band))
         if not band_src.exists():
-            # Try globbing for this band
             candidates = list(b02_file.parent.glob(f"*_{band}_20m.jp2"))
             if not candidates:
                 candidates = list(b02_file.parent.glob(f"*{band}*.jp2"))
@@ -375,16 +374,26 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
         if band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024:
             continue
 
+        band_dst_tmp = output_dest_dir / f"{stem_name}_{band}_20m.tmp.tif"
         try:
             ds = gdal.Open(str(band_src))
             if ds is not None:
-                options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER'])
-                gdal.Translate(str(band_dst_tif), ds, options=options)
+                options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
+                gdal.Translate(str(band_dst_tmp), ds, options=options)
                 ds = None
+                if band_dst_tmp.exists() and band_dst_tmp.stat().st_size > 1024:
+                    if band_dst_tif.exists():
+                        band_dst_tif.unlink()
+                    band_dst_tmp.rename(band_dst_tif)
+                else:
+                    success = False
             else:
                 success = False
         except Exception as e:
             logging.error(f"Failed converting {band_src.name}: {e}")
+            if band_dst_tmp.exists():
+                try: band_dst_tmp.unlink()
+                except: pass
             success = False
     return success
 
@@ -397,34 +406,58 @@ def process_orbit_cdse_s2(
     username: str = CDSE_USERNAME,
     password: str = CDSE_PASSWORD,
     cloud_cover: float = 80.0,
-    max_workers: int = 4
+    max_workers: int = 8
 ):
     country_code = country_code.upper()
     track_name = f"{country_code}/orbit_{orbit_num}"
     logging.info(f"\n========================================================")
-    logging.info(f" CDSE S2 DOWNLOAD & CONVERSION FOR TRACK: {track_name}")
+    logging.info(f" CDSE S2 DOWNLOAD & CONVERSION FOR TRACK: {track_name} (Workers: {max_workers})")
     logging.info(f"========================================================")
 
     dest_track_s2 = BASE_DIR / track_name / "S2"
     dest_track_s2.mkdir(parents=True, exist_ok=True)
 
-    # 1. Check for any existing unzipped SAFE folders already downloaded on disk
+    # 1. Parallel conversion of any existing unzipped SAFE folders already on disk
     existing_safes = list(dest_track_s2.glob("*/*.SAFE"))
     if existing_safes:
-        logging.info(f"Found {len(existing_safes)} existing downloaded SAFE products in {track_name}. Converting to GeoTIFF...")
-        for safe_idx, safe_path in enumerate(existing_safes, start=1):
+        total_safes = len(existing_safes)
+        logging.info(f"Found {total_safes} existing downloaded SAFE products in {track_name}. Starting parallel GeoTIFF conversion ({max_workers} threads)...")
+        
+        converted_count = 0
+        lock = threading.Lock()
+
+        def _worker_convert_existing(safe_path: Path):
+            nonlocal converted_count
             tile_name = safe_path.parent.name.upper()
             stem_name = safe_path.stem
             dest_prod_tif_dir = dest_track_s2 / f"{tile_name}_tif" / stem_name
-            check_b02 = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
             
-            if not (check_b02.exists() and check_b02.stat().st_size > 1024):
-                logging.info(f"  [{safe_idx}/{len(existing_safes)}] Converting existing: {safe_path.name} -> GeoTIFF")
-                convert_safe_to_geotiff(safe_path, dest_prod_tif_dir)
-            try:
-                shutil.rmtree(str(safe_path))
-            except Exception:
-                pass
+            all_ready = True
+            for band in S2_BANDS_20M:
+                check_band = dest_prod_tif_dir / f"{stem_name}_{band}_20m.tif"
+                if not (check_band.exists() and check_band.stat().st_size > 1024):
+                    all_ready = False
+                    break
+            
+            if not all_ready:
+                ok = convert_safe_to_geotiff(safe_path, dest_prod_tif_dir)
+                if ok:
+                    try: shutil.rmtree(str(safe_path))
+                    except: pass
+            else:
+                try: shutil.rmtree(str(safe_path))
+                except: pass
+
+            with lock:
+                converted_count += 1
+                if converted_count % 10 == 0 or converted_count == total_safes:
+                    pct = (converted_count / total_safes) * 100.0
+                    logging.info(f"  [CONVERSION PROGRESS] {converted_count}/{total_safes} SAFE products converted ({pct:.1f}%)")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            list(executor.map(_worker_convert_existing, existing_safes))
+
+        logging.info(f"Completed parallel conversion of existing SAFE folders for {track_name}!")
 
     # 2. Search CDSE API for any remaining products
     orbit_geom = get_s1_orbit_extent_geometry(country_code, orbit_num)
@@ -436,42 +469,64 @@ def process_orbit_cdse_s2(
     products = finder.search_by_geometry(orbit_geom, start_date, end_date, cloud_cover)
     logging.info(f"Discovered {len(products)} Sentinel-2 products on CDSE intersecting {track_name}.")
 
-    total_prods = len(products)
-    for idx, prod in enumerate(products, start=1):
+    # Filter out products already converted
+    prods_to_process = []
+    for prod in products:
+        tile_upper = prod['tile'].upper()
+        stem_name = prod['title'][:-5] if prod['title'].endswith('.SAFE') else prod['title']
+        dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / stem_name
+        check_b02 = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
+        if not (check_b02.exists() and check_b02.stat().st_size > 1024):
+            prods_to_process.append(prod)
+
+    total_prods = len(prods_to_process)
+    logging.info(f"Remaining CDSE products to download & convert: {total_prods} (out of {len(products)} total)")
+
+    if total_prods == 0:
+        logging.info(f"All Sentinel-2 products for {track_name} are already converted to GeoTIFF!")
+        return
+
+    proc_count = 0
+    prod_lock = threading.Lock()
+
+    def _worker_process_product(prod: dict):
+        nonlocal proc_count
         tile_upper = prod['tile'].upper()
         stem_name = prod['title'][:-5] if prod['title'].endswith('.SAFE') else prod['title']
         safe_name = prod['title'] if prod['title'].endswith('.SAFE') else f"{prod['title']}.SAFE"
 
         dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / stem_name
-        check_b02 = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
-        if check_b02.exists() and check_b02.stat().st_size > 1024:
-            continue
-
         tile_raw_dir = dest_track_s2 / tile_upper
         tile_raw_dir.mkdir(parents=True, exist_ok=True)
         unzipped_safe = tile_raw_dir / safe_name
 
         if not unzipped_safe.exists():
-            logging.info(f"[{idx}/{total_prods}] Downloading & Converting: {prod['title']} (Tile: {tile_upper}, Size: {prod['size'] / (1024*1024):.1f} MB)")
             zip_file = download_single_product(prod, tile_raw_dir, username, password)
-            if not zip_file or not zip_file.exists():
-                continue
-            try:
-                logging.info(f"    Extracting ZIP archive for {prod['title']}...")
-                with ZipFile(str(zip_file), 'r') as z:
-                    z.extractall(str(tile_raw_dir))
-                try: zip_file.unlink()
-                except: pass
-            except BadZipfile:
-                try: zip_file.unlink()
-                except: pass
-                continue
+            if zip_file and zip_file.exists():
+                try:
+                    with ZipFile(str(zip_file), 'r') as z:
+                        z.extractall(str(tile_raw_dir))
+                    try: zip_file.unlink()
+                    except: pass
+                except BadZipfile:
+                    try: zip_file.unlink()
+                    except: pass
 
         if unzipped_safe.exists():
-            logging.info(f"    Converting 20m bands to GeoTIFF...")
             convert_safe_to_geotiff(unzipped_safe, dest_prod_tif_dir)
             try: shutil.rmtree(str(unzipped_safe))
             except: pass
+
+        with prod_lock:
+            proc_count += 1
+            if proc_count % 5 == 0 or proc_count == total_prods:
+                pct = (proc_count / total_prods) * 100.0
+                logging.info(f"  [DOWNLOAD & CONVERSION] {proc_count}/{total_prods} products completed ({pct:.1f}%)")
+
+    # Download and process in parallel (max 4 concurrent downloads to avoid API throttling)
+    dl_workers = min(max_workers, 6)
+    with ThreadPoolExecutor(max_workers=dl_workers) as executor:
+        list(executor.map(_worker_process_product, prods_to_process))
 
     logging.info(f"SUCCESS: CDSE S2 download & conversion completed for track {track_name}!")
 
