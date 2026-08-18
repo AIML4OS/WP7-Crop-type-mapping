@@ -155,8 +155,14 @@ The `tools/` directory provides unified, standardized CLI utilities for data pre
    ```
 
 2. **Step 2: Build Agricultural Cropland Mask (`tools/2_build_agricultural_mask.py`)**:
-   Creates a binary cropland mask (HRL / Corine Land Cover) to mask out non-agricultural areas:
+   Creates a binary cropland mask from either **official LPIS cadastral vectors** (highest precision) or **Copernicus HRL/CLMS raster tiles**:
    ```powershell
+   # Option A: From LPIS Cadastral Parcel Vectors (Recommended):
+   python tools/2_build_agricultural_mask.py -c NL --lpis path/to/brp.gpkg
+   python tools/2_build_agricultural_mask.py -c PL --lpis path/to/arimr.shp
+   python tools/2_build_agricultural_mask.py -c PT --lpis path/to/isip.shp
+
+   # Option B: From Copernicus HRL / CLMS Raster Tiles:
    python tools/2_build_agricultural_mask.py -c NL
    python tools/2_build_agricultural_mask.py -c PL
    ```

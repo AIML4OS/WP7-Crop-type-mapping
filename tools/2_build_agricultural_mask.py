@@ -2,13 +2,21 @@
 """
 2_build_agricultural_mask.py
 ============================
-Unzips, mosaics, clips, and creates binary agricultural cropland masks
-from Copernicus HRL Crop Type / CLMS data.
+Universal Agricultural Mask Generator for AIML CropMapper.
+
+Supports 2 modes of building binary cropland masks (1 = agricultural, 0 = non-agricultural):
+  Mode A (LPIS Vectors): Rasterizes official cadastral parcel boundaries (.shp, .gpkg, .geojson)
+  Mode B (Copernicus HRL): Unzips and mosaics Copernicus CLMS High Resolution Layer crop tiles
 
 Usage examples:
+  # Mode A (From LPIS Vector Data - Recommended for highest accuracy):
+  python tools/2_build_agricultural_mask.py -c NL --lpis path/to/brp.gpkg
+  python tools/2_build_agricultural_mask.py -c PL --lpis path/to/arimr.shp
+  python tools/2_build_agricultural_mask.py -c PT --lpis path/to/isip.shp --ref_raster workingDir/PT/orbit_161/processed_raster/PT_orbit_161_VH_VV.tif
+
+  # Mode B (From Copernicus HRL / CLMS Raster Tiles):
   python tools/2_build_agricultural_mask.py -c NL
-  python tools/2_build_agricultural_mask.py -c PL
-  python tools/2_build_agricultural_mask.py -c PT --target_crs EPSG:3857
+  python tools/2_build_agricultural_mask.py -c PL --target_crs EPSG:3857
 """
 
 import os
@@ -18,13 +26,15 @@ import argparse
 import shutil
 import tempfile
 from pathlib import Path
-from osgeo import gdal, ogr
+from typing import Optional
+from osgeo import gdal, ogr, osr
 
-SCRIPT_DIR = Path(__file__).parent
+SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 AUX_DIR = PROJECT_ROOT / 'auxiliary_files'
 AGRIMASKS_DIR = AUX_DIR / 'raster_files' / 'AgriMasks'
 NUTS_DIR = AUX_DIR / 'shapefiles_nuts'
+WORKING_DIR = PROJECT_ROOT / 'workingDir'
 
 CLASS_3_INCLUDE = {
     1110, 1120, 1150, 1430, 1130, 1210, 1220, 1310, 1320, 1410, 1420, 1440, 3100
@@ -33,6 +43,116 @@ CLASS_3_INCLUDE = {
 CLASS_ALL_EXCLUDE = {
     0, 2000, 3000, 5000, 65535
 }
+
+
+def find_nuts_boundary(country: str) -> Optional[Path]:
+    country_nuts = NUTS_DIR / country.upper()
+    if country_nuts.exists():
+        for pat in [f'NUTS0_{country.upper()}.shp', f'NUTS2_{country.upper()}.shp', '*.shp']:
+            matches = list(country_nuts.glob(pat))
+            if matches:
+                return matches[0]
+    return None
+
+
+def find_reference_raster(country: str) -> Optional[Path]:
+    """Finds any processed S1 or S2 raster in workingDir to inherit exact pixel grid & CRS."""
+    country_working = WORKING_DIR / country.upper()
+    if country_working.exists():
+        rasters = list(country_working.glob("**/processed_raster/*.tif"))
+        if rasters:
+            return rasters[0]
+    return None
+
+
+def build_mask_from_lpis(
+    country: str,
+    lpis_path: str,
+    ref_raster: Optional[str] = None,
+    target_crs: str = "EPSG:3857",
+    resolution: float = 10.0,
+    clip_shp: Optional[str] = None
+):
+    country = country.upper()
+    lpis_file = Path(lpis_path)
+    if not lpis_file.exists():
+        print(f"  [ERROR] LPIS vector file not found: {lpis_file}")
+        sys.exit(1)
+
+    country_mask_dir = AGRIMASKS_DIR / country
+    country_mask_dir.mkdir(parents=True, exist_ok=True)
+    epsg_clean = target_crs.replace(':', '').lower()
+    out_mask_path = country_mask_dir / f"{country}_agri_mask_lpis_{epsg_clean}.tif"
+
+    print(f"\n=======================================================")
+    print(f" Rasterizing LPIS Parcels to Binary Mask for: {country}")
+    print(f" Source LPIS: {lpis_file}")
+    print(f"=======================================================")
+
+    # Determine reference geometry (CRS, Extent, Resolution)
+    ref_proj = None
+    ref_bounds = None
+    res_x, res_y = resolution, resolution
+
+    resolved_ref = Path(ref_raster) if ref_raster else find_reference_raster(country)
+    if resolved_ref and resolved_ref.exists():
+        print(f"  Inheriting exact spatial grid from reference raster: {resolved_ref.name}")
+        ds_ref = gdal.Open(str(resolved_ref))
+        if ds_ref:
+            ref_proj = ds_ref.GetProjection()
+            gt = ds_ref.GetGeoTransform()
+            res_x, res_y = abs(gt[1]), abs(gt[5])
+            min_x = gt[0]
+            max_y = gt[3]
+            max_x = min_x + gt[1] * ds_ref.RasterXSize
+            min_y = max_y + gt[5] * ds_ref.RasterYSize
+            ref_bounds = [min_x, min_y, max_x, max_y]
+            ds_ref = None
+
+    if not ref_bounds:
+        cutline = Path(clip_shp) if clip_shp else find_nuts_boundary(country)
+        if cutline and cutline.exists():
+            print(f"  Calculating bounds from NUTS boundary: {cutline.name}")
+            ds_shp = ogr.Open(str(cutline))
+            layer = ds_shp.GetLayer()
+            ext = layer.GetExtent()  # minX, maxX, minY, maxY
+            ref_bounds = [ext[0], ext[2], ext[1], ext[3]]
+            ds_shp = None
+
+    rasterize_kwargs = {
+        'format': 'GTiff',
+        'burnValues': [1],
+        'initValues': [0],
+        'outputType': gdal.GDT_Byte,
+        'creationOptions': ['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'BLOCKXSIZE=512', 'BLOCKYSIZE=512'],
+        'xRes': res_x,
+        'yRes': res_y
+    }
+
+    if ref_proj:
+        rasterize_kwargs['outputSRS'] = ref_proj
+    else:
+        rasterize_kwargs['outputSRS'] = target_crs
+
+    if ref_bounds:
+        rasterize_kwargs['outputBounds'] = ref_bounds
+
+    print("  Executing high-performance GDAL Rasterize...")
+    opts = gdal.RasterizeOptions(**rasterize_kwargs)
+    res_ds = gdal.Rasterize(str(out_mask_path), str(lpis_file), options=opts)
+    if res_ds is not None:
+        res_ds.FlushCache()
+        res_ds = None
+        print(f"  [OK] Successfully created LPIS agricultural mask: {out_mask_path}")
+
+        # Copy to default auto-discovery locations
+        auto_mask = AUX_DIR / "raster_files" / f"{country}_agri_mask.tif"
+        auto_mask.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(str(out_mask_path), str(auto_mask))
+            print(f"  [OK] Copied to standard pipeline location: {auto_mask}")
+        except Exception:
+            pass
 
 
 def find_or_extract_tifs(country_dir: Path, temp_dir: Path) -> list:
@@ -139,21 +259,11 @@ def mosaic_and_reproject(tif_files: list, output_path: str, target_crs: str, cli
         print(f"  [OK] Saved agricultural mask: {output_path}")
 
 
-def find_nuts_boundary(country: str) -> Path | None:
-    country_nuts = NUTS_DIR / country.upper()
-    if country_nuts.exists():
-        for pat in [f'NUTS0_{country.upper()}.shp', f'NUTS2_{country.upper()}.shp', '*.shp']:
-            matches = list(country_nuts.glob(pat))
-            if matches:
-                return matches[0]
-    return None
-
-
-def process_country_mask(country: str, target_crs: str = 'EPSG:3857', clip_shp: str = None, no_clip: bool = False):
+def process_hrl_mask(country: str, target_crs: str = 'EPSG:3857', clip_shp: str = None, no_clip: bool = False):
     country = country.upper()
     country_dir = AGRIMASKS_DIR / country
     print(f"\n=======================================================")
-    print(f" Building Agricultural Mask for country: {country}")
+    print(f" Building Agricultural Mask from HRL CLMS for: {country}")
     print(f"=======================================================")
 
     temp_dir = Path(tempfile.mkdtemp(prefix=f"agrimask_{country}_"))
@@ -162,7 +272,7 @@ def process_country_mask(country: str, target_crs: str = 'EPSG:3857', clip_shp: 
         tif_files = find_or_extract_tifs(country_dir, temp_dir)
         if not tif_files:
             print(f"  No raw HRL/CLMS data found in {country_dir / 'Results'}.")
-            print(f"  Place downloaded HRL ZIP or TIF files in {country_dir / 'Results'} and re-run.")
+            print(f"  Place downloaded HRL ZIP or TIF files in {country_dir / 'Results'} and re-run, or use --lpis <path>.")
             return
 
         print(f"  Found {len(tif_files)} source raster tiles.")
@@ -201,7 +311,6 @@ def process_country_mask(country: str, target_crs: str = 'EPSG:3857', clip_shp: 
         mosaic_and_reproject(reclass_a_files, str(out_a), target_crs, cutline)
         mosaic_and_reproject(reclass_b_files, str(out_b), target_crs, cutline)
 
-        # Also place in auxiliary_files/raster_files/{country}_agri_mask.tif for auto-discovery
         auto_mask = AUX_DIR / "raster_files" / f"{country}_agri_mask.tif"
         auto_mask.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -217,14 +326,28 @@ def process_country_mask(country: str, target_crs: str = 'EPSG:3857', clip_shp: 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build binary agricultural mask from Copernicus HRL / CLMS.")
+    parser = argparse.ArgumentParser(description="Build binary agricultural mask from LPIS Vector Data or Copernicus HRL CLMS.")
     parser.add_argument('-c', '--country', required=True, help="Country code, e.g. NL, PL, PT, FR, IE")
+    parser.add_argument('--lpis', default=None, help="Path to LPIS cadastral parcel vector file (.shp, .gpkg, .geojson) for direct vector mask generation")
+    parser.add_argument('--ref_raster', default=None, help="Reference GeoTIFF raster to inherit exact grid, resolution, and CRS")
     parser.add_argument('--target_crs', default='EPSG:3857', help="Target CRS (default: EPSG:3857)")
+    parser.add_argument('--res', type=float, default=10.0, help="Pixel resolution in meters (default: 10.0)")
     parser.add_argument('--clip_shp', default=None, help="Custom shapefile path for boundary clipping")
     parser.add_argument('--no_clip', action='store_true', help="Do not clip to country boundaries")
 
     args = parser.parse_args()
-    process_country_mask(args.country, args.target_crs, args.clip_shp, args.no_clip)
+
+    if args.lpis:
+        build_mask_from_lpis(
+            country=args.country,
+            lpis_path=args.lpis,
+            ref_raster=args.ref_raster,
+            target_crs=args.target_crs,
+            resolution=args.res,
+            clip_shp=args.clip_shp
+        )
+    else:
+        process_hrl_mask(args.country, args.target_crs, args.clip_shp, args.no_clip)
 
 
 if __name__ == '__main__':
