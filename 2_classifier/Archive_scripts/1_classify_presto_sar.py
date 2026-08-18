@@ -7,10 +7,12 @@ import argparse
 from pathlib import Path
 import subprocess
 import sys
-# Add project root to sys.path to allow importing single_file_presto
-project_root = str(Path(__file__).resolve().parent.parent)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# Add classifier directory and project root to sys.path to allow importing single_file_presto
+classifier_dir = str(Path(__file__).resolve().parent.parent)
+project_root = str(Path(__file__).resolve().parent.parent.parent)
+for p in [classifier_dir, project_root]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 import shutil
 import shlex
 import geopandas as gpd
