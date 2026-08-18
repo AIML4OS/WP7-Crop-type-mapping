@@ -502,11 +502,12 @@ class ProcessingPipelineS1S2:
                 self.seg_tif = c
                 break
 
-        self.class_tif = self.class_dir / f"{self.file_prefix}_classified_s1s2.tif"
-        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence_s1s2.tif"
-        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_s1s2_masked.tif"
-        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_s1s2_masked.tif"
-        self.metrics_fp = self.out_dir / f"{self.file_prefix}_metrics_report.xlsx"
+        self.suffix = f"_mlpxgb_presto_{self.seg_mode}"
+        self.class_tif = self.class_dir / f"{self.file_prefix}_classified{self.suffix}.tif"
+        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence{self.suffix}.tif"
+        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked{self.suffix}.tif"
+        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked{self.suffix}.tif"
+        self.metrics_fp = self.out_dir / f"{self.file_prefix}_metrics{self.suffix}.xlsx"
 
         self.agri_mask = self._resolve_agri_mask()
 

@@ -1,23 +1,30 @@
 # How to run the script:
 # ---------------------
-# Country-Wide Merge (combines all processed orbits for a country e.g. NL, PL, PT)
+# Country-Wide Merge (combines all processed orbits for a country e.g. NL, PL, PT, AT, FR)
 #
-# 1. Standard ANN classification (suffix depends on segmentation mode):
-#    python 2_merge_classifications.py --track NL --suffix _lpis
-#    python 2_merge_classifications.py --track NL --suffix _slic
-#    python 2_merge_classifications.py --track NL --suffix _sam
+# 1. Multimodal S1 + S2 Presto + MLP/XGBoost Fusion Ensemble (Recommended):
+#    python 2_merge_classifications.py --track NL --suffix _mlpxgb_presto_slic
+#    python 2_merge_classifications.py --track NL --suffix _mlpxgb_presto_lpis
+#    python 2_merge_classifications.py --track NL --suffix _mlpxgb_presto_sam
+#    python 2_merge_classifications.py --track PL --suffix _mlpxgb_presto_slic
+#    python 2_merge_classifications.py --track PT --suffix _mlpxgb_presto_slic
 #
-# 2. NASA Harvest Presto classification:
-#    python 2_merge_classifications.py --track NL --suffix _presto_lpis
-#    python 2_merge_classifications.py --track NL --suffix _presto_slic
-#    python 2_merge_classifications.py --track NL --suffix _presto_sam
-#
-# 3. NASA Harvest Presto + SAR Hybrid classification:
+# 2. NASA Harvest Presto + SAR Hybrid classification:
 #    python 2_merge_classifications.py --track NL --suffix _presto_hybrid_lpis
 #    python 2_merge_classifications.py --track NL --suffix _presto_hybrid_slic
 #    python 2_merge_classifications.py --track NL --suffix _presto_hybrid_sam
 #
-# 4. Prithvi Foundation Model classification:
+# 3. Standard ANN classification (legacy):
+#    python 2_merge_classifications.py --track NL --suffix _lpis
+#    python 2_merge_classifications.py --track NL --suffix _slic
+#    python 2_merge_classifications.py --track NL --suffix _sam
+#
+# 4. NASA Harvest Presto SAR-only classification (legacy):
+#    python 2_merge_classifications.py --track NL --suffix _presto_lpis
+#    python 2_merge_classifications.py --track NL --suffix _presto_slic
+#    python 2_merge_classifications.py --track NL --suffix _presto_sam
+#
+# 5. Prithvi Foundation Model classification (legacy):
 #    python 2_merge_classifications.py --track NL --suffix _prithvi_lpis
 #    python 2_merge_classifications.py --track NL --suffix _prithvi_slic
 #    python 2_merge_classifications.py --track NL --suffix _prithvi_sam
@@ -25,6 +32,7 @@
 import argparse
 import os
 from pathlib import Path
+from typing import List, Tuple
 import numpy as np
 from osgeo import gdal
 import geopandas as gpd
@@ -42,46 +50,65 @@ def get_crop_aggregation(country, learn_shp_path):
 
 # Discover tracks logic
 
-def get_masked_filenames(track_prefix, suffix):
+def get_masked_filenames(track_prefix: str, suffix: str) -> List[Tuple[str, str]]:
+    """Returns candidate (classification_masked, confidence_masked) filename pairs."""
+    candidates = []
+
+    # 1. Direct standard patterns
+    candidates.append((f"{track_prefix}_classified_masked{suffix}.tif", f"{track_prefix}_confidence_masked{suffix}.tif"))
+    candidates.append((f"{track_prefix}_classified{suffix}_masked.tif", f"{track_prefix}_confidence{suffix}_masked.tif"))
+
+    # 2. Presto Hybrid specific
     if suffix.startswith('_presto_hybrid'):
         s_clean = suffix[14:]  # remove '_presto_hybrid'
-        return f"{track_prefix}_presto_hybrid_classified_masked{s_clean}.tif", f"{track_prefix}_presto_hybrid_confidence_masked{s_clean}.tif"
+        candidates.append((f"{track_prefix}_presto_hybrid_classified_masked{s_clean}.tif", f"{track_prefix}_presto_hybrid_confidence_masked{s_clean}.tif"))
+        candidates.append((f"{track_prefix}_presto_hybrid_classified{s_clean}_masked.tif", f"{track_prefix}_presto_hybrid_confidence{s_clean}_masked.tif"))
+
+    # 3. Presto SAR specific
     elif suffix.startswith('_presto'):
         s_clean = suffix[7:]  # remove '_presto'
-        return f"{track_prefix}_presto_classified_masked{s_clean}.tif", f"{track_prefix}_presto_confidence_masked{s_clean}.tif"
+        candidates.append((f"{track_prefix}_presto_classified_masked{s_clean}.tif", f"{track_prefix}_presto_confidence_masked{s_clean}.tif"))
+
+    # 4. Prithvi specific
     elif suffix.startswith('_prithvi'):
         s_clean = suffix[8:]  # remove '_prithvi'
-        return f"{track_prefix}_prithvi_classified_masked{s_clean}.tif", f"{track_prefix}_prithvi_confidence_masked{s_clean}.tif"
-    else:
-        return f"{track_prefix}_classified_masked{suffix}.tif", f"{track_prefix}_confidence_masked{suffix}.tif"
+        candidates.append((f"{track_prefix}_prithvi_classified_masked{s_clean}.tif", f"{track_prefix}_prithvi_confidence_masked{s_clean}.tif"))
+
+    # 5. MLPXGB / S1S2 specific
+    if 'mlpxgb' in suffix or 's1s2' in suffix:
+        candidates.append((f"{track_prefix}_classified_s1s2_masked.tif", f"{track_prefix}_confidence_s1s2_masked.tif"))
+        candidates.append((f"{track_prefix}_classified_masked_s1s2.tif", f"{track_prefix}_confidence_masked_s1s2.tif"))
+
+    return candidates
+
 
 def find_masked_files(base_dir: Path, tr: str, country: str, suffix: str = ""):
     """
-    Look for [{country}_{tr}_classified_masked{suffix}.tif,
-              {country}_{tr}_confidence_masked{suffix}.tif]
-    in either:
+    Look for classification and confidence masked rasters in either:
       - classification_results/classification/
       - classification_results/
     Returns (cls_fp, conf_fp) or (None, None).
     """
-    candidates = [
+    folders = [
         base_dir / tr / 'classification_results' / 'classification',
         base_dir / tr / 'classification_results'
     ]
-    cls_name, conf_name = get_masked_filenames(f"{country}_{tr}", suffix)
-    for folder in candidates:
-        cls_fp  = folder / cls_name
-        conf_fp = folder / conf_name
-        if cls_fp.exists() and conf_fp.exists():
-            return cls_fp, conf_fp
+    filename_pairs = get_masked_filenames(f"{country}_{tr}", suffix)
+    for folder in folders:
+        for cls_name, conf_name in filename_pairs:
+            cls_fp = folder / cls_name
+            conf_fp = folder / conf_name
+            if cls_fp.exists() and conf_fp.exists():
+                return cls_fp, conf_fp
     return None, None
+
 
 def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
     """
     Discovers track folders and their classification/confidence files.
     Supports:
       1. Direct specific orbit path: e.g. NL/orbit_161 or NL_orbit_161.
-      2. Country-based orbits: Prefix is a country code (e.g. PL, FR).
+      2. Country-based orbits: Prefix is a country code (e.g. PL, NL, FR, PT, AT).
          We scan base_dir/prefix/ for orbit_* folders.
       3. Legacy tracks: Prefix is a track prefix (e.g. P1, P2).
          We scan base_dir/ for folders starting with prefix.
@@ -94,7 +121,6 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
     normalized_prefix = prefix.replace('\\', '/')
     specific_path = base_dir / normalized_prefix
     if not specific_path.is_dir() and '_' in normalized_prefix:
-        # Try replacing the first underscore with a slash (e.g. NL_orbit_161 -> NL/orbit_161)
         alt_prefix = normalized_prefix.replace('_', '/', 1)
         alt_path = base_dir / alt_prefix
         if alt_path.is_dir():
@@ -108,17 +134,22 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
         sanitized = tr.replace('/', '_')
         
         track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
-        cls_name, conf_name = get_masked_filenames(track_prefix, suffix)
+        filename_pairs = get_masked_filenames(track_prefix, suffix)
         
         candidates = [
             specific_path / 'classification_results' / 'classification',
             specific_path / 'classification_results'
         ]
+        found = False
         for folder in candidates:
-            cls_fp  = folder / cls_name
-            conf_fp = folder / conf_name
-            if cls_fp.exists() and conf_fp.exists():
-                tracks.append((tr, country, cls_fp, conf_fp))
+            for cls_name, conf_name in filename_pairs:
+                cls_fp  = folder / cls_name
+                conf_fp = folder / conf_name
+                if cls_fp.exists() and conf_fp.exists():
+                    tracks.append((tr, country, cls_fp, conf_fp))
+                    found = True
+                    break
+            if found:
                 break
 
     # Case 1: Prefix is a country code (2 letters)
@@ -133,17 +164,22 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
                 sanitized = tr.replace('/', '_').replace('\\', '_')
                 
                 track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
-                cls_name, conf_name = get_masked_filenames(track_prefix, suffix)
+                filename_pairs = get_masked_filenames(track_prefix, suffix)
                 
                 candidates = [
                     sub / 'classification_results' / 'classification',
                     sub / 'classification_results'
                 ]
+                found = False
                 for folder in candidates:
-                    cls_fp  = folder / cls_name
-                    conf_fp = folder / conf_name
-                    if cls_fp.exists() and conf_fp.exists():
-                        tracks.append((tr, country, cls_fp, conf_fp))
+                    for cls_name, conf_name in filename_pairs:
+                        cls_fp  = folder / cls_name
+                        conf_fp = folder / conf_name
+                        if cls_fp.exists() and conf_fp.exists():
+                            tracks.append((tr, country, cls_fp, conf_fp))
+                            found = True
+                            break
+                    if found:
                         break
     
     # Case 2: Prefix is a legacy track prefix
@@ -163,17 +199,22 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
             
             sanitized = tr.replace('/', '_').replace('\\', '_')
             track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
-            cls_name, conf_name = get_masked_filenames(track_prefix, suffix)
+            filename_pairs = get_masked_filenames(track_prefix, suffix)
             
             candidates = [
                 base_dir / tr / 'classification_results' / 'classification',
                 base_dir / tr / 'classification_results'
             ]
+            found = False
             for folder in candidates:
-                cls_fp  = folder / cls_name
-                conf_fp = folder / conf_name
-                if cls_fp.exists() and conf_fp.exists():
-                    tracks.append((tr, country, cls_fp, conf_fp))
+                for cls_name, conf_name in filename_pairs:
+                    cls_fp  = folder / cls_name
+                    conf_fp = folder / conf_name
+                    if cls_fp.exists() and conf_fp.exists():
+                        tracks.append((tr, country, cls_fp, conf_fp))
+                        found = True
+                        break
+                if found:
                     break
                     
     return tracks
