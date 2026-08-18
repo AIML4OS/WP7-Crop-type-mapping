@@ -251,21 +251,37 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
         if not band_src.exists():
             band_src = Path(b02_str.replace('B02', band))
         if not band_src.exists():
-            continue
+            candidates = list(b02_file.parent.glob(f"*_{band}_20m.jp2"))
+            if not candidates:
+                candidates = list(b02_file.parent.glob(f"*{band}*.jp2"))
+            if candidates:
+                band_src = candidates[0]
+            else:
+                continue
 
         band_dst_tif = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tif"
         if band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024:
             continue
 
+        band_dst_tmp = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tmp.tif"
         try:
             ds = gdal.Open(str(band_src))
             if ds is None:
                 continue
-            options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER'])
-            gdal.Translate(str(band_dst_tif), ds, options=options)
+            options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
+            gdal.Translate(str(band_dst_tmp), ds, options=options)
             ds = None
+            if band_dst_tmp.exists() and band_dst_tmp.stat().st_size > 1024:
+                if band_dst_tif.exists():
+                    band_dst_tif.unlink()
+                band_dst_tmp.rename(band_dst_tif)
+            else:
+                success = False
         except Exception as e:
             logging.error(f"Error converting {band_src.name}: {e}")
+            if band_dst_tmp.exists():
+                try: band_dst_tmp.unlink()
+                except: pass
             success = False
     return success
 
@@ -306,6 +322,51 @@ def scan_creodias_for_dates(
     return matched
 
 
+def get_s1_orbit_extent_geometry(country_code: str, orbit_num: int) -> Optional[ogr.Geometry]:
+    track_dir = BASE_DIR / country_code.upper() / f"orbit_{orbit_num}"
+    proc_dir = track_dir / "processed_raster"
+
+    if proc_dir.exists():
+        s1_tifs = list(proc_dir.glob("*_VH_VV*.tif"))
+        if s1_tifs:
+            ds = gdal.Open(str(s1_tifs[0]))
+            if ds:
+                gt = ds.GetGeoTransform()
+                w = ds.RasterXSize
+                h = ds.RasterYSize
+                proj_wkt = ds.GetProjection()
+
+                min_x = gt[0]
+                max_x = gt[0] + w * gt[1]
+                max_y = gt[3]
+                min_y = gt[3] + h * gt[5]
+
+                ring = ogr.Geometry(ogr.wkbLinearRing)
+                ring.AddPoint(min_x, min_y)
+                ring.AddPoint(max_x, min_y)
+                ring.AddPoint(max_x, max_y)
+                ring.AddPoint(min_x, max_y)
+                ring.AddPoint(min_x, min_y)
+
+                poly = ogr.Geometry(ogr.wkbPolygon)
+                poly.AddGeometry(ring)
+
+                src_srs = osr.SpatialReference()
+                src_srs.ImportFromWkt(proj_wkt)
+                dst_srs = osr.SpatialReference()
+                dst_srs.ImportFromEPSG(4326)
+
+                src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+                transform = osr.CoordinateTransformation(src_srs, dst_srs)
+                poly.Transform(transform)
+                ds = None
+                return poly
+
+    return get_country_geometry(country_code)
+
+
 def process_orbit_creodias_s2(
     country_code: str,
     orbit_num: int,
@@ -313,12 +374,12 @@ def process_orbit_creodias_s2(
     end_date: datetime.date,
     all_scenes: Optional[List[Dict]] = None,
     max_cloud_cover: float = 80.0,
-    max_workers: int = 4
+    max_workers: int = 8
 ):
     country_code = country_code.upper()
     track_name = f"{country_code}/orbit_{orbit_num}"
     logging.info(f"\n========================================================")
-    logging.info(f" INGESTING & CONVERTING S2 FOR TRACK: {track_name}")
+    logging.info(f" INGESTING & CONVERTING S2 FOR TRACK: {track_name} (Workers: {max_workers})")
     logging.info(f"========================================================")
 
     dest_track_s2 = BASE_DIR / track_name / "S2"
@@ -331,20 +392,39 @@ def process_orbit_creodias_s2(
         logging.warning("No S2 products available to convert.")
         return
 
-    tasks = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for sc in all_scenes:
-            tile_upper = sc['tile'].upper()
-            out_tile_dir = dest_track_s2 / f"{tile_upper}_tif" / sc['title']
-            tasks.append(executor.submit(convert_safe_to_geotiff, sc['safe_path'], out_tile_dir))
+    # Filter scenes already converted
+    scenes_to_process = []
+    for sc in all_scenes:
+        tile_upper = sc['tile'].upper()
+        dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / sc['title']
+        check_b02 = dest_prod_tif_dir / f"{sc['title']}_B02_20m.tif"
+        if not (check_b02.exists() and check_b02.stat().st_size > 1024):
+            scenes_to_process.append(sc)
 
-        done = 0
-        for fut in as_completed(tasks):
-            fut.result()
-            done += 1
-            sys.stdout.write(f"\r  Track {track_name}: converted {done}/{len(tasks)} SAFE products...  ")
-            sys.stdout.flush()
-    print("")
+    total_scenes = len(scenes_to_process)
+    logging.info(f"Remaining S2 products to convert for {track_name}: {total_scenes} (out of {len(all_scenes)} total)")
+
+    if total_scenes == 0:
+        logging.info(f"All Sentinel-2 products for {track_name} are already converted to GeoTIFF!")
+        return
+
+    converted_count = 0
+    lock = threading.Lock()
+
+    def _worker_convert_creodias(sc: dict):
+        nonlocal converted_count
+        tile_upper = sc['tile'].upper()
+        out_tile_dir = dest_track_s2 / f"{tile_upper}_tif" / sc['title']
+        convert_safe_to_geotiff(sc['safe_path'], out_tile_dir)
+        with lock:
+            converted_count += 1
+            if converted_count % 10 == 0 or converted_count == total_scenes:
+                pct = (converted_count / total_scenes) * 100.0
+                logging.info(f"  [CREODIAS CONVERSION] {converted_count}/{total_scenes} products completed ({pct:.1f}%)")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(_worker_convert_creodias, scenes_to_process))
+
     logging.info(f"SUCCESS: Sentinel-2 extraction & conversion completed for track {track_name}!")
 
 
@@ -354,7 +434,7 @@ def process_country_creodias_s2(
     end_date: datetime.date,
     orbit: Optional[int] = None,
     max_cloud_cover: float = 80.0,
-    max_workers: int = 4
+    max_workers: int = 8
 ):
     country_code = country_code.upper()
     if orbit is not None:
@@ -376,7 +456,7 @@ def main():
     parser.add_argument('-c', '--country', required=True, help="Country code, e.g. PL, NL, FR, PT, AT")
     parser.add_argument('-o', '--orbit', type=int, default=None, help="Optional single orbit override")
     parser.add_argument('--cloud_cover', type=float, default=80.0, help="Max cloud cover (default: 80)")
-    parser.add_argument('--threads', type=int, default=4, help="Worker threads (default: 4)")
+    parser.add_argument('--threads', type=int, default=8, help="Worker threads (default: 8)")
     parser.add_argument('--repo_path', type=str, default=None, help="Override CREODIAS repo path")
 
     args = parser.parse_args()
