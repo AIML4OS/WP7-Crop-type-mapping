@@ -345,6 +345,8 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
             r20m_dir = granule / 'IMG_DATA' / 'R20m'
             if r20m_dir.exists():
                 b02_candidates = list(r20m_dir.glob("*_B02_20m.jp2"))
+                if not b02_candidates:
+                    b02_candidates = list(r20m_dir.glob("*_B02*.jp2"))
                 if b02_candidates:
                     b02_file = b02_candidates[0]
                     break
@@ -352,6 +354,7 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
     if not b02_file or not b02_file.exists():
         return False
 
+    stem_name = safe_dir.stem
     b02_str = str(b02_file)
     success = True
     for band in S2_BANDS_20M:
@@ -359,19 +362,27 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
         if not band_src.exists():
             band_src = Path(b02_str.replace('B02', band))
         if not band_src.exists():
-            continue
+            # Try globbing for this band
+            candidates = list(b02_file.parent.glob(f"*_{band}_20m.jp2"))
+            if not candidates:
+                candidates = list(b02_file.parent.glob(f"*{band}*.jp2"))
+            if candidates:
+                band_src = candidates[0]
+            else:
+                continue
 
-        band_dst_tif = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tif"
+        band_dst_tif = output_dest_dir / f"{stem_name}_{band}_20m.tif"
         if band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024:
             continue
 
         try:
             ds = gdal.Open(str(band_src))
-            if ds is None:
-                continue
-            options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER'])
-            gdal.Translate(str(band_dst_tif), ds, options=options)
-            ds = None
+            if ds is not None:
+                options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER'])
+                gdal.Translate(str(band_dst_tif), ds, options=options)
+                ds = None
+            else:
+                success = False
         except Exception as e:
             logging.error(f"Failed converting {band_src.name}: {e}")
             success = False
@@ -397,6 +408,25 @@ def process_orbit_cdse_s2(
     dest_track_s2 = BASE_DIR / track_name / "S2"
     dest_track_s2.mkdir(parents=True, exist_ok=True)
 
+    # 1. Check for any existing unzipped SAFE folders already downloaded on disk
+    existing_safes = list(dest_track_s2.glob("*/*.SAFE"))
+    if existing_safes:
+        logging.info(f"Found {len(existing_safes)} existing downloaded SAFE products in {track_name}. Converting to GeoTIFF...")
+        for safe_idx, safe_path in enumerate(existing_safes, start=1):
+            tile_name = safe_path.parent.name.upper()
+            stem_name = safe_path.stem
+            dest_prod_tif_dir = dest_track_s2 / f"{tile_name}_tif" / stem_name
+            check_b02 = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
+            
+            if not (check_b02.exists() and check_b02.stat().st_size > 1024):
+                logging.info(f"  [{safe_idx}/{len(existing_safes)}] Converting existing: {safe_path.name} -> GeoTIFF")
+                convert_safe_to_geotiff(safe_path, dest_prod_tif_dir)
+            try:
+                shutil.rmtree(str(safe_path))
+            except Exception:
+                pass
+
+    # 2. Search CDSE API for any remaining products
     orbit_geom = get_s1_orbit_extent_geometry(country_code, orbit_num)
     if not orbit_geom:
         logging.error(f"Cannot resolve spatial extent for {track_name}")
@@ -409,19 +439,20 @@ def process_orbit_cdse_s2(
     total_prods = len(products)
     for idx, prod in enumerate(products, start=1):
         tile_upper = prod['tile'].upper()
-        dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / prod['title']
+        stem_name = prod['title'][:-5] if prod['title'].endswith('.SAFE') else prod['title']
+        safe_name = prod['title'] if prod['title'].endswith('.SAFE') else f"{prod['title']}.SAFE"
 
-        check_b02 = dest_prod_tif_dir / f"{prod['title']}_B02_20m.tif"
+        dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / stem_name
+        check_b02 = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
         if check_b02.exists() and check_b02.stat().st_size > 1024:
             continue
 
-        logging.info(f"[{idx}/{total_prods}] Downloading & Converting: {prod['title']} (Tile: {tile_upper}, Size: {prod['size'] / (1024*1024):.1f} MB)")
-
         tile_raw_dir = dest_track_s2 / tile_upper
         tile_raw_dir.mkdir(parents=True, exist_ok=True)
-        unzipped_safe = tile_raw_dir / f"{prod['title']}.SAFE"
+        unzipped_safe = tile_raw_dir / safe_name
 
         if not unzipped_safe.exists():
+            logging.info(f"[{idx}/{total_prods}] Downloading & Converting: {prod['title']} (Tile: {tile_upper}, Size: {prod['size'] / (1024*1024):.1f} MB)")
             zip_file = download_single_product(prod, tile_raw_dir, username, password)
             if not zip_file or not zip_file.exists():
                 continue
