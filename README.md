@@ -142,24 +142,47 @@ To train the machine learning classifier, place your point vector dataset at:
 
 ---
 
-## Step-by-Step Execution Guide
+## Data Preparation Utilities (`tools/`)
 
-### Step 1: Download NUTS2 Boundaries
-Downloads national administrative boundaries used for clipping rasters:
-```powershell
-python tools/download_nuts_shapefiles.py
-```
+The `tools/` directory provides unified, standardized CLI utilities for data preparation:
 
-### Step 2: Build Agricultural Cropland Mask
-Creates a binary cropland mask (HRL / Corine Land Cover) to mask out non-agricultural areas:
-```powershell
-python tools/build_agri_mask.py -c NL
-python tools/build_agri_mask.py -c PL
-```
+1. **Step 1: Download NUTS Boundaries (`tools/1_download_nuts_boundaries.py`)**:
+   Downloads official GISCO NUTS2 / NUTS0 boundaries for raster spatial clipping:
+   ```powershell
+   python tools/1_download_nuts_boundaries.py -c NL
+   python tools/1_download_nuts_boundaries.py -c PL
+   python tools/1_download_nuts_boundaries.py --all
+   ```
+
+2. **Step 2: Build Agricultural Cropland Mask (`tools/2_build_agricultural_mask.py`)**:
+   Creates a binary cropland mask (HRL / Corine Land Cover) to mask out non-agricultural areas:
+   ```powershell
+   python tools/2_build_agricultural_mask.py -c NL
+   python tools/2_build_agricultural_mask.py -c PL
+   ```
+
+3. **Step 3: Prepare Classification Training Samples (`tools/3_prepare_classification_samples.py`)**:
+   Universal sample generator from raw LPIS / cadastral parcel vectors (`.shp`, `.gpkg`, `.geojson`):
+   ```powershell
+   # Netherlands (NL BRP dataset):
+   python tools/3_prepare_classification_samples.py -c NL --input path/to/brp.gpkg --crop_col GEWAS --min_area_ha 0.2
+
+   # Poland (PL ARiMR dataset):
+   python tools/3_prepare_classification_samples.py -c PL --input path/to/arimr.shp --crop_col CROP_NAME --max_samples_per_class 3000
+   ```
+
+4. **Step 4: Calculate Bayesian Acreage Priors (`tools/4_generate_crop_priors.py`)**:
+   Calculates statistical real-world crop acreages from LPIS vector datasets for prior probability calibration:
+   ```powershell
+   python tools/4_generate_crop_priors.py -c NL --input path/to/brp.gpkg --crop_col GEWAS
+   python tools/4_generate_crop_priors.py -c PL --input path/to/arimr.shp --crop_col CROP_NAME
+   ```
 
 ---
 
-### Step 3: Sentinel-1 SAR Preprocessing
+## Step-by-Step Execution Guide
+
+### Phase 1: Sentinel-1 SAR Preprocessing
 
 Runs slice calibration, multi-temporal coregistration, and NUTS2 spatial clipping across greedy orbits:
 
