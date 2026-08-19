@@ -242,6 +242,7 @@ def mosaic_stack_clip_single_track(
 
     out_vrt = out_final_dir / f"{sanitized_track}_S2_timeseries_temp.vrt"
     out_final_tif = out_proc_dir / f"{sanitized_track}_S2_timeseries.tif"
+    out_final_tmp = out_proc_dir / f"{sanitized_track}_S2_timeseries.tmp.tif"
 
     logging.info(f"Assembling VRT and translating final {len(band_descriptions)}-band multi-temporal GeoTIFF stack...")
     vrt_opts = gdal.BuildVRTOptions(separate=True)
@@ -251,7 +252,11 @@ def mosaic_stack_clip_single_track(
         creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'],
         callback=gdal.TermProgress_nocb
     )
-    ds_final = gdal.Translate(str(out_final_tif), str(out_vrt), options=trans_opts)
+    if out_final_tmp.exists():
+        try: out_final_tmp.unlink()
+        except: pass
+
+    ds_final = gdal.Translate(str(out_final_tmp), str(out_vrt), options=trans_opts)
 
     if ds_final:
         for b_idx, desc in enumerate(band_descriptions, start=1):
@@ -260,6 +265,14 @@ def mosaic_stack_clip_single_track(
             band_obj.SetNoDataValue(0)
         ds_final.FlushCache()
         ds_final = None
+
+        if out_final_tif.exists():
+            try: out_final_tif.unlink()
+            except Exception as e:
+                logging.warning(f"Could not remove old file {out_final_tif.name}: {e}")
+
+        if out_final_tmp.exists():
+            out_final_tmp.rename(out_final_tif)
 
     if out_vrt.exists():
         try: out_vrt.unlink()
@@ -301,7 +314,10 @@ def mosaic_stack_clip_s2(
 
         for o_num in orbits:
             track_name = f"{country_code}/orbit_{o_num}"
-            mosaic_stack_clip_single_track(track_name, country_code, target_epsg, doys, max_workers, overwrite)
+            try:
+                mosaic_stack_clip_single_track(track_name, country_code, target_epsg, doys, max_workers, overwrite)
+            except Exception as e:
+                logging.error(f"Error processing track {track_name}: {e}")
 
 
 def main():
