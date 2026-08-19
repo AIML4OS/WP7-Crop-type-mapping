@@ -558,14 +558,21 @@ class ProcessingPipelineS1S2:
         return shps[0] if shps else None
 
     def _resolve_agri_mask(self) -> Optional[Path]:
+        agrimasks_dir = self.aux_dir / "raster_files" / "AgriMasks" / self.country
         candidates = [
+            agrimasks_dir / f"{self.country}_agri_mask_allcrops_epsg3857.tif",
+            agrimasks_dir / f"{self.country}_agri_mask_3class_epsg3857.tif",
             self.aux_dir / "raster_files" / f"{self.country}_arable.tif",
             self.aux_dir / "raster_files" / f"{self.country}_agri_mask.tif",
+            self.aux_dir / "raster_files" / "EU_arable_areas_mask_3857.tif",
             self.base_dir / self.track / "agri_mask.tif"
         ]
         for c in candidates:
             if c.exists():
                 return c
+        if agrimasks_dir.exists():
+            tifs = list(agrimasks_dir.glob("*.tif"))
+            if tifs: return tifs[0]
         return None
 
     def _resolve_lpis_vector(self) -> Optional[Path]:
@@ -574,8 +581,12 @@ class ProcessingPipelineS1S2:
             if p.exists():
                 return p
 
-        # Look in auxiliary_files
+        # Look in AgriMasks and shapefiles_samples
+        agrimasks_dir = self.aux_dir / "raster_files" / "AgriMasks" / self.country
         candidates = [
+            agrimasks_dir / "brpgewaspercelen_definitief_2025.gpkg",
+            agrimasks_dir / "lpis.gpkg",
+            agrimasks_dir / "lpis.shp",
             self.aux_dir / "shapefiles_samples" / self.country / "lpis.gpkg",
             self.aux_dir / "shapefiles_samples" / self.country / "lpis.shp",
             self.aux_dir / "shapefiles_samples" / self.country / "parcels.gpkg",
@@ -587,6 +598,11 @@ class ProcessingPipelineS1S2:
         for c in candidates:
             if c.exists():
                 return c
+        if agrimasks_dir.exists():
+            gpkgs = list(agrimasks_dir.glob("*.gpkg"))
+            if gpkgs: return gpkgs[0]
+            shps = list(agrimasks_dir.glob("*.shp"))
+            if shps: return shps[0]
         return None
 
     # --- Stage 0: Footprint ---
