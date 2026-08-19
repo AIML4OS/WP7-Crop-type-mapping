@@ -97,32 +97,46 @@ An automated, object-based image analysis (OBIA) pipeline designed to process **
 
 ---
 
-## JSON Configuration System (Safe Secret Management)
+## JSON Configuration System (Modular Secret Management)
 
-The toolbox features a centralized, modular configuration system using **JSON** files. You do not need to pass passwords or paths on the command line.
+The toolbox features a clean, modular configuration system using **JSON** files located directly inside their respective preprocessor directories. You do not need to pass passwords or paths on the command line.
 
 ### 1. Configuration Files
 
 | Config File | Purpose | Location |
 | :--- | :--- | :--- |
-| **`config_cdse.json`** | Copernicus CDSE credentials (username & password) | Root directory (`d:/AIML_CropMapper_Cloud/config_cdse.json`) |
-| **`config.json`** | Global project paths, threads, bands, and classifier hyperparameters | Root directory (`d:/AIML_CropMapper_Cloud/config.json`) |
-| **`config_s1.json`** | Sentinel-1 pipeline parameters and SNAP paths | `1_Sentinel-1_preprocessor/config_s1.json` |
-| **`config_s2.json`** | Sentinel-2 pipeline parameters and DOY vectors | `1a_Sentinel-2_preprocessor/config_s2.json` |
+| **`config_s1.json`** | Sentinel-1 pipeline parameters, SNAP paths, and CDSE credentials | `1_Sentinel-1_preprocessor/config_s1.json` |
+| **`config_s2.json`** | Sentinel-2 pipeline parameters, spectral bands, DOYs, and CDSE credentials | `1a_Sentinel-2_preprocessor/config_s2.json` |
 
-### 2. Quick CDSE Setup
-Open [`config_cdse.json`](file:///d:/AIML_CropMapper_Cloud/config_cdse.json) and enter your credentials:
+### 2. Quick Setup from Templates
+Copy the template files (`*.example.json`) to create your local active configuration files:
+
+```powershell
+# Sentinel-1 Configuration
+cp 1_Sentinel-1_preprocessor/config_s1.example.json 1_Sentinel-1_preprocessor/config_s1.json
+
+# Sentinel-2 Configuration
+cp 1a_Sentinel-2_preprocessor/config_s2.example.json 1a_Sentinel-2_preprocessor/config_s2.json
+```
+
+Then open `config_s1.json` and `config_s2.json` to insert your Copernicus CDSE credentials and local storage paths:
 ```json
 {
-  "username": "your_email@domain.com",
-  "password": "your_cdse_password"
+  "cdse": {
+    "username": "your_email@domain.com",
+    "password": "your_cdse_password"
+  },
+  "paths": {
+    "working_dir": "D:/AIML_CropMapper_Cloud/workingDir",
+    "aux_dir": "D:/AIML_CropMapper_Cloud/auxiliary_files"
+  }
 }
 ```
 
 ### 3. GitHub Security (.gitignore)
-All `*.json` files containing actual passwords or local paths are **strictly ignored by Git** via `.gitignore`. Only safe templates (`*.example.json`) with placeholder values are committed to GitHub:
+All `*.json` files containing actual passwords or local paths (`config_s1.json`, `config_s2.json`) are **strictly ignored by Git** via `.gitignore`. Only safe templates (`*.example.json`) with placeholder values are committed to GitHub:
 ```bash
-# Push changes safely to GitHub (passwords are automatically excluded):
+# Push changes safely to GitHub (passwords and local paths are automatically excluded):
 git add .
 git commit -m "Update CropMapper toolbox"
 git push origin AIML_CropMapper
