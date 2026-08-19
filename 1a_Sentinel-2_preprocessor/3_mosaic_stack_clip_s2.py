@@ -100,10 +100,24 @@ def mosaic_single_band_doy(
     res_x: float = 10.0,
     res_y: float = 10.0,
     output_bounds: Optional[List[float]] = None,
+    target_width: Optional[int] = None,
+    target_height: Optional[int] = None,
     overwrite: bool = False
 ) -> bool:
-    if output_tif.exists() and output_tif.stat().st_size > 1024 and not overwrite:
-        return True
+    if output_tif.exists() and output_tif.stat().st_size > 1024:
+        if not overwrite:
+            return True
+        # Smart check: if overwrite is requested, but file already has exact matching target geometry, skip it!
+        if target_width and target_height:
+            try:
+                ds_check = gdal.Open(str(output_tif))
+                if ds_check:
+                    if ds_check.RasterXSize == target_width and ds_check.RasterYSize == target_height:
+                        ds_check = None
+                        return True
+                    ds_check = None
+            except:
+                pass
 
     output_tif.parent.mkdir(parents=True, exist_ok=True)
     existing_files = [str(f) for f in band_input_files if f.exists()]
@@ -168,13 +182,17 @@ def mosaic_stack_clip_single_track(
 
     ref_proj, res_x, res_y = (None, 10.0, 10.0)
     output_bounds = None
+    target_width = None
+    target_height = None
     s1_ref = get_s1_raster_reference(track_dir)
     if s1_ref:
         ref_proj = s1_ref['proj']
         res_x = s1_ref['res_x']
         res_y = s1_ref['res_y']
         output_bounds = s1_ref['bounds']
-        logging.info(f"Matching S1 SAR reference geometry for {track}: {s1_ref['width']}x{s1_ref['height']} ({res_x}m x {res_y}m), Bounds: {output_bounds}")
+        target_width = s1_ref['width']
+        target_height = s1_ref['height']
+        logging.info(f"Matching S1 SAR reference geometry for {track}: {target_width}x{target_height} ({res_x}m x {res_y}m), Bounds: {output_bounds}")
 
     synthetic_dirs = list(s2_base.glob("**/_synthetic_s2"))
     if not synthetic_dirs:
@@ -215,7 +233,10 @@ def mosaic_stack_clip_single_track(
 
     def _worker_mosaic(task):
         nonlocal done_bands
-        res = mosaic_single_band_doy(task[0], task[1], shp_cutline, target_epsg, ref_proj, res_x, res_y, output_bounds, overwrite)
+        res = mosaic_single_band_doy(
+            task[0], task[1], shp_cutline, target_epsg, ref_proj, res_x, res_y,
+            output_bounds, target_width, target_height, overwrite
+        )
         with lock:
             done_bands += 1
             if done_bands % 5 == 0 or done_bands == total_bands:
