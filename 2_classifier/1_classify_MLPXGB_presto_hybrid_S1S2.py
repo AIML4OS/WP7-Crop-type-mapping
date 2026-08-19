@@ -815,8 +815,8 @@ class ProcessingPipelineS1S2:
     # --- Stage 0: Footprint ---
     def stage_0_generate_footprint(self, force_recompute=False):
         stage = 0
-        if self.footprint_mask.exists() and not force_recompute:
-            print(f"[Stage {stage}] Footprint already exists, skipping.")
+        if self.footprint_mask.exists() and self.footprint_mask.stat().st_size > 1024 and not force_recompute:
+            print(f"[Stage {stage}] Footprint already exists ({self.footprint_mask.name}), skipping.")
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Generating Multimodal Data Footprint (S1 SAR & S2 Optical Intersection)...")
@@ -839,7 +839,10 @@ class ProcessingPipelineS1S2:
         out_ds.SetGeoTransform(gt)
         out_ds.SetProjection(proj)
 
-        tile_size = 2048
+        tile_size = 4096
+        total_blocks = math.ceil(cols / tile_size) * math.ceil(rows / tile_size)
+        done_blocks = 0
+
         for y in range(0, rows, tile_size):
             for x in range(0, cols, tile_size):
                 xsize = min(tile_size, cols - x)
@@ -854,6 +857,10 @@ class ProcessingPipelineS1S2:
                     mask = mask & (b1_s2 > 0) & (~np.isnan(b1_s2))
 
                 out_ds.GetRasterBand(1).WriteArray(mask.astype(np.uint8), x, y)
+                done_blocks += 1
+                if done_blocks % 10 == 0 or done_blocks == total_blocks:
+                    pct = (done_blocks / total_blocks) * 100.0
+                    print(f"    [FOOTPRINT PROGRESS] {done_blocks}/{total_blocks} blocks completed ({pct:.1f}%)", flush=True)
 
         out_ds.FlushCache()
         out_ds = None
