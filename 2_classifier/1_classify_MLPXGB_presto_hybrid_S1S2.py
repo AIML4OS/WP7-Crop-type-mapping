@@ -448,6 +448,141 @@ class PrestoMultimodalExtractor:
 
 
 # =====================================================================
+# SAM WORKER (MULTIPROCESSING)
+# =====================================================================
+
+def sam_worker(tile_info, ras_path, footprint_path, params):
+    try:
+        import os
+        import sys
+        import time
+        from osgeo import gdal
+        import numpy as np
+        import torch
+        torch.set_num_threads(1)  # Force single thread in worker
+        import cv2
+        cv2.setNumThreads(0)
+        
+        from samgeo import SamGeo
+        from skimage.util import img_as_float
+        from scipy.ndimage import distance_transform_edt
+        import scipy.ndimage as ndimage
+        
+        x, y, xsize_valid, ysize_valid, x_start_buf, y_start_buf, xsize_buf, ysize_buf, buffer = tile_info
+        print(f"    [Worker x={x}, y={y}] Started reading tile data...", flush=True)
+        
+        ds = gdal.Open(ras_path, gdal.GA_ReadOnly)
+        nbands = ds.RasterCount
+        
+        img_list = []
+        for b in range(1, nbands + 1):
+            band = ds.GetRasterBand(b)
+            arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+            if arr is None:
+                print(f"    [Worker x={x}, y={y}] Failed to read band {b}!", flush=True)
+                return x, y, None, None
+            arr = np.nan_to_num(arr)
+            img_list.append(arr)
+            
+        img = np.dstack(img_list)
+        
+        ds_foot = None
+        if footprint_path and os.path.exists(footprint_path):
+            ds_foot = gdal.Open(footprint_path, gdal.GA_ReadOnly)
+            valid_mask_buf = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf) > 0
+            valid_mask = valid_mask_buf
+        else:
+            valid_mask = np.sum(np.abs(img), axis=2) > 0
+            
+        if not np.any(valid_mask):
+            print(f"    [Worker x={x}, y={y}] Tile contains no active pixels.", flush=True)
+            return x, y, None, None
+            
+        print(f"    [Worker x={x}, y={y}] Loading SAM model...", flush=True)
+        t_model_start = time.time()
+        sam_geo = SamGeo(
+            model_type=params.get('sam_model_type', 'vit_h'),
+            checkpoint=params.get('sam_checkpoint', None),
+            device=params.get('sam_device', 'cuda' if torch.cuda.is_available() else 'cpu'),
+            sam_kwargs={
+                "points_per_side": params.get('points_per_side', 16),
+                "pred_iou_thresh": params.get('pred_iou_thresh', 0.45),
+                "stability_score_thresh": params.get('stability_score_thresh', 0.50),
+                "crop_n_layers": params.get('crop_n_layers', 0),
+                "crop_n_points_downscale_factor": params.get('crop_n_points_downscale_factor', 1),
+                "min_mask_region_area": params.get('min_mask_region_area', 20),
+                "box_nms_thresh": params.get('box_nms_thresh', 0.6)
+            }
+        )
+        print(f"    [Worker x={x}, y={y}] SAM model loaded in {time.time() - t_model_start:.2f}s.", flush=True)
+        
+        img_8bit = np.zeros(img.shape, dtype=np.uint8)
+        valid_pixels = valid_mask[:, :, np.newaxis]
+        
+        if np.any(valid_pixels):
+            p2, p98 = np.percentile(img[valid_pixels], (2, 98))
+            img_clip = np.clip(img, p2, p98)
+            if p98 > p2:
+                img_8bit[valid_pixels] = ((img_clip[valid_pixels] - p2) / (p98 - p2) * 255).astype(np.uint8)
+                
+            img_chan = np.ascontiguousarray(img_8bit[:, :, 0])
+            img_smoothed = cv2.bilateralFilter(img_chan, d=9, sigmaColor=12, sigmaSpace=30)
+            img_8bit[:, :, 0] = img_smoothed
+            
+            clahe_limit = params.get('clahe_limit', 0.0)
+            if clahe_limit > 0.0:
+                clahe = cv2.createCLAHE(clipLimit=clahe_limit, tileGridSize=(8,8))
+                img_clahe = clahe.apply(img_8bit[:, :, 0])
+                img_8bit[:, :, 0] = img_clahe
+                
+        if img_8bit.shape[2] == 1:
+            img_rgb = np.repeat(img_8bit, 3, axis=2)
+        else:
+            img_rgb = img_8bit[:, :, :3]
+            if img_rgb.shape[2] < 3:
+                img_rgb = np.pad(img_rgb, ((0,0),(0,0),(0, 3-img_rgb.shape[2])), mode='constant')
+                
+        print(f"    [Worker x={x}, y={y}] Running SAM generate (points_per_side={params.get('points_per_side', 16)})...", flush=True)
+        t_gen_start = time.time()
+        sam_geo.generate(
+            source=img_rgb,
+            output=None,
+            foreground=False,
+            unique=True,
+            min_size=10,
+            max_size=100000
+        )
+        print(f"    [Worker x={x}, y={y}] SAM generate finished in {time.time() - t_gen_start:.2f}s.", flush=True)
+        segments_buf = sam_geo.objects.astype(np.int32)
+        
+        zero_mask_buf = (segments_buf == 0) & valid_mask
+        if np.any(zero_mask_buf) and np.any(segments_buf > 0):
+            _, indices = distance_transform_edt(segments_buf == 0, return_indices=True)
+            segments_buf[zero_mask_buf] = segments_buf[tuple(indices)][zero_mask_buf]
+            
+        segments_buf[~valid_mask] = 0
+        
+        median_size = params.get('median_size', 3)
+        if median_size > 0:
+            segments_buf = ndimage.median_filter(segments_buf, size=median_size)
+            segments_buf[~valid_mask] = 0
+            
+        y_offset = y - y_start_buf
+        x_offset = x - x_start_buf
+        segments_buf[~valid_mask] = 0
+        
+        valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+        segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+        segments[~valid_mask_crop] = 0
+        
+        print(f"    [Worker x={x}, y={y}] Tile completed successfully.", flush=True)
+        return x, y, segments, valid_mask_crop
+    except Exception as e:
+        print(f"Error in worker process for tile (x={tile_info[0]}, y={tile_info[1]}): {e}", flush=True)
+        return tile_info[0], tile_info[1], None, None
+
+
+# =====================================================================
 # 4. MULTIMODAL PROCESSING PIPELINE (STAGES 0 - 7)
 # =====================================================================
 
@@ -520,9 +655,33 @@ class ProcessingPipelineS1S2:
 
         self.agri_mask = self._resolve_agri_mask()
 
+        # Segmentation params
+        self.stage1_params = {
+            'sam_model_type': 'vit_h',
+            'sam_checkpoint': self._resolve_sam_checkpoint(),
+            'sam_device': 'cuda' if (HAS_TORCH and torch.cuda.is_available()) else 'cpu',
+            'tile_size': 2048,
+            'buffer': 128,
+            'points_per_side': 16,
+            'pred_iou_thresh': 0.45,
+            'stability_score_thresh': 0.50,
+            'min_mask_region_area': 20,
+            'box_nms_thresh': 0.6,
+            'clahe_limit': 0.0,
+            'median_size': 3
+        }
+
     def _ensure_directories(self):
         for d in [self.samples_dir, self.model_dir, self.seg_dir, self.class_dir]:
             d.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_sam_checkpoint(self) -> Optional[str]:
+        sam_dir = self.aux_dir / "SAM_models"
+        for name in ['sam_vit_h_4b8939.pth', 'sam_vit_l_0b3195.pth', 'sam_vit_b_01ec64.pth']:
+            p = sam_dir / name
+            if p.exists():
+                return str(p)
+        return None
 
     def _resolve_s1_raster(self) -> Optional[Path]:
         if not self.proc_dir.exists():
@@ -581,7 +740,6 @@ class ProcessingPipelineS1S2:
             if p.exists():
                 return p
 
-        # Look in AgriMasks and shapefiles_samples
         agrimasks_dir = self.aux_dir / "raster_files" / "AgriMasks" / self.country
         candidates = [
             agrimasks_dir / "brpgewaspercelen_definitief_2025.gpkg",
@@ -604,6 +762,55 @@ class ProcessingPipelineS1S2:
             shps = list(agrimasks_dir.glob("*.shp"))
             if shps: return shps[0]
         return None
+
+    def _create_summed_composite(self, ref_ras: Path) -> Path:
+        print("    [INFO] Creating high-SNR summed composite for segmentation...")
+        composite_tif = self.seg_dir / f"{self.file_prefix}_summed_composite.tif"
+        if composite_tif.exists():
+            return composite_tif
+
+        ds = gdal.Open(str(ref_ras))
+        cols = ds.RasterXSize
+        rows = ds.RasterYSize
+        nbands = ds.RasterCount
+        gt = ds.GetGeoTransform()
+        proj = ds.GetProjection()
+
+        driver = gdal.GetDriverByName('GTiff')
+        out_ds = driver.Create(str(composite_tif), cols, rows, 1, gdal.GDT_Float32,
+                               options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+        out_ds.SetGeoTransform(gt)
+        out_ds.SetProjection(proj)
+        out_band = out_ds.GetRasterBand(1)
+        out_band.SetNoDataValue(0)
+
+        tile_size = 4096
+        for y in range(0, rows, tile_size):
+            for x in range(0, cols, tile_size):
+                xsize = min(tile_size, cols - x)
+                ysize = min(tile_size, rows - y)
+
+                sum_arr = np.zeros((ysize, xsize), dtype=np.float32)
+                valid_mask = np.zeros((ysize, xsize), dtype=bool)
+
+                for b in range(1, nbands + 1):
+                    band = ds.GetRasterBand(b)
+                    arr = band.ReadAsArray(x, y, xsize, ysize)
+                    nodata = band.GetNoDataValue()
+                    if nodata is not None:
+                        mask = (arr != nodata) & (~np.isnan(arr)) & (arr != 0)
+                    else:
+                        mask = (~np.isnan(arr)) & (arr != 0)
+                    sum_arr[mask] += arr[mask]
+                    valid_mask |= mask
+
+                sum_arr[~valid_mask] = 0
+                out_band.WriteArray(sum_arr, x, y)
+
+        out_ds.FlushCache()
+        out_ds = None
+        ds = None
+        return composite_tif
 
     # --- Stage 0: Footprint ---
     def stage_0_generate_footprint(self, force_recompute=False):
@@ -654,7 +861,7 @@ class ProcessingPipelineS1S2:
         ds_s2 = None
         print(f"    Multimodal intersection footprint saved to {self.footprint_mask}")
 
-    # --- Stage 1: Segmentation ---
+    # --- Stage 1: Segmentation (LPIS / SAM / SLIC) ---
     def stage_1_segmentation(self, force_recompute=False):
         stage = 1
         if self.seg_tif.exists() and not force_recompute:
@@ -671,68 +878,257 @@ class ProcessingPipelineS1S2:
         gt, proj = ds.GetGeoTransform(), ds.GetProjection()
 
         if self.seg_mode == 'lpis':
-            lpis_vec = self._resolve_lpis_vector()
-            if lpis_vec and lpis_vec.exists():
-                print(f"    Rasterizing LPIS cadastral parcel polygons from: {lpis_vec}...")
-                driver = gdal.GetDriverByName('GTiff')
-                out_ds = driver.Create(
-                    str(self.seg_tif), cols, rows, 1, gdal.GDT_UInt32,
-                    options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
-                )
-                out_ds.SetGeoTransform(gt)
-                out_ds.SetProjection(proj)
-                out_ds.GetRasterBand(1).Fill(0)
-                out_ds.GetRasterBand(1).SetNoDataValue(0)
-                out_ds.FlushCache()
-                out_ds = None
+            lpis_file = self._resolve_lpis_vector()
+            if lpis_file and lpis_file.exists():
+                print(f"    Loading official LPIS parcel vector from: {lpis_file}...")
+                minx = gt[0]
+                maxy = gt[3]
+                maxx = minx + cols * gt[1]
+                miny = maxy + rows * gt[5]
 
-                # Rasterize with SQL to burn unique parcel FID + 1
-                gdal.Rasterize(
-                    str(self.seg_tif),
-                    str(lpis_vec),
-                    options=gdal.RasterizeOptions(
-                        options=['ATTRIBUTE=FID', 'ALL_TOUCHED=FALSE']
-                    )
-                )
-                print(f"    LPIS parcel segmentation raster created: {self.seg_tif}")
+                try:
+                    import pyogrio
+                    info = pyogrio.read_info(str(lpis_file))
+                    lpis_crs = info.get('crs')
+                except Exception:
+                    gdf_temp = gpd.read_file(str(lpis_file), rows=1)
+                    lpis_crs = gdf_temp.crs.to_string() if gdf_temp.crs else None
+                    info = {'fid_column': None}
+
+                srs_target = osr.SpatialReference()
+                srs_target.ImportFromWkt(proj)
+                target_epsg = srs_target.GetAttrValue("AUTHORITY", 1) or "3857"
+
+                from pyproj import Transformer
+                transformer = Transformer.from_crs(f"EPSG:{target_epsg}", lpis_crs, always_xy=True)
+                p1 = transformer.transform(minx, miny)
+                p2 = transformer.transform(maxx, maxy)
+                lpis_bbox = (min(p1[0], p2[0]), min(p1[1], p2[1]), max(p1[0], p2[0]), max(p1[1], p2[1]))
+
+                print(f"    Querying LPIS with spatial filter bbox: {lpis_bbox}")
+                try:
+                    import pyogrio
+                    gdf = pyogrio.read_dataframe(str(lpis_file), bbox=lpis_bbox)
+                except Exception:
+                    gdf = gpd.read_file(str(lpis_file), bbox=lpis_bbox)
+
+                print(f"    Loaded {len(gdf)} intersecting parcels. Reprojecting to EPSG:{target_epsg}...")
+                gdf_target = gdf.to_crs(f"EPSG:{target_epsg}")
+
+                fid_col = info.get('fid_column') if isinstance(info, dict) else None
+                if fid_col and fid_col in gdf_target.columns:
+                    id_col = fid_col
+                elif 'id' in gdf_target.columns:
+                    id_col = 'id'
+                elif 'id_0' in gdf_target.columns:
+                    id_col = 'id_0'
+                else:
+                    id_col = None
+
+                if id_col is None:
+                    gdf_target['lpis_id'] = np.arange(1, len(gdf_target) + 1)
+                    id_col = 'lpis_id'
+                else:
+                    gdf_target[id_col] = pd.to_numeric(gdf_target[id_col], errors='coerce').fillna(0).astype(np.int32)
+                    if gdf_target[id_col].sum() == 0 or gdf_target[id_col].nunique() < len(gdf_target):
+                        gdf_target['lpis_id'] = np.arange(1, len(gdf_target) + 1)
+                        id_col = 'lpis_id'
+
+                temp_gpkg = self.seg_dir / f"temp_lpis_{self.sanitized_track}.gpkg"
+                gdf_target.geometry = gdf_target.geometry.force_2d()
+                gdf_target.to_file(str(temp_gpkg), driver="GPKG", engine="pyogrio")
+
+                driver = gdal.GetDriverByName("GTiff")
+                ds_out = driver.Create(str(self.seg_tif), cols, rows, 1, gdal.GDT_Int32,
+                                       options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+                ds_out.SetGeoTransform(gt)
+                ds_out.SetProjection(proj)
+
+                band = ds_out.GetRasterBand(1)
+                band.SetNoDataValue(0)
+                band.Fill(0)
+
+                print(f"    Rasterizing parcels to {self.seg_tif.name} (burning column '{id_col}')...")
+                gdal.Rasterize(ds_out, str(temp_gpkg), attribute=id_col)
+
+                ds_out.FlushCache()
+                ds_out = None
+                if os.path.exists(temp_gpkg):
+                    try: os.remove(temp_gpkg)
+                    except: pass
+                print(f"    [OK] LPIS segmentation raster created: {self.seg_tif}")
                 return
             else:
-                print(f"    [WARNING] LPIS vector dataset not found. Specify via --lpis_vector path/to/parcels.shp/.gpkg")
-                print(f"    Falling back to SLIC superpixel segmentation...")
+                print(f"    [WARNING] LPIS vector dataset not found. Falling back to SLIC.")
+
+        # Create composite if needed for SLIC/SAM
+        try:
+            comp_ras = self._create_summed_composite(ref_ras)
+        except Exception:
+            comp_ras = ref_ras
+
+        if self.seg_mode == 'sam':
+            self._run_python_segmentation_tiled(comp_ras, self.stage1_params, 'python_sam')
+        else:
+            slic_params = {
+                'tile_size': 2048,
+                'buffer': 64,
+                'n_segments': 32000,
+                'compactness': 0.05,
+                'slic_sigma': 1.5
+            }
+            self._run_python_segmentation_tiled(comp_ras, slic_params, 'python_slic')
+
+    def _run_python_segmentation_tiled(self, ras_path: Path, params: dict, method: str):
+        print(f"    Running Tiled Python Segmentation ({method})...")
+        ds = gdal.Open(str(ras_path))
+        ds_foot = gdal.Open(str(self.footprint_mask)) if self.footprint_mask.exists() else None
+
+        cols = ds.RasterXSize
+        rows = ds.RasterYSize
+        nbands = ds.RasterCount
+        gt = ds.GetGeoTransform()
+        proj = ds.GetProjection()
 
         driver = gdal.GetDriverByName('GTiff')
-        out_ds = driver.Create(
-            str(self.seg_tif), cols, rows, 1, gdal.GDT_UInt32,
-            options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
-        )
+        out_ds = driver.Create(str(self.seg_tif), cols, rows, 1, gdal.GDT_Int32,
+                               options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
         out_ds.SetGeoTransform(gt)
         out_ds.SetProjection(proj)
+        out_band = out_ds.GetRasterBand(1)
+        out_band.SetNoDataValue(0)
 
-        tile_size = 2048
-        global_seg_offset = 1
+        tile_size = params.get('tile_size', 2048)
+        buffer = params.get('buffer', 128)
+        global_seg_id = 1
 
-        for y in range(0, rows, tile_size):
-            for x in range(0, cols, tile_size):
-                xsize = min(tile_size, cols - x)
-                ysize = min(tile_size, rows - y)
+        if method == 'python_sam':
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+            tile_tasks = []
+            for y in range(0, rows, tile_size):
+                for x in range(0, cols, tile_size):
+                    xsize_valid = min(tile_size, cols - x)
+                    ysize_valid = min(tile_size, rows - y)
+                    x_start_buf = max(0, x - buffer)
+                    y_start_buf = max(0, y - buffer)
+                    x_end_buf = min(cols, x + xsize_valid + buffer)
+                    y_end_buf = min(rows, y + ysize_valid + buffer)
+                    xsize_buf = x_end_buf - x_start_buf
+                    ysize_buf = y_end_buf - y_start_buf
 
-                bands = []
-                for b_idx in range(1, min(ds.RasterCount + 1, 4)):
-                    arr = ds.GetRasterBand(b_idx).ReadAsArray(x, y, xsize, ysize)
-                    arr = np.nan_to_num(arr)
-                    bands.append(arr)
-                img = np.stack(bands, axis=-1)
+                    if ds_foot:
+                        band_foot = ds_foot.GetRasterBand(1)
+                        arr_foot = band_foot.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                        valid_mask = arr_foot > 0 if arr_foot is not None else None
+                    else:
+                        band = ds.GetRasterBand(1)
+                        arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                        valid_mask = np.nan_to_num(arr) > 0 if arr is not None else None
 
-                img_min, img_max = img.min(), img.max()
-                img_norm = (img - img_min) / (img_max - img_min + 1e-6) if img_max > img_min else np.zeros_like(img)
+                    if valid_mask is not None and np.any(valid_mask):
+                        tile_tasks.append((x, y, xsize_valid, ysize_valid, x_start_buf, y_start_buf, xsize_buf, ysize_buf, buffer))
 
-                segments = slic(img_norm, n_segments=2500, compactness=0.05, sigma=1.5, start_label=1)
-                segments[segments > 0] += global_seg_offset
-                global_seg_offset = int(segments.max()) + 1
+            total_tasks = len(tile_tasks)
+            print(f"    Total active tiles to process with SAM: {total_tasks}")
+            max_workers = min(8, os.cpu_count() or 4)
 
-                out_ds.GetRasterBand(1).WriteArray(segments.astype(np.uint32), x, y)
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(sam_worker, task, str(ras_path), str(self.footprint_mask) if self.footprint_mask.exists() else None, params): task
+                    for task in tile_tasks
+                }
+                completed_count = 0
+                for future in as_completed(futures):
+                    x, y, segments, valid_mask_crop = future.result()
+                    completed_count += 1
+                    print(f"    [Tile Finished] x={x}, y={y} | Progress: {completed_count}/{total_tasks} tiles ({completed_count/total_tasks*100:.1f}%)")
 
-        out_ds.FlushCache()
+                    if segments is not None:
+                        seg_valid_mask = segments > 0
+                        unique_segs = np.unique(segments[seg_valid_mask])
+                        if len(unique_segs) > 0:
+                            max_seg = segments.max()
+                            mapping = np.zeros(max_seg + 1, dtype=np.int32)
+                            mapping[unique_segs] = np.arange(global_seg_id, global_seg_id + len(unique_segs))
+                            segments = mapping[segments]
+                            segments[~valid_mask_crop] = 0
+                            global_seg_id += len(unique_segs)
+                        else:
+                            segments[~valid_mask_crop] = 0
+                        out_band.WriteArray(segments.astype(np.int32), x, y)
+                    else:
+                        for task in tile_tasks:
+                            if task[0] == x and task[1] == y:
+                                xsize_valid, ysize_valid = task[2], task[3]
+                                out_band.WriteArray(np.zeros((ysize_valid, xsize_valid), dtype=np.int32), x, y)
+                                break
+        else:
+            # Tiled SLIC
+            for y in range(0, rows, tile_size):
+                for x in range(0, cols, tile_size):
+                    xsize_valid = min(tile_size, cols - x)
+                    ysize_valid = min(tile_size, rows - y)
+                    x_start_buf = max(0, x - buffer)
+                    y_start_buf = max(0, y - buffer)
+                    x_end_buf = min(cols, x + xsize_valid + buffer)
+                    y_end_buf = min(rows, y + ysize_valid + buffer)
+                    xsize_buf = x_end_buf - x_start_buf
+                    ysize_buf = y_end_buf - y_start_buf
+
+                    img_list = []
+                    for b in range(1, nbands + 1):
+                        band = ds.GetRasterBand(b)
+                        arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                        if arr is None:
+                            img_list = None
+                            break
+                        arr = np.nan_to_num(arr)
+                        img_list.append(arr)
+
+                    if img_list is None:
+                        continue
+
+                    img = np.dstack(img_list)
+                    if ds_foot:
+                        valid_mask_buf = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf) > 0
+                        valid_mask = valid_mask_buf
+                    else:
+                        valid_mask = np.sum(np.abs(img), axis=2) > 0
+
+                    if not np.any(valid_mask):
+                        continue
+
+                    img_norm = img_as_float(img)
+                    from skimage.segmentation import slic
+                    max_tile_pixels = (tile_size + 2 * buffer) ** 2
+                    pixels_per_segment = max_tile_pixels / params.get('n_segments', 32000)
+                    active_pixels = np.sum(valid_mask)
+                    n_segments_dynamic = max(1, int(active_pixels / pixels_per_segment))
+                    segments_buf = slic(img_norm, n_segments=n_segments_dynamic, compactness=params.get('compactness', 0.05),
+                                        sigma=params.get('slic_sigma', 1.5), start_label=1, mask=valid_mask)
+
+                    y_offset = y - y_start_buf
+                    x_offset = x - x_start_buf
+                    segments_buf[~valid_mask] = 0
+
+                    valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+                    segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+
+                    seg_valid_mask = segments > 0
+                    unique_segs = np.unique(segments[seg_valid_mask])
+                    if len(unique_segs) > 0:
+                        max_seg = segments.max()
+                        mapping = np.zeros(max_seg + 1, dtype=np.int32)
+                        mapping[unique_segs] = np.arange(global_seg_id, global_seg_id + len(unique_segs))
+                        segments = mapping[segments]
+                        segments[~valid_mask_crop] = 0
+                        global_seg_id += len(unique_segs)
+                    else:
+                        segments[~valid_mask_crop] = 0
+
+                    out_band.WriteArray(segments.astype(np.int32), x, y)
+
+        out_band.FlushCache()
         out_ds = None
         ds = None
         print(f"    Segmentation completed: {self.seg_tif}")
