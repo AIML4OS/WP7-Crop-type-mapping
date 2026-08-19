@@ -568,14 +568,17 @@ class ProcessingPipelineS1S2:
             print(f"[Stage {stage}] Footprint already exists, skipping.")
             return
 
-        print(f"[Stage {stage}/{self.total_stages}] Generating Multimodal Data Footprint...")
+        print(f"[Stage {stage}/{self.total_stages}] Generating Multimodal Data Footprint (S1 SAR & S2 Optical Intersection)...")
         ref_ras = self.s1_ras if self.s1_ras else self.s2_ras
         if not ref_ras or not ref_ras.exists():
             raise FileNotFoundError("Neither S1 nor S2 raster found.")
 
-        ds = gdal.Open(str(ref_ras))
-        cols, rows = ds.RasterXSize, ds.RasterYSize
-        gt, proj = ds.GetGeoTransform(), ds.GetProjection()
+        ds_s1 = gdal.Open(str(self.s1_ras)) if self.s1_ras else None
+        ds_s2 = gdal.Open(str(self.s2_ras)) if self.s2_ras else None
+        ref_ds = ds_s1 if ds_s1 else ds_s2
+
+        cols, rows = ref_ds.RasterXSize, ref_ds.RasterYSize
+        gt, proj = ref_ds.GetGeoTransform(), ref_ds.GetProjection()
 
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(
@@ -591,14 +594,21 @@ class ProcessingPipelineS1S2:
                 xsize = min(tile_size, cols - x)
                 ysize = min(tile_size, rows - y)
 
-                b1 = ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
-                mask = (b1 != 0) & (~np.isnan(b1))
+                mask = np.ones((ysize, xsize), dtype=bool)
+                if ds_s1:
+                    b1_s1 = ds_s1.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    mask = mask & (b1_s1 != 0) & (b1_s1 != -9999) & (~np.isnan(b1_s1))
+                if ds_s2:
+                    b1_s2 = ds_s2.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    mask = mask & (b1_s2 > 0) & (~np.isnan(b1_s2))
+
                 out_ds.GetRasterBand(1).WriteArray(mask.astype(np.uint8), x, y)
 
         out_ds.FlushCache()
         out_ds = None
-        ds = None
-        print(f"    Footprint saved to {self.footprint_mask}")
+        ds_s1 = None
+        ds_s2 = None
+        print(f"    Multimodal intersection footprint saved to {self.footprint_mask}")
 
     # --- Stage 1: Segmentation ---
     def stage_1_segmentation(self, force_recompute=False):
@@ -791,7 +801,15 @@ class ProcessingPipelineS1S2:
                 for f_i, f_val in enumerate(emb_s2):
                     record[f'presto_s2_{f_i}'] = f_val
 
-            feature_records.append(record)
+            # Validate valid multimodal data
+            is_valid = True
+            if ds_s1 and np.all([record.get(f's1_b{b_i}', 0) == 0 for b_i in range(nbands_s1)]):
+                is_valid = False
+            if ds_s2 and np.all([record.get(f's2_b{b_i}', 0) == 0 for b_i in range(nbands_s2)]):
+                is_valid = False
+
+            if is_valid:
+                feature_records.append(record)
             count += 1
             if count % 100 == 0 or count == total:
                 sys.stdout.write(f"\r    Extracted features for {count}/{total} segments...  ")

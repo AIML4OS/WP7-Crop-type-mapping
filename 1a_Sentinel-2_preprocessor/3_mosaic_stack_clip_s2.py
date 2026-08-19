@@ -60,7 +60,7 @@ def get_country_shapefile(country_code: str) -> Optional[Path]:
     return shps[0] if shps else None
 
 
-def get_s1_raster_reference(track_dir: Path) -> Optional[Tuple[str, float, float]]:
+def get_s1_raster_reference(track_dir: Path) -> Optional[Dict]:
     proc_dir = track_dir / "processed_raster"
     if proc_dir.exists():
         s1_tifs = list(proc_dir.glob("*_VH_VV*.tif"))
@@ -69,10 +69,25 @@ def get_s1_raster_reference(track_dir: Path) -> Optional[Tuple[str, float, float
             if ds:
                 proj = ds.GetProjection()
                 gt = ds.GetGeoTransform()
+                w = ds.RasterXSize
+                h = ds.RasterYSize
                 res_x = abs(gt[1])
                 res_y = abs(gt[5])
+                min_x = gt[0]
+                max_x = gt[0] + w * gt[1]
+                max_y = gt[3]
+                min_y = gt[3] + h * gt[5]
+                bounds = [min_x, min_y, max_x, max_y]
                 ds = None
-                return proj, res_x, res_y
+                return {
+                    'proj': proj,
+                    'gt': gt,
+                    'width': w,
+                    'height': h,
+                    'res_x': res_x,
+                    'res_y': res_y,
+                    'bounds': bounds
+                }
     return None
 
 
@@ -83,9 +98,11 @@ def mosaic_single_band_doy(
     target_epsg: int = 3857,
     ref_proj: Optional[str] = None,
     res_x: float = 10.0,
-    res_y: float = 10.0
+    res_y: float = 10.0,
+    output_bounds: Optional[List[float]] = None,
+    overwrite: bool = False
 ) -> bool:
-    if output_tif.exists() and output_tif.stat().st_size > 1024:
+    if output_tif.exists() and output_tif.stat().st_size > 1024 and not overwrite:
         return True
 
     output_tif.parent.mkdir(parents=True, exist_ok=True)
@@ -110,9 +127,12 @@ def mosaic_single_band_doy(
     else:
         warp_options_kwargs['dstSRS'] = f"EPSG:{target_epsg}"
 
+    if output_bounds:
+        warp_options_kwargs['outputBounds'] = output_bounds
+
     if shp_cutline and shp_cutline.exists():
         warp_options_kwargs['cutlineDSName'] = str(shp_cutline)
-        warp_options_kwargs['cropToCutline'] = True
+        warp_options_kwargs['cropToCutline'] = (output_bounds is None)
 
     try:
         warp_opts = gdal.WarpOptions(**warp_options_kwargs)
@@ -128,7 +148,8 @@ def mosaic_stack_clip_single_track(
     country_code: str,
     target_epsg: int = 3857,
     doys: List[int] = DEFAULT_DOYS,
-    max_workers: int = 4
+    max_workers: int = 8,
+    overwrite: bool = False
 ):
     norm_track = track.replace('\\', '/')
     sanitized_track = norm_track.replace('/', '_')
@@ -146,10 +167,14 @@ def mosaic_stack_clip_single_track(
     shp_cutline = get_country_shapefile(country_code)
 
     ref_proj, res_x, res_y = (None, 10.0, 10.0)
+    output_bounds = None
     s1_ref = get_s1_raster_reference(track_dir)
     if s1_ref:
-        ref_proj, res_x, res_y = s1_ref
-        logging.info(f"Matching S1 SAR reference geometry for {track}: {res_x}m x {res_y}m")
+        ref_proj = s1_ref['proj']
+        res_x = s1_ref['res_x']
+        res_y = s1_ref['res_y']
+        output_bounds = s1_ref['bounds']
+        logging.info(f"Matching S1 SAR reference geometry for {track}: {s1_ref['width']}x{s1_ref['height']} ({res_x}m x {res_y}m), Bounds: {output_bounds}")
 
     synthetic_dirs = list(s2_base.glob("**/_synthetic_s2"))
     if not synthetic_dirs:
@@ -185,7 +210,7 @@ def mosaic_stack_clip_single_track(
         futures = {
             executor.submit(
                 mosaic_single_band_doy,
-                task[0], task[1], shp_cutline, target_epsg, ref_proj, res_x, res_y
+                task[0], task[1], shp_cutline, target_epsg, ref_proj, res_x, res_y, output_bounds, overwrite
             ): task[1] for task in mosaic_tasks
         }
         for fut in as_completed(futures):
@@ -210,7 +235,7 @@ def mosaic_stack_clip_single_track(
     vrt_opts = gdal.BuildVRTOptions(separate=True)
     gdal.BuildVRT(str(out_vrt), valid_layers, options=vrt_opts)
 
-    trans_opts = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=YES'])
+    trans_opts = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'])
     ds_final = gdal.Translate(str(out_final_tif), str(out_vrt), options=trans_opts)
 
     if ds_final:
@@ -228,53 +253,65 @@ def mosaic_stack_clip_single_track(
     logging.info(f"SUCCESS: Sentinel-2 Multi-Temporal Stack saved to {out_final_tif} ({len(band_descriptions)} bands)!")
 
 
+def discover_s1_orbits(country_code: str) -> List[int]:
+    country_dir = BASE_DIR / country_code
+    if country_dir.exists():
+        found = [int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name)]
+        if found: return sorted(list(set(found)))
+    return COUNTRY_ORBITS.get(country_code.upper(), [88, 161])
+
+
 def mosaic_stack_clip_s2(
     country: Optional[str] = None,
     track: Optional[str] = None,
     orbit: Optional[int] = None,
     target_epsg: int = 3857,
     doys: List[int] = DEFAULT_DOYS,
-    max_workers: int = 4
+    max_workers: int = 8,
+    overwrite: bool = False
 ):
     if track:
         norm_track = track.replace('\\', '/')
-        country_code = country.upper() if country else norm_track.split('/')[0].upper()
-        mosaic_stack_clip_single_track(norm_track, country_code, target_epsg, doys, max_workers)
+        if '/' in norm_track:
+            c_code = norm_track.split('/')[0]
+        else:
+            c_code = norm_track.split('_')[0]
+        mosaic_stack_clip_single_track(norm_track, c_code, target_epsg, doys, max_workers, overwrite)
     elif country:
         country_code = country.upper()
-        country_dir = BASE_DIR / country_code
         if orbit is not None:
             orbits = [orbit]
-        elif country_dir.exists():
-            orbits = [int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name)]
-            if not orbits:
-                orbits = COUNTRY_ORBITS.get(country_code, [88, 161])
         else:
-            orbits = COUNTRY_ORBITS.get(country_code, [88, 161])
+            orbits = discover_s1_orbits(country_code)
 
-        logging.info(f"Mosaicking, clipping and stacking S2 for country {country_code} across orbits {orbits}...")
-        for o in orbits:
-            mosaic_stack_clip_single_track(f"{country_code}/orbit_{o}", country_code, target_epsg, doys, max_workers)
+        for o_num in orbits:
+            track_name = f"{country_code}/orbit_{o_num}"
+            mosaic_stack_clip_single_track(track_name, country_code, target_epsg, doys, max_workers, overwrite)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Mosaic, reproject, clip, and stack Sentinel-2 synthetic time series matching Sentinel-1.")
+    parser = argparse.ArgumentParser(description="Mosaic, Reproject, Clip, and Stack Sentinel-2 Synthetic Time Series.")
     parser.add_argument('-c', '--country', default=None, help="Country code, e.g. PL, NL, FR, PT, AT")
-    parser.add_argument('-t', '--track', default=None, help="Track/Orbit relative path, e.g. NL/orbit_88")
-    parser.add_argument('-o', '--orbit', type=int, default=None, help="Specify single orbit (optional)")
-    parser.add_argument('--target_epsg', type=int, default=3857, help="Target EPSG CRS (default: 3857)")
-    parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="List of DOY integer targets")
-    parser.add_argument('--threads', type=int, default=4, help="Number of worker threads (default: 4)")
+    parser.add_argument('-t', '--track', default=None, help="Track path, e.g. NL/orbit_88")
+    parser.add_argument('-o', '--orbit', type=int, default=None, help="Optional single orbit number")
+    parser.add_argument('--epsg', type=int, default=3857, help="Target EPSG code (default: 3857)")
+    parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="List of target DOYs")
+    parser.add_argument('--threads', type=int, default=8, help="Worker threads (default: 8)")
+    parser.add_argument('--overwrite', action='store_true', help="Force re-mosaicking and overwrite existing rasters")
 
     args = parser.parse_args()
+
+    if not args.country and not args.track:
+        parser.error("Either --country (-c) or --track (-t) must be specified.")
 
     mosaic_stack_clip_s2(
         country=args.country,
         track=args.track,
         orbit=args.orbit,
-        target_epsg=args.target_epsg,
+        target_epsg=args.epsg,
         doys=args.doys,
-        max_workers=args.threads
+        max_workers=args.threads,
+        overwrite=args.overwrite
     )
 
 

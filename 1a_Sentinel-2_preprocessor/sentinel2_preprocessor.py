@@ -109,7 +109,8 @@ def run_s2_pipeline_for_orbit(
             track=track_name,
             country_code=country_code,
             doys=doys,
-            max_workers=threads
+            max_workers=threads,
+            overwrite=overwrite
         )
 
     logging.info(f" >>> FINISHED S2 PIPELINE FOR TRACK: {track_name} <<<\n")
@@ -125,43 +126,19 @@ def run_s2_master_pipeline(
     mode: str = "all",
     cloud_cover: float = 80.0,
     doys: list = time_series.DEFAULT_DOYS,
-    threads: int = 4,
-    repo_path: Optional[str] = None
+    threads: int = 8,
+    repo_path: Optional[str] = None,
+    overwrite: bool = False
 ):
     country_code = country.upper() if country else (track.split('/')[0].upper() if track else "PL")
 
     if repo_path:
         extract_creodias.S2_REPO_PATH = Path(repo_path)
 
-    # 1. Determine target orbits
-    if orbit is not None:
-        target_orbits = [orbit]
-        logging.info(f"Processing manually specified orbit: {target_orbits}")
-    elif track:
-        match = re.search(r'orbit_(\d+)', track)
-        target_orbits = [int(match.group(1))] if match else [88]
-        logging.info(f"Processing manually specified track: {track} (Orbit {target_orbits[0]})")
-    else:
-        target_orbits = extract_creodias.discover_s1_orbits(country_code)
-
-    logging.info(f"================================================================================")
-    logging.info(f" Sentinel-2 Pipeline Orchestrator")
-    logging.info(f" Country: {country_code} | Target Orbits: {target_orbits}")
-    logging.info(f" Source: {source.upper()} | Mode: {mode.upper()}")
-    if start_date and end_date:
-        logging.info(f" Date range: {start_date} to {end_date}")
-    logging.info(f"================================================================================")
-
-    # Cache CREODIAS scan if using CREODIAS source
-    all_scenes_cache = None
-    if source.lower() == 'creodias' and mode in ['all', 'download', 'download_only'] and start_date and end_date:
-        all_scenes_cache = extract_creodias.scan_creodias_for_dates(extract_creodias.S2_REPO_PATH, start_date, end_date, cloud_cover)
-
-    # Sequential processing per orbit
-    for o_num in target_orbits:
-        run_s2_pipeline_for_orbit(
+    if track:
+        run_s2_pipeline_for_track(
+            track_name=track,
             country_code=country_code,
-            orbit_num=o_num,
             start_date=start_date,
             end_date=end_date,
             source=source,
@@ -169,12 +146,38 @@ def run_s2_master_pipeline(
             cloud_cover=cloud_cover,
             doys=doys,
             threads=threads,
-            all_scenes_cache=all_scenes_cache
+            overwrite=overwrite
         )
+    else:
+        if orbit is not None:
+            selected_orbits = [orbit]
+        else:
+            selected_orbits = mosaic_stack.discover_s1_orbits(country_code)
 
-    logging.info(f"================================================================================")
-    logging.info(f" ALL Sentinel-2 Pipelines for country {country_code} (Orbits: {target_orbits}) COMPLETED SUCCESSFULLY!")
-    logging.info(f"================================================================================")
+        logging.info(f"\n#####################################################################")
+        logging.info(f"   STARTING SENTINEL-2 PIPELINE FOR COUNTRY: {country_code}")
+        logging.info(f"   TARGET ORBITS: {selected_orbits}")
+        logging.info(f"   SOURCE: {source.upper()} | MODE: {mode.upper()} | THREADS: {threads}")
+        logging.info(f"#####################################################################\n")
+
+        for o_num in selected_orbits:
+            track_name = f"{country_code}/orbit_{o_num}"
+            run_s2_pipeline_for_track(
+                track_name=track_name,
+                country_code=country_code,
+                start_date=start_date,
+                end_date=end_date,
+                source=source,
+                mode=mode,
+                cloud_cover=cloud_cover,
+                doys=doys,
+                threads=threads,
+                overwrite=overwrite
+            )
+
+        logging.info(f"\n=====================================================================")
+        logging.info(f" ALL Sentinel-2 Pipelines for country {country_code} (Orbits: {selected_orbits}) COMPLETED SUCCESSFULLY!")
+        logging.info(f"=====================================================================\n")
 
 
 def main():
@@ -190,6 +193,7 @@ def main():
     parser.add_argument('--doys', nargs='+', type=int, default=time_series.DEFAULT_DOYS, help="List of target DOY integers")
     parser.add_argument('--threads', type=int, default=8, help="Worker threads (default: 8)")
     parser.add_argument('--repo_path', type=str, default=None, help="Override CREODIAS repository path")
+    parser.add_argument('--overwrite', action='store_true', help="Force overwrite of existing mosaics/stacks")
     parser.add_argument('--username', default=download_cdse.CDSE_USERNAME, help="CDSE Username")
     parser.add_argument('--password', default=download_cdse.CDSE_PASSWORD, help="CDSE Password")
 
@@ -214,7 +218,8 @@ def main():
         cloud_cover=args.cloud_cover,
         doys=args.doys,
         threads=args.threads,
-        repo_path=args.repo_path
+        repo_path=args.repo_path,
+        overwrite=args.overwrite
     )
 
 
