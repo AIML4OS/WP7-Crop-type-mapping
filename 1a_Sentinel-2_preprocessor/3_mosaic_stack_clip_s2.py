@@ -206,15 +206,25 @@ def mosaic_stack_clip_single_track(
             mosaic_tasks.append((input_band_files, out_band_tif))
             mosaic_bands_list.append((out_band_tif, band, doy, year))
 
+    import threading
+    total_bands = len(mosaic_tasks)
+    done_bands = 0
+    lock = threading.Lock()
+
+    logging.info(f"Track {track}: warping {total_bands} single-band DOY mosaics (Workers: {max_workers})...")
+
+    def _worker_mosaic(task):
+        nonlocal done_bands
+        res = mosaic_single_band_doy(task[0], task[1], shp_cutline, target_epsg, ref_proj, res_x, res_y, output_bounds, overwrite)
+        with lock:
+            done_bands += 1
+            if done_bands % 5 == 0 or done_bands == total_bands:
+                pct = (done_bands / total_bands) * 100.0
+                logging.info(f"  [MOSAIC PROGRESS] Track {track}: {done_bands}/{total_bands} bands completed ({pct:.1f}%)")
+        return res
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                mosaic_single_band_doy,
-                task[0], task[1], shp_cutline, target_epsg, ref_proj, res_x, res_y, output_bounds, overwrite
-            ): task[1] for task in mosaic_tasks
-        }
-        for fut in as_completed(futures):
-            fut.result()
+        list(executor.map(_worker_mosaic, mosaic_tasks))
 
     valid_layers = []
     band_descriptions = []
@@ -227,15 +237,20 @@ def mosaic_stack_clip_single_track(
             band_descriptions.append(desc)
 
     if not valid_layers:
+        logging.warning(f"No valid mosaic layers generated for track {track}.")
         return
 
     out_vrt = out_final_dir / f"{sanitized_track}_S2_timeseries_temp.vrt"
     out_final_tif = out_proc_dir / f"{sanitized_track}_S2_timeseries.tif"
 
+    logging.info(f"Assembling VRT and translating final {len(band_descriptions)}-band multi-temporal GeoTIFF stack...")
     vrt_opts = gdal.BuildVRTOptions(separate=True)
     gdal.BuildVRT(str(out_vrt), valid_layers, options=vrt_opts)
 
-    trans_opts = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'])
+    trans_opts = gdal.TranslateOptions(
+        creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'],
+        callback=gdal.TermProgress_nocb
+    )
     ds_final = gdal.Translate(str(out_final_tif), str(out_vrt), options=trans_opts)
 
     if ds_final:

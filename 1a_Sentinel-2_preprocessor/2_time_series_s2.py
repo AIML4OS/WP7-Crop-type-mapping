@@ -148,7 +148,8 @@ def generate_s2_time_series_for_tile(
     return True
 
 
-def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 4):
+def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 8):
+    import threading
     s2_base = BASE_DIR / track / "S2"
     if not s2_base.exists():
         return
@@ -157,16 +158,24 @@ def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 4)
     if not tile_dirs:
         return
 
-    logging.info(f"Generating synthetic time-series for track {track} ({len(tile_dirs)} tiles)...")
+    total_tiles = len(tile_dirs)
+    done_tiles = 0
+    lock = threading.Lock()
+
+    logging.info(f"Generating synthetic time-series for track {track} ({total_tiles} tiles, Workers: {max_workers})...")
+
+    def _worker_tile(t_dir):
+        nonlocal done_tiles
+        clean_tile_name = t_dir.name.replace('_tif', '')
+        res = generate_s2_time_series_for_tile(clean_tile_name, t_dir, s2_base / clean_tile_name / "_synthetic_s2", doys)
+        with lock:
+            done_tiles += 1
+            pct = (done_tiles / total_tiles) * 100.0
+            logging.info(f"  [TIME-SERIES PROGRESS] Track {track}: {done_tiles}/{total_tiles} tiles completed ({pct:.1f}%) - Last: {clean_tile_name}")
+        return res
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                generate_s2_time_series_for_tile,
-                t_dir.name.replace('_tif', ''), t_dir, s2_base / t_dir.name.replace('_tif', '') / "_synthetic_s2", doys
-            ): t_dir.name for t_dir in tile_dirs
-        }
-        for fut in as_completed(futures):
-            fut.result()
+        list(executor.map(_worker_tile, tile_dirs))
 
 
 def run_time_series(
