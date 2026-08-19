@@ -184,6 +184,19 @@ The `tools/` directory provides unified, standardized CLI utilities for data pre
    python tools/4_generate_crop_priors.py -c PL --input path/to/arimr.shp --crop_col CROP_NAME
    ```
 
+5. **Step 5: High-Performance Pyramid Overviews Generator (`tools/5_build_raster_overviews.py`)**:
+   Builds compressed (LZW) multi-scale pyramid overviews (`2, 4, 8, 16, 32, 64`) for massive GeoTIFF stacks, S1/S2 rasters, and classification maps for instant rendering in QGIS / ArcGIS:
+   ```powershell
+   # Build pyramids for a specific raster:
+   python tools/5_build_raster_overviews.py -i workingDir/NL/orbit_88/processed_raster/NL_orbit_88_S2_timeseries.tif
+
+   # Build pyramids for all rasters in an orbit directory:
+   python tools/5_build_raster_overviews.py -d workingDir/NL/orbit_88/processed_raster/
+
+   # Build pyramids across all orbits for a country:
+   python tools/5_build_raster_overviews.py -c NL
+   ```
+
 ---
 
 ## Step-by-Step Execution Guide

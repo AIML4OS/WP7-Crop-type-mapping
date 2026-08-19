@@ -284,6 +284,13 @@ def mosaic_stack_clip_single_track(
             band_obj = ds_final.GetRasterBand(b_idx)
             band_obj.SetDescription(desc)
             band_obj.SetNoDataValue(0)
+
+        if build_overviews:
+            logging.info(f"Building compressed pyramid overviews (2, 4, 8, 16, 32, 64) for {out_final_tif.name}...")
+            gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
+            gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
+            ds_final.BuildOverviews('AVERAGE', [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb)
+
         ds_final.FlushCache()
         ds_final = None
 
@@ -317,7 +324,8 @@ def mosaic_stack_clip_s2(
     target_epsg: int = 3857,
     doys: List[int] = DEFAULT_DOYS,
     max_workers: int = 8,
-    overwrite: bool = False
+    overwrite: bool = False,
+    build_overviews: bool = True
 ):
     if track:
         norm_track = track.replace('\\', '/')
@@ -325,7 +333,7 @@ def mosaic_stack_clip_s2(
             c_code = norm_track.split('/')[0]
         else:
             c_code = norm_track.split('_')[0]
-        mosaic_stack_clip_single_track(norm_track, c_code, target_epsg, doys, max_workers, overwrite)
+        mosaic_stack_clip_single_track(norm_track, c_code, target_epsg, doys, max_workers, overwrite, build_overviews)
     elif country:
         country_code = country.upper()
         if orbit is not None:
@@ -336,7 +344,7 @@ def mosaic_stack_clip_s2(
         for o_num in orbits:
             track_name = f"{country_code}/orbit_{o_num}"
             try:
-                mosaic_stack_clip_single_track(track_name, country_code, target_epsg, doys, max_workers, overwrite)
+                mosaic_stack_clip_single_track(track_name, country_code, target_epsg, doys, max_workers, overwrite, build_overviews)
             except Exception as e:
                 logging.error(f"Error processing track {track_name}: {e}")
 
@@ -350,6 +358,7 @@ def main():
     parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="List of target DOYs")
     parser.add_argument('--threads', type=int, default=8, help="Worker threads (default: 8)")
     parser.add_argument('--overwrite', action='store_true', help="Force re-mosaicking and overwrite existing rasters")
+    parser.add_argument('--no_overviews', action='store_true', help="Skip building pyramid overviews")
 
     args = parser.parse_args()
 
@@ -363,7 +372,8 @@ def main():
         target_epsg=args.epsg,
         doys=args.doys,
         max_workers=args.threads,
-        overwrite=args.overwrite
+        overwrite=args.overwrite,
+        build_overviews=not args.no_overviews
     )
 
 
