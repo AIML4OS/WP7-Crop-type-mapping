@@ -74,6 +74,22 @@ def build_overviews_for_directory(
         build_overviews_for_file(f, levels, resampling)
 
 
+def resolve_raster_path(path_str: str) -> Path:
+    p = Path(path_str)
+    if p.exists():
+        return p
+    # Check relative to project root
+    root = BASE_DIR.parent
+    if (root / path_str).exists():
+        return root / path_str
+    if (BASE_DIR / path_str).exists():
+        return BASE_DIR / path_str
+    # Check relative to parent directory (if called from tools/)
+    if (Path("..") / path_str).exists():
+        return (Path("..") / path_str).resolve()
+    return p
+
+
 def main():
     parser = argparse.ArgumentParser(description="Universal GDAL Pyramid Overviews Generator.")
     parser.add_argument('-i', '--input', type=str, default=None, help="Path to single GeoTIFF file")
@@ -86,9 +102,11 @@ def main():
     args = parser.parse_args()
 
     if args.input:
-        build_overviews_for_file(Path(args.input), args.levels, args.resampling, args.compress)
+        target = resolve_raster_path(args.input)
+        build_overviews_for_file(target, args.levels, args.resampling, args.compress)
     elif args.directory:
-        build_overviews_for_directory(Path(args.directory), args.levels, args.resampling)
+        target_dir = resolve_raster_path(args.directory)
+        build_overviews_for_directory(target_dir, args.levels, args.resampling)
     elif args.country:
         country_dir = BASE_DIR / args.country.upper()
         if country_dir.exists():
