@@ -14,8 +14,14 @@ Pipeline Overview:
   Stage 7: Calculate Out-of-Bag Validation Metrics & Generate Styled Excel Report (.xlsx)
 
 Execution examples:
+  # Mode 1: SLIC Superpixel Segmentation (Fast, no external vector required):
   python 1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode slic --stage A
-  python 1_classify_MLPXGB_presto_hybrid_S1S2.py --track PL/orbit_12 --seg_mode slic --stage A
+
+  # Mode 2: Official Cadastral LPIS Parcel Segmentation:
+  python 1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode lpis --lpis_vector path/to/brp.gpkg --stage A
+  python 1_classify_MLPXGB_presto_hybrid_S1S2.py --track PL/orbit_12 --seg_mode lpis --lpis_vector path/to/arimr.shp --stage A
+
+  # Mode 3: Segment Anything (SAM) Deep Learning Segmentation:
   python 1_classify_MLPXGB_presto_hybrid_S1S2.py --track PT/orbit_161 --seg_mode sam --stage A
 """
 
@@ -446,10 +452,11 @@ class PrestoMultimodalExtractor:
 # =====================================================================
 
 class ProcessingPipelineS1S2:
-    def __init__(self, track: str, seg_mode: str = 'slic', mlp_weight: float = 0.65, s1_override: Optional[str] = None, s2_override: Optional[str] = None):
+    def __init__(self, track: str, seg_mode: str = 'slic', mlp_weight: float = 0.65, s1_override: Optional[str] = None, s2_override: Optional[str] = None, lpis_vector: Optional[str] = None):
         self.track = track
         self.seg_mode = seg_mode.lower()
         self.mlp_weight = mlp_weight
+        self.lpis_vector_override = lpis_vector
         
         norm_track = track.replace('\\', '/')
         self.country = norm_track.split('/')[0].upper() if '/' in norm_track else track.upper()
@@ -561,6 +568,27 @@ class ProcessingPipelineS1S2:
                 return c
         return None
 
+    def _resolve_lpis_vector(self) -> Optional[Path]:
+        if hasattr(self, 'lpis_vector_override') and self.lpis_vector_override:
+            p = Path(self.lpis_vector_override)
+            if p.exists():
+                return p
+
+        # Look in auxiliary_files
+        candidates = [
+            self.aux_dir / "shapefiles_samples" / self.country / "lpis.gpkg",
+            self.aux_dir / "shapefiles_samples" / self.country / "lpis.shp",
+            self.aux_dir / "shapefiles_samples" / self.country / "parcels.gpkg",
+            self.aux_dir / "shapefiles_samples" / self.country / "parcels.shp",
+            self.aux_dir / "shapefiles_samples" / f"{self.country}_{self.sanitized_track}" / "lpis.shp",
+            self.base_dir / self.track / "lpis.shp",
+            self.base_dir / self.track / "parcels.gpkg"
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
+        return None
+
     # --- Stage 0: Footprint ---
     def stage_0_generate_footprint(self, force_recompute=False):
         stage = 0
@@ -614,14 +642,47 @@ class ProcessingPipelineS1S2:
     def stage_1_segmentation(self, force_recompute=False):
         stage = 1
         if self.seg_tif.exists() and not force_recompute:
-            print(f"[Stage {stage}] Segmentation raster exists, skipping.")
+            print(f"[Stage {stage}] Segmentation raster exists ({self.seg_tif.name}), skipping.")
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Running Multimodal Image Segmentation ({self.seg_mode.upper()})...")
         ref_ras = self.s1_ras if self.s1_ras else self.s2_ras
+        if not ref_ras or not ref_ras.exists():
+            raise FileNotFoundError("Reference raster not found for segmentation.")
+
         ds = gdal.Open(str(ref_ras))
         cols, rows = ds.RasterXSize, ds.RasterYSize
         gt, proj = ds.GetGeoTransform(), ds.GetProjection()
+
+        if self.seg_mode == 'lpis':
+            lpis_vec = self._resolve_lpis_vector()
+            if lpis_vec and lpis_vec.exists():
+                print(f"    Rasterizing LPIS cadastral parcel polygons from: {lpis_vec}...")
+                driver = gdal.GetDriverByName('GTiff')
+                out_ds = driver.Create(
+                    str(self.seg_tif), cols, rows, 1, gdal.GDT_UInt32,
+                    options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
+                )
+                out_ds.SetGeoTransform(gt)
+                out_ds.SetProjection(proj)
+                out_ds.GetRasterBand(1).Fill(0)
+                out_ds.GetRasterBand(1).SetNoDataValue(0)
+                out_ds.FlushCache()
+                out_ds = None
+
+                # Rasterize with SQL to burn unique parcel FID + 1
+                gdal.Rasterize(
+                    str(self.seg_tif),
+                    str(lpis_vec),
+                    options=gdal.RasterizeOptions(
+                        options=['ATTRIBUTE=FID', 'ALL_TOUCHED=FALSE']
+                    )
+                )
+                print(f"    LPIS parcel segmentation raster created: {self.seg_tif}")
+                return
+            else:
+                print(f"    [WARNING] LPIS vector dataset not found. Specify via --lpis_vector path/to/parcels.shp/.gpkg")
+                print(f"    Falling back to SLIC superpixel segmentation...")
 
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(
@@ -1242,6 +1303,7 @@ def main():
     parser.add_argument('--mlp_weight', type=float, default=0.65, help="Weight of MLP in fusion ensemble (0.0 to 1.0, default: 0.65)")
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 VH/VV GeoTIFF raster")
     parser.add_argument('--s2_raster', default=None, help="Override path to Sentinel-2 Multi-temporal GeoTIFF raster")
+    parser.add_argument('--lpis_vector', default=None, help="Path to official LPIS cadastral parcel vector file (.shp, .gpkg) for --seg_mode lpis")
 
     args = parser.parse_args()
 
@@ -1250,7 +1312,8 @@ def main():
         seg_mode=args.seg_mode,
         mlp_weight=args.mlp_weight,
         s1_override=args.s1_raster,
-        s2_override=args.s2_raster
+        s2_override=args.s2_raster,
+        lpis_vector=args.lpis_vector
     )
 
     if args.stage is None:
