@@ -629,10 +629,41 @@ class ProcessingPipelineS1S2:
 
         # Resolve Samples & Output Paths
         self.sample_shp = self._resolve_samples_shp()
-        self.learn_shp = self.samples_dir / f"{self.file_prefix}_learn.shp"
-        self.control_shp = self.samples_dir / f"{self.file_prefix}_control.shp"
-        self.sel_csv = self.model_dir / f"{self.file_prefix}_sel_s1s2.csv"
-        self.model_pkl = self.model_dir / f"{self.file_prefix}_fusion_model.pkl"
+        
+        candidate_learn = [
+            self.samples_dir / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
+            self.samples_dir / f"learn_{self.seg_mode}.shp",
+            self.samples_dir / f"{self.file_prefix}_learn.shp"
+        ]
+        self.learn_shp = candidate_learn[0]
+        for c in candidate_learn:
+            if c.exists():
+                self.learn_shp = c
+                break
+
+        candidate_control = [
+            self.samples_dir / f"{self.file_prefix}_control_{self.seg_mode}.shp",
+            self.samples_dir / f"control_{self.seg_mode}.shp",
+            self.samples_dir / f"{self.file_prefix}_control.shp"
+        ]
+        self.control_shp = candidate_control[0]
+        for c in candidate_control:
+            if c.exists():
+                self.control_shp = c
+                break
+
+        candidate_csvs = [
+            self.samples_dir / f"{self.file_prefix}_mlpxgb_presto_learn_features_{self.seg_mode}.csv",
+            self.samples_dir / f"{self.file_prefix}_presto_hybrid_learn_features_{self.seg_mode}.csv",
+            self.model_dir / f"{self.file_prefix}_sel_s1s2.csv"
+        ]
+        self.sel_csv = candidate_csvs[0]
+        for c in candidate_csvs:
+            if c.exists():
+                self.sel_csv = c
+                break
+
+        self.model_pkl = self.model_dir / f"{self.file_prefix}_mlpxgb_presto_model_{self.seg_mode}.pkl"
         
         self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
         candidate_segs = [
