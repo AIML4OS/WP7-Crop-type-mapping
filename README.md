@@ -1,83 +1,142 @@
 # AIML CropMapper Cloud: Sentinel-1 & Sentinel-2 OBIA crop type mapping pipeline (v2.5)
 
-An automated, cloud-optimized object-based image analysis (OBIA) pipeline designed to process **Sentinel-1 SAR** and **Sentinel-2 multispectral optical** time series for large-scale, national and regional crop type classification. Developed under the European Statistical System (ESS) **AIML4OS (One Stop Shop for Artificial Intelligence in Official Statistics - Work Package 7)** project funded by Eurostat and the European Commission, this toolbox integrates state-of-the-art **geospatial foundation models (NASA Harvest Presto)**, **deep neural networks (PyTorch MLP)**, **extreme gradient boosting (XGBoost)**, and advanced computer vision segmentation (**Meta AI SAM**, **SLIC superpixels**, **LPIS cadastral parcels**).
+An automated, cloud-optimized object-based image analysis (OBIA) pipeline designed to process **Sentinel-1 SAR** and **Sentinel-2 multispectral optical** time series for large-scale, national and regional crop type classification. Developed under the European Statistical System (ESS) **AIML4OS (One Stop Shop for Artificial Intelligence in Official Statistics - Work Package 7)** project funded by Eurostat and the European Commission, this toolbox enables National Statistical Institutes (NSIs), agricultural paying agencies, and IT practitioners to generate standardized, high-accuracy crop type statistics across Europe.
 
 ---
 
 ## Table of contents
-1. [Pipeline overview and key features](#pipeline-overview-and-key-features)
-2. [Methodology and scientific architecture](#methodology-and-scientific-architecture)
-   - [Sentinel-1 SAR preprocessing workflow](#sentinel-1-sar-preprocessing-workflow)
-   - [Sentinel-2 multispectral optical preprocessing workflow](#sentinel-2-multispectral-optical-preprocessing-workflow)
-   - [Object-based image segmentation paradigms](#object-based-image-segmentation-paradigms)
+1. [Quick start guide for IT administrators](#quick-start-guide-for-it-administrators)
+2. [Data inputs: what you provide vs what is automated](#data-inputs-what-you-provide-vs-what-is-automated)
+3. [Plain-language glossary of terms](#plain-language-glossary-of-terms)
+4. [Hardware, storage, and system sizing](#hardware-storage-and-system-sizing)
+5. [Pipeline architecture and scientific methodology](#pipeline-architecture-and-scientific-methodology)
+   - [Sentinel-1 SAR radar preprocessing](#sentinel-1-sar-radar-preprocessing)
+   - [Sentinel-2 multispectral optical preprocessing](#sentinel-2-multispectral-optical-preprocessing)
+   - [Object-based segmentation paradigms](#object-based-segmentation-paradigms)
    - [NASA Harvest Presto foundation model embeddings](#nasa-harvest-presto-foundation-model-embeddings)
    - [Unified PyTorch MLP + XGBoost ensemble classifier](#unified-pytorch-mlp--xgboost-ensemble-classifier)
    - [Bayesian prior probability calibration](#bayesian-prior-probability-calibration)
    - [Multi-orbit confidence merge and sieve post-processing](#multi-orbit-confidence-merge-and-sieve-post-processing)
-3. [Prerequisites and environment setup](#prerequisites-and-environment-setup)
+6. [Prerequisites and environment setup](#prerequisites-and-environment-setup)
    - [Windows installation](#windows-installation)
    - [Linux installation](#linux-installation)
-4. [Modular JSON configuration system](#modular-json-configuration-system)
-5. [Training samples and ground truth specification](#training-samples-and-ground-truth-specification)
-6. [Data preparation utilities (`tools/`)](#data-preparation-utilities-tools)
-7. [Step-by-step execution guide](#step-by-step-execution-guide)
-   - [Phase 1: Sentinel-1 SAR preprocessing](#phase-1-sentinel-1-sar-preprocessing)
-   - [Phase 2: Sentinel-2 optical preprocessing](#phase-2-sentinel-2-optical-preprocessing)
-   - [Phase 3: Multimodal crop classification](#phase-3-multimodal-crop-classification)
-   - [Phase 4: Multi-orbit nationwide merge](#phase-4-multi-orbit-nationwide-merge)
-8. [Directory and file structure](#directory-and-file-structure)
-9. [Troubleshooting and performance optimization](#troubleshooting-and-performance-optimization)
-10. [Authors and citation](#authors-and-citation)
-11. [License](#license)
+7. [Modular JSON configuration system](#modular-json-configuration-system)
+8. [Ground truth sample specifications (`samples.shp`)](#ground-truth-sample-specifications-samplesshp)
+9. [Data preparation utilities (`tools/`)](#data-preparation-utilities-tools)
+10. [Step-by-step execution guide](#step-by-step-execution-guide)
+    - [Phase 1: Sentinel-1 SAR preprocessing](#phase-1-sentinel-1-sar-preprocessing)
+    - [Phase 2: Sentinel-2 optical preprocessing](#phase-2-sentinel-2-optical-preprocessing)
+    - [Phase 3: Multimodal crop classification](#phase-3-multimodal-crop-classification)
+    - [Phase 4: Multi-orbit nationwide merge](#phase-4-multi-orbit-nationwide-merge)
+11. [How to inspect and use output products](#how-to-inspect-and-use-output-products)
+12. [Directory and file structure](#directory-and-file-structure)
+13. [Troubleshooting and FAQ](#troubleshooting-and-faq)
+14. [Authors and citation](#authors-and-citation)
+15. [License](#license)
 
 ---
 
-## Pipeline overview and key features
+## Quick start guide for IT administrators
 
-* **Multimodal satellite fusion (SAR + Optical)**: Fuses all-weather radar backscatter ($\sigma^0$ VH, VV, and polarimetric ratio VH/VV) from Sentinel-1 with 10 m / 20 m multispectral surface reflectances (`B02`, `B03`, `B04`, `B05`, `B06`, `B07`, `B8A`, `B11`, `B12`) and dynamic vegetation indices (NDVI) from Sentinel-2.
-* **Geospatial foundation model embeddings**: Incorporates 128-dimensional multi-temporal token embeddings generated by the **NASA Harvest Presto** transformer model, extracting rich representations of vegetation phenology and crop dynamics.
-* **Multiple segmentation paradigms**: Supports official European LPIS cadastral parcel vectors, deep Segment Anything Model (**Meta AI SAM-Geo ViT-H/L/B**) with multi-process parallel inference, and high-speed **SLIC superpixels** with buffered tiling.
-* **Unified ensemble classification**: Employs a soft-voting blend of a multi-layer deep neural network (**PyTorch MLP** with batch normalization and cosine annealing) and extreme gradient boosted decision trees (**XGBoost GBDT**).
-* **Bayesian statistical calibration**: Dynamically adjusts raw machine learning probabilities against real-world agricultural census distributions and LPIS crop acreage priors ($P(C_i|X) \propto P(X|C_i) \cdot \frac{P_{\text{true}}(C_i)}{P_{\text{sample}}(C_i)}$).
-* **Automated Cloud-Native GeoTIFF & BigTIFF**: Full support for LZW compression, sub-pixel grid alignment ($\Delta X = 0.000\text{ m}, \Delta Y = 0.000\text{ m}$), and multi-scale GDAL pyramid overviews for instant exploration in GIS software (QGIS / ArcGIS).
+If you are an IT administrator or data engineer running this pipeline for the first time, follow this 5-step checklist to produce a complete crop map:
 
----
+```
+[Step 1: Free CDSE Account] ---> [Step 2: JSON Configs] ---> [Step 3: Ground Truth Samples]
+                                                                        |
+                                                                        v
+[Step 5: Run Classifier] <--- [Step 4: Run S1 & S2 Preprocessors] <-----+
+```
 
-## Methodology and scientific architecture
-
-### Sentinel-1 SAR preprocessing workflow
-
-The Sentinel-1 pipeline ingests Level-1 Ground Range Detected (GRD) Interferometric Wide (IW) swath products either from local CREODIAS storage or directly from the Copernicus Data Space Ecosystem (CDSE) API:
-
-1. **Radiometric calibration and correction**: Executes an automated ESA SNAP Graph Processing Tool (GPT) XML workflow applying:
-   - Precise orbit state vectors (POEORB).
-   - Thermal noise removal (TNR).
-   - Border noise removal (BNR).
-   - Radiometric calibration to radar backscatter coefficient $\sigma^0$ (Sigma0 in decibels, dB).
-   - Range Doppler terrain correction using Copernicus 30 m DEM / SRTM 1-sec.
-2. **TOPSAR deburst and slice assembly**: Seamlessly stitches consecutive slices along orbit passes into unified tracks.
-3. **Multi-temporal coregistration**: Performs sub-pixel cross-correlation coregistration across the entire growing season stack (autumn to autumn).
-4. **Administrative clipping**: Clips rasters to GISCO NUTS2 administrative regions reprojected to Web Mercator (`EPSG:3857`) at an exact 10 m resolution.
+1. **Create a free account on the Copernicus Data Space Ecosystem (CDSE)**:
+   - Register at [dataspace.copernicus.eu](https://dataspace.copernicus.eu).
+2. **Set up local configuration files**:
+   - Copy `1_Sentinel-1_preprocessor/config_s1.example.json` to `config_s1.json`.
+   - Copy `1a_Sentinel-2_preprocessor/config_s2.example.json` to `config_s2.json`.
+   - Paste your CDSE username (email) and password into both files.
+3. **Place your ground truth samples**:
+   - Put your training points in `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp` (with attribute `crop_id`).
+4. **Run the preprocessors**:
+   - Preprocess Sentinel-1 SAR: `python 1_Sentinel-1_preprocessor/1c_slice_calibration_cdse.py -s 2024-10-15 -e 2025-09-15 -c NL`
+   - Preprocess Sentinel-2 Optical: `python 1a_Sentinel-2_preprocessor/sentinel2_preprocessor.py -s 2025-03-01 -e 2025-09-15 -c NL --source cdse --mode all`
+5. **Run the multimodal classifier**:
+   - `python 2_classifier/1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode slic --stage A`
 
 ---
 
-### Sentinel-2 multispectral optical preprocessing workflow
+## Data inputs: what you provide vs what is automated
 
-The Sentinel-2 preprocessor produces cloud-free, regular 10-day synthetic optical time-series composites matched 1:1 to the Sentinel-1 SAR spatial grid:
+| Data type | Source / Responsibility | Description |
+| :--- | :--- | :--- |
+| **Sentinel-1 SAR imagery** | **Automated** (CDSE API / CREODIAS) | Calibrated $\sigma^0$ radar backscatter time series (VH, VV). |
+| **Sentinel-2 optical imagery** | **Automated** (CDSE API / CREODIAS) | Multispectral surface reflectances (`B02`–`B12`) and NDVI. |
+| **Digital Elevation Model (DEM)** | **Automated** (Copernicus 30 m) | Automatically fetched by ESA SNAP for terrain correction. |
+| **NUTS administrative boundaries**| **Automated** (`tools/1_download_nuts_boundaries.py`) | Downloaded directly from Eurostat GISCO web service. |
+| **Presto foundation model weights**| **Automated** (GitHub / Hugging Face) | Downloaded automatically during first execution. |
+| **CDSE credentials** | **User-provided** (Required) | Free email and password entered in `config_s1.json` / `config_s2.json`. |
+| **Training point samples** | **User-provided** (Required) | Vector shapefile (`samples.shp`) with field crop labels. |
+| **LPIS cadastral parcel vector** | **User-provided** (Optional) | National agricultural parcel database (`.gpkg` / `.shp`). |
+| **Crop acreage priors (`priors.json`)**| **User-provided** (Optional) | Statistical crop area distribution for Bayesian calibration. |
 
-1. **Granule ingestion**: Automatically queries CDSE OData API or traverses mounted CREODIAS repositories (`/eodata/Sentinel-2/MSI/L2A` or `Y:/Sentinel-2/MSI/L2A`) for tiles intersecting the target Sentinel-1 track footprint.
-2. **Cloud and shadow masking**: Utilizes the Scene Classification Layer (SCL) to mask clouds, cloud shadows, cirrus, and invalid pixels.
-3. **Synthetic DOY time-series interpolation**: Implements pure Python multi-temporal interpolation across 14 standardized agricultural Days of Year (DOYs):
+---
+
+## Plain-language glossary of terms
+
+* **SAR (Synthetic Aperture Radar - Sentinel-1)**: Active radar satellite sensor that penetrates clouds, rain, and darkness, measuring surface roughness, structure, and moisture.
+* **Optical Multispectral (Sentinel-2)**: Passive satellite sensor that captures solar reflectance across visible, near-infrared, and shortwave infrared wavelengths. Sensitive to crop greenness, chlorophyll content, and canopy water.
+* **DOY (Day of Year)**: Number representing a specific calendar day (e.g., DOY 80 = March 21, DOY 203 = July 22). Used to align satellite observations across different years and orbits into standardized 10-day time steps.
+* **SCL (Scene Classification Layer)**: Quality band produced by ESA Sentinel-2 processing that identifies clouds, cloud shadows, snow, and clear land.
+* **OBIA (Object-Based Image Analysis)**: Methodology that classifies groups of homogeneous pixels (agricultural fields or superpixels) rather than individual isolated pixels, eliminating "salt-and-pepper" visual noise.
+* **LPIS (Land Parcel Identification System)**: Official cadastral geographic database of agricultural parcels maintained by EU Member States for Common Agricultural Policy (CAP) subsidies (e.g., BRP in the Netherlands, ARiMR in Poland, ISIP in Portugal).
+* **NUTS (Nomenclature of Territorial Units for Statistics)**: Standard administrative division system of the European Union (e.g., NUTS0 = country, NUTS2 = province/region).
+* **BigTIFF & Pyramid Overviews**: GeoTIFF format extension allowing file sizes $> 4\text{ GB}$. Overviews are pre-calculated reduced-resolution preview layers that allow instant zooming and panning in GIS software without loading the entire 100+ GB file into RAM.
+
+---
+
+## Hardware, storage, and system sizing
+
+| Component | Minimum requirement | Recommended production setup |
+| :--- | :--- | :--- |
+| **Processor (CPU)** | 8 physical cores (e.g. Intel i7 / AMD Ryzen 7) | 16 to 32 cores (e.g. AMD Ryzen 9 / Threadripper / EPYC, Intel Xeon) |
+| **System Memory (RAM)** | 32 GB RAM | 64 GB to 128 GB RAM (especially for multi-orbit national merges) |
+| **Graphics Card (GPU)** | Not strictly required (runs on CPU) | NVIDIA GPU with 8 GB+ VRAM (accelerates PyTorch MLP, Presto, and SAM) |
+| **Disk Storage** | 500 GB free space | 1 TB to 2 TB NVMe SSD (fast I/O is critical for multi-band BigTIFF processing) |
+| **Operating System** | Windows 10/11 (64-bit) or Linux (Ubuntu 22.04+) | Windows 11 Pro 64-bit or Ubuntu Linux 22.04 / 24.04 LTS |
+
+> [!NOTE]
+> Processing one standard satellite orbit pass across an entire country requires approximately 150 GB to 250 GB of disk space (including intermediate calibrated slices, synthetic DOY mosaics, and the final 126-band BigTIFF stack).
+
+---
+
+## Pipeline architecture and scientific methodology
+
+### Sentinel-1 SAR radar preprocessing
+
+The Sentinel-1 pipeline processes Level-1 Ground Range Detected (GRD) Interferometric Wide (IW) swath products:
+
+1. **Radiometric calibration**: Automated ESA SNAP GPT graph applying precise orbit state vectors (POEORB), thermal noise removal (TNR), border noise removal (BNR), calibration to backscatter coefficient $\sigma^0$ (in dB), and Range Doppler terrain correction using Copernicus 30 m DEM.
+2. **Deburst and slice assembly**: Merges consecutive slices along each orbit track into a single continuous strip.
+3. **Multi-temporal coregistration**: Performs sub-pixel cross-correlation coregistration across the entire agricultural season (autumn to autumn).
+4. **Administrative clipping**: Clips rasters to GISCO NUTS2 administrative regions in `EPSG:3857` at an exact 10.0 m pixel resolution.
+
+---
+
+### Sentinel-2 multispectral optical preprocessing
+
+Produces cloud-free, regular 10-day synthetic optical time-series composites matching 1:1 with the Sentinel-1 SAR grid:
+
+1. **Automated granule retrieval**: Downloads Sentinel-2 L2A tiles from the CDSE API or local CREODIAS paths (`Y:/Sentinel-2/MSI/L2A`).
+2. **Cloud/shadow filtering**: Masks invalid observations using the Scene Classification Layer (SCL).
+3. **Synthetic DOY interpolation**: Pure Python multi-temporal interpolation across 14 standardized agricultural DOYs:
    $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
-   Interpolation spans 9 spectral bands (`B02`, `B03`, `B04`, `B05`, `B06`, `B07`, `B8A`, `B11`, `B12`) plus dynamic NDVI, generating 126 spectral layers per orbit.
-4. **Sub-pixel geometry matching**: Uses high-performance GDAL warping (`cubicspline` resampling) to project optical mosaics to the identical dimensions, pixel resolution ($10.0\text{ m} \times 10.0\text{ m}$), and coordinate bounds of the reference Sentinel-1 SAR raster ($\Delta X = 0.000\text{ m}, \Delta Y = 0.000\text{ m}$).
-5. **BigTIFF generation with pyramid overviews**: Outputs tiled BigTIFF files (`COMPRESS=DEFLATE` / `LZW`) and automatically constructs multi-scale pyramid overviews (`[2, 4, 8, 16, 32, 64]`) for smooth visualization.
+   Interpolation covers 9 spectral bands (`B02`, `B03`, `B04`, `B05`, `B06`, `B07`, `B8A`, `B11`, `B12`) plus dynamic NDVI, generating 126 spectral layers per orbit.
+4. **Sub-pixel geometry matching**: Resamples optical mosaics to the exact bounding box and resolution of the Sentinel-1 SAR raster ($\Delta X = 0.000\text{ m}, \Delta Y = 0.000\text{ m}$).
+5. **BigTIFF and pyramid creation**: Automatically builds multi-scale pyramid overviews (`[2, 4, 8, 16, 32, 64]`) with LZW compression.
 
 ---
 
-### Object-based image segmentation paradigms
+### Object-based segmentation paradigms
 
-The toolbox supports five segmentation options to delineate agricultural field boundaries:
+Supports five segmentation options for agricultural field delineation:
 
 ```
                                +--------------------------------------------+
@@ -102,36 +161,27 @@ The toolbox supports five segmentation options to delineate agricultural field b
                                +--------------------------------------------+
 ```
 
-1. **`slic` (Simple Linear Iterative Clustering - Recommended for speed)**:
-   - Computes superpixels on high-SNR summed multi-temporal composites.
-   - Utilizes overlapping buffered tiles (`buffer=64px`) to eliminate tile edge artifacts.
-   - Adjusts segment density dynamically based on active agricultural surface area.
-2. **`sam` (Meta AI Segment Anything Model - Recommended for boundary quality)**:
-   - Leverages Vision Transformer architectures (`vit_h`, `vit_l`, `vit_b`) via `sam-geo`.
-   - Multi-process parallel inference using top-level `sam_worker` across 8 worker processes with CPU/CUDA isolation.
-   - Applies bilateral filtering, CLAHE contrast enhancement, median denoising, and Euclidean distance transform hole-filling.
-3. **`lpis` (Land Parcel Identification System - Cadastral Ground Truth)**:
-   - Ingests official national cadastral parcel databases (e.g., Dutch BRP, Polish ARiMR, Portuguese ISIP).
-   - Employs spatial bounding-box filtering (`pyogrio.read_dataframe(bbox=...)`) for memory-efficient loading of multi-gigabyte vector files.
-   - Converts 3D/Z-geometries to 2D polygons, projects to `EPSG:3857`, and executes high-speed GDAL rasterization.
-4. **`felzenszwalb` & `otb_meanshift`**:
-   - Graph-based and spatial density clustering for baseline comparison.
+1. **`slic` (Simple Linear Iterative Clustering - Recommended for general operational use)**:
+   - High-speed superpixel generation on multi-temporal composite rasters.
+   - Buffered tiling (`buffer=64px`) prevents edge artifacts across block boundaries.
+2. **`sam` (Meta AI Segment Anything Model - Deep foundation segmentation)**:
+   - Vision Transformer architectures (`vit_h`, `vit_l`, `vit_b`) adapted for remote sensing.
+   - Multi-process parallel inference (8 worker pool) with bilateral filtering and distance transform hole-filling.
+3. **`lpis` (Official Cadastral Parcel Vectors - Cadastral ground truth)**:
+   - Bounding-box spatial query (`pyogrio` bbox query) loads only relevant intersecting parcels from multi-gigabyte vector files.
+   - Converts 3D/Z geometries to 2D polygons, reprojects to `EPSG:3857`, and applies GDAL rasterization.
 
 ---
 
 ### NASA Harvest Presto foundation model embeddings
 
-**Presto** is an Earth Observation transformer foundation model pretrained on global multi-sensor satellite data (Sentinel-1 SAR, Sentinel-2 Optical, Landsat, and ERA5 climate data).
-
-* **Input**: Multi-temporal S1 SAR sequences and S2 optical reflectance arrays matched with geographic coordinates, dynamic land cover tokens, and acquisition month indices.
-* **Encoding**: Transformer encoder with masked autoencoder (MAE) attention mechanisms.
-* **Output**: **128-dimensional dense temporal token embeddings** for each modality (128-d for S1 and 128-d for S2), capturing complex crop phenological curves, radar dielectric responses, and optical canopy changes.
+**Presto** is a geospatial transformer foundation model pretrained on global multi-sensor satellite imagery:
+* **Feature extraction**: Generates **128-dimensional multi-temporal token embeddings** from S1 SAR sequences and **128-dimensional embeddings** from S2 optical reflectance arrays.
+* **Token fusion**: Combines multi-temporal spectral dynamics with geographic coordinates, dynamic land cover tokens, and acquisition month indices.
 
 ---
 
 ### Unified PyTorch MLP + XGBoost ensemble classifier
-
-The classification engine combines deep neural network representation learning with tree-based gradient boosting:
 
 ```
                    +-----------------------------------------------+
@@ -172,33 +222,25 @@ The classification engine combines deep neural network representation learning w
                        +---------------------------------------+
 ```
 
-1. **PyTorch Deep MLP**:
-   - 3-layer dense architecture with Batch Normalization (`BatchNorm1d`) and Dropout (0.2–0.3).
-   - Dynamic class-frequency loss weighting ($\text{weight}_c = \sqrt{\frac{N}{K \cdot N_c}}$).
-   - AdamW optimizer with Cosine Annealing learning rate schedule.
-2. **XGBoost GBDT**:
-   - Multi-class gradient boosted trees with `n_estimators=250`, `max_depth=6`, `subsample=0.8`, and `colsample_bytree=0.8`.
-3. **Soft-voting fusion**:
-   $$\hat{P}(C_i | X) = \alpha \cdot P_{\text{MLP}}(C_i | X) + (1 - \alpha) \cdot P_{\text{XGB}}(C_i | X) \quad (\text{default } \alpha = 0.65)$$
+1. **PyTorch Deep MLP**: 3-layer architecture with Batch Normalization, Dropout, Class-weighted Cross-Entropy loss, and Cosine Annealing learning rate schedule.
+2. **XGBoost GBDT**: Gradient boosted decision trees with `n_estimators=250`, `max_depth=6`, and stratified sample balancing.
+3. **Soft-voting blend**: Combines predicted class probability vectors: $\hat{P} = 0.65 \cdot P_{\text{MLP}} + 0.35 \cdot P_{\text{XGB}}$.
 
 ---
 
 ### Bayesian prior probability calibration
 
-To correct for sample distribution bias and align predictions with official statistical crop acreages, the ensemble applies Bayesian prior calibration:
+Aligns machine learning predictions with statistical real-world crop acreage proportions:
 
 $$P_{\text{calibrated}}(C_i | X) = \frac{P_{\text{model}}(C_i | X) \cdot \frac{P_{\text{true}}(C_i)}{P_{\text{sample}}(C_i)}}{\sum_{j=1}^{K} P_{\text{model}}(C_j | X) \cdot \frac{P_{\text{true}}(C_j)}{P_{\text{sample}}(C_j)}}$$
-
-Priors are automatically discovered from `auxiliary_files/shapefiles_samples/{COUNTRY}/priors.json` or generated from LPIS parcel distributions.
 
 ---
 
 ### Multi-orbit confidence merge and sieve post-processing
 
-For nationwide mapping across overlapping satellite orbits:
-1. **Confidence-based mosaicking**: Pixels in orbit overlap zones are assigned to the class with the higher posterior probability confidence score.
-2. **Morphological sieve filtering**: A GDAL sieve filter removes isolated single-pixel classification noise (clump size $< 10$ pixels) and merges them into the dominant neighbouring parcel segment.
-3. **Agricultural masking**: High-resolution national masks (`AgriMasks/{country}/`) restrict the final classification strictly to active agricultural fields.
+* **Confidence comparison**: In overlapping orbit zones, assigns pixels to the class with higher prediction confidence.
+* **Morphological sieve filtering**: Removes isolated single-pixel noise (clump size $< 10$ pixels).
+* **Agricultural masking**: Confines final classifications to active agricultural cropland boundaries.
 
 ---
 
@@ -207,62 +249,46 @@ For nationwide mapping across overlapping satellite orbits:
 ### Windows installation
 
 1. **Install Python via Miniforge**:
-   - Download and install [Miniforge3](https://github.com/conda-forge/miniforge) for Windows.
-   - Open **Miniforge Prompt** and create your environment:
+   - Download [Miniforge3](https://github.com/conda-forge/miniforge) for Windows.
+   - Open **Miniforge Prompt** and run:
      ```bash
      mamba env create -f environment.yml
      mamba activate aiml_env
-     ```
-   - Ensure GDAL's native OpenJPEG plugin is available:
-     ```bash
      conda install -y -c conda-forge libgdal-jp2openjpeg
      ```
-
 2. **Install ESA SNAP**:
-   - Download and install SNAP from [ESA SNAP Official Download](https://step.esa.int/main/download/snap-download/).
-   - Recommended installation path: `D:\Program Files\esa-snap`.
-
-3. **Install Orfeo ToolBox (OTB) (Optional)**:
-   - Download OTB 6.2.0 Win64 and extract to `D:\AIML_CropMapper_Cloud\bin\OTB-6.2.0-Win64`.
+   - Download and install SNAP from [ESA SNAP Download](https://step.esa.int/main/download/snap-download/).
+   - Default recommended path: `D:\Program Files\esa-snap`.
 
 ---
 
 ### Linux installation
 
-1. **System packages (Ubuntu / Debian)**:
-   ```bash
-   sudo apt-get update
-   sudo apt-get install -y gdal-bin libgdal-dev build-essential unzip
-   ```
+```bash
+# System packages (Ubuntu / Debian)
+sudo apt-get update && sudo apt-get install -y gdal-bin libgdal-dev build-essential unzip
 
-2. **Conda environment**:
-   ```bash
-   mamba env create -f environment.yml
-   mamba activate aiml_env
-   ```
+# Conda environment
+mamba env create -f environment.yml
+mamba activate aiml_env
 
-3. **ESA SNAP for Linux**:
-   ```bash
-   chmod +x esa-snap_sentinel_unix_*.sh
-   ./esa-snap_sentinel_unix_*.sh -q
-   ```
+# ESA SNAP for Linux
+chmod +x esa-snap_sentinel_unix_*.sh
+./esa-snap_sentinel_unix_*.sh -q
+```
 
 ---
 
 ## Modular JSON configuration system
 
-Configuration is managed via **modular JSON files** located directly in their respective component directories. Actual credentials and local storage paths are protected by `.gitignore` to prevent accidental credential leaks.
-
-### 1. Configuration files overview
+Configuration is stored in **modular JSON files** located directly in their respective component directories:
 
 | Config file | Purpose | Location |
 | :--- | :--- | :--- |
 | **`config_s1.json`** | Sentinel-1 pipeline parameters, SNAP paths, and CDSE credentials | `1_Sentinel-1_preprocessor/config_s1.json` |
 | **`config_s2.json`** | Sentinel-2 pipeline parameters, spectral bands, DOYs, and CDSE credentials | `1a_Sentinel-2_preprocessor/config_s2.json` |
 
-### 2. Initializing configuration from templates
-
-Copy the repository template files (`*.example.json`) to create your local active configuration files:
+### Initializing configuration from templates
 
 ```powershell
 # Sentinel-1 configuration setup
@@ -272,8 +298,7 @@ cp 1_Sentinel-1_preprocessor/config_s1.example.json 1_Sentinel-1_preprocessor/co
 cp 1a_Sentinel-2_preprocessor/config_s2.example.json 1a_Sentinel-2_preprocessor/config_s2.json
 ```
 
-Then edit `config_s1.json` and `config_s2.json` with your Copernicus CDSE credentials and directory paths:
-
+Edit `config_s1.json` and `config_s2.json` with your Copernicus CDSE credentials:
 ```json
 {
   "cdse": {
@@ -289,24 +314,20 @@ Then edit `config_s1.json` and `config_s2.json` with your Copernicus CDSE creden
 
 ---
 
-## Training samples and ground truth specification
+## Ground truth sample specifications (`samples.shp`)
 
-Place your point ground truth shapefile at:
+Place your point ground truth dataset at:
 `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp` (e.g. `NL/samples.shp`, `PL/samples.shp`, `PT/samples.shp`).
 
-* **Geometry type**: Point (`OGRPoint`). Points must be located inside agricultural field boundaries.
-* **Required attribute**: **`crop_id`** (Integer): Numerical crop class identifier (e.g., `11` = Winter Wheat, `12` = Maize, `1430` = Rapeseed). Value `0` is reserved for background/non-crop.
-* **Optional attributes**: `crop_name` (String) for class labeling in reports.
-* **Automated 70/30 partition**: The pipeline automatically splits samples into **70% training (`learn.shp`)** and **30% validation (`control.shp`)** using stratified sampling.
+* **Geometry type**: Point (`OGRPoint`). Points should be located inside agricultural fields.
+* **Required attribute**: **`crop_id`** (Integer): Numerical crop class identifier (e.g., `11` = Winter Wheat, `12` = Maize, `1430` = Rapeseed).
+* **Sample partitioning**: The pipeline automatically partitions points into **70% training (`learn.shp`)** and **30% validation (`control.shp`)**.
 
 ---
 
 ## Data preparation utilities (`tools/`)
 
-The `tools/` directory contains CLI utilities for data preparation:
-
 ### 1. Download GISCO NUTS boundaries (`tools/1_download_nuts_boundaries.py`)
-Downloads official administrative boundaries for spatial clipping:
 ```powershell
 python tools/1_download_nuts_boundaries.py -c NL
 python tools/1_download_nuts_boundaries.py -c PL
@@ -314,44 +335,39 @@ python tools/1_download_nuts_boundaries.py --all
 ```
 
 ### 2. Build agricultural cropland mask (`tools/2_build_agricultural_mask.py`)
-Constructs a binary agricultural mask from LPIS parcel vectors or Copernicus HRL/CLMS rasters:
 ```powershell
-# From LPIS cadastral parcel vectors (highest accuracy):
+# From LPIS cadastral parcel vectors:
 python tools/2_build_agricultural_mask.py -c NL --lpis path/to/brp.gpkg
 python tools/2_build_agricultural_mask.py -c PL --lpis path/to/arimr.shp
 
 # From Copernicus HRL / CLMS raster tiles:
 python tools/2_build_agricultural_mask.py -c NL
-python tools/2_build_agricultural_mask.py -c PL
 ```
 
 ### 3. Generate classification training samples (`tools/3_prepare_classification_samples.py`)
-Extracts balanced, stratified point ground truth from raw parcel polygons (`.shp`, `.gpkg`, `.geojson`):
 ```powershell
-# Netherlands (NL BRP dataset):
+# Extract points from Dutch BRP parcel database:
 python tools/3_prepare_classification_samples.py -c NL --input path/to/brp.gpkg --crop_col GEWAS --min_area_ha 0.2
 
-# Poland (PL ARiMR dataset):
+# Extract points from Polish ARiMR parcel database:
 python tools/3_prepare_classification_samples.py -c PL --input path/to/arimr.shp --crop_col CROP_NAME --max_samples_per_class 3000
 ```
 
 ### 4. Compute Bayesian crop acreage priors (`tools/4_generate_crop_priors.py`)
-Calculates real-world statistical crop acreage proportions for Bayesian calibration:
 ```powershell
 python tools/4_generate_crop_priors.py -c NL --input path/to/brp.gpkg --crop_col GEWAS
 python tools/4_generate_crop_priors.py -c PL --input path/to/arimr.shp --crop_col CROP_NAME
 ```
 
 ### 5. Multi-scale pyramid overviews builder (`tools/5_build_raster_overviews.py`)
-Builds compressed (LZW) GDAL multiscale pyramid overviews (`[2, 4, 8, 16, 32, 64]`) on large BigTIFF rasters for fast loading in QGIS / ArcGIS:
 ```powershell
-# Build overviews for a single raster:
+# Single raster file:
 python tools/5_build_raster_overviews.py -i workingDir/NL/orbit_88/processed_raster/NL_orbit_88_S2_timeseries.tif
 
-# Build overviews for an entire orbit directory:
+# Entire orbit directory:
 python tools/5_build_raster_overviews.py -d workingDir/NL/orbit_88/processed_raster/
 
-# Build overviews across all orbits of a country:
+# All country orbits:
 python tools/5_build_raster_overviews.py -c NL
 ```
 
@@ -361,13 +377,11 @@ python tools/5_build_raster_overviews.py -c NL
 
 ### Phase 1: Sentinel-1 SAR preprocessing
 
-Calibrates, debursts, coregisters, and clips Sentinel-1 radar time series across selected orbits:
-
 ```powershell
-# Step 1a: Calibrate and deburst slices (from local CREODIAS Y: drive)
+# Step 1a: Calibrate slices from local CREODIAS storage (Y: drive)
 python 1_Sentinel-1_preprocessor/1a_slice_calibration.py -s 2024-10-15 -e 2025-09-15 -c NL
 
-# Step 1c: Calibrate and deburst slices (download directly from CDSE API)
+# Step 1c: Calibrate slices directly from CDSE API
 python 1_Sentinel-1_preprocessor/1c_slice_calibration_cdse.py -s 2024-10-15 -e 2025-09-15 -c NL
 
 # Step 2: Multi-temporal coregistration
@@ -376,28 +390,22 @@ python 1_Sentinel-1_preprocessor/2_coregistration.py -c NL
 # Step 3: Spatial clipping to NUTS2 boundaries
 python 1_Sentinel-1_preprocessor/3_stack_clip.py -c NL
 ```
-*Output*: `workingDir/{COUNTRY}/orbit_{ORBIT}/processed_raster/{COUNTRY}_orbit_{ORBIT}_VH_VV.tif`
 
 ---
 
 ### Phase 2: Sentinel-2 optical preprocessing
 
-Discovers Sentinel-1 orbit geometry, downloads/extracts Sentinel-2 L2A tiles, computes 10-day synthetic DOY composites, and matches the raster grid to Sentinel-1:
-
 ```powershell
-# Full automated execution for all country orbits (e.g. orbits 88 and 161 for NL):
+# Full automated execution across all orbits for a country:
 python 1a_Sentinel-2_preprocessor/sentinel2_preprocessor.py -s 2025-03-01 -e 2025-09-15 -c NL --source cdse --mode all
 
-# Single orbit processing:
+# Single orbit execution:
 python 1a_Sentinel-2_preprocessor/sentinel2_preprocessor.py -s 2025-03-01 -e 2025-09-15 -c NL -o 88 --source cdse --mode all
 ```
-*Output*: `workingDir/{COUNTRY}/orbit_{ORBIT}/processed_raster/{COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif` (126 bands, BigTIFF)
 
 ---
 
 ### Phase 3: Multimodal crop classification
-
-Executes the multimodal **S1 SAR + S2 Optical + NASA Harvest Presto + PyTorch MLP + XGBoost** classifier:
 
 ```powershell
 # Run full automated pipeline with SLIC superpixels:
@@ -413,21 +421,9 @@ python 2_classifier/1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 
 python 2_classifier/1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode slic
 ```
 
-#### Pipeline stages breakdown:
-* `Stage 0`: Generate multimodal data footprint mask (intersection of valid S1 and S2 data).
-* `Stage 1`: Image segmentation (`slic`, `sam`, `lpis`, `felzenszwalb`, `otb_meanshift`).
-* `Stage 2`: Stratified sample splitting into `learn.shp` (70%) and `control.shp` (30%).
-* `Stage 3`: Multimodal feature extraction (S1 SAR stats + S2 reflectances + 128-d Presto S1/S2 embeddings).
-* `Stage 4`: Model training (PyTorch Deep MLP + XGBoost ensemble).
-* `Stage 5`: Tiled object-based prediction with Bayesian prior calibration.
-* `Stage 6`: Agricultural cropland masking (`_classified_masked_*.tif`).
-* `Stage 7`: Accuracy metrics calculation, confusion matrix, and styled Excel report generation (`_metrics_*.xlsx`).
-
 ---
 
 ### Phase 4: Multi-orbit nationwide merge
-
-Mosaics multiple orbit classifications into a continuous country-wide crop map:
 
 ```powershell
 # Merge SLIC classifications for NL:
@@ -437,9 +433,25 @@ python 2_classifier/2_merge_classifications.py --track NL --suffix _mlpxgb_prest
 python 2_classifier/2_merge_classifications.py --track NL --suffix _mlpxgb_presto_lpis
 ```
 
-*Outputs*:
-- Country classification raster: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_classification_{SUFFIX}.tif`
-- Country validation metrics: `workingDir/{COUNTRY}/classification_results/{COUNTRY}_final_metrics_{SUFFIX}.xlsx`
+---
+
+## How to inspect and use output products
+
+All outputs are saved in `workingDir/{COUNTRY}/orbit_{ORBIT}/classification_results/` and `workingDir/{COUNTRY}/classification_results/`:
+
+1. **Classification map (`*_classified_masked_*.tif`)**:
+   - Single-band raster where each pixel value corresponds to a numeric `crop_id`.
+   - Open in **QGIS** or **ArcGIS Pro**:
+     - Right-click layer $\rightarrow$ **Properties** $\rightarrow$ **Symbology** $\rightarrow$ select **Paletted / Unique values**.
+     - Click **Classify** to display distinct colors for each crop class.
+2. **Confidence map (`*_confidence_masked_*.tif`)**:
+   - Single-band floating-point raster ($0.0$ to $1.0$) indicating classification confidence for each parcel.
+3. **Accuracy and validation report (`*_metrics_*.xlsx`)**:
+   - Excel spreadsheet containing:
+     - **Overall Accuracy (OA)**: Percentage of correctly classified validation samples.
+     - **Cohen's Kappa ($\kappa$)**: Statistical metric accounting for chance agreement.
+     - **Full confusion matrix**: Rows represent ground truth; columns represent model predictions.
+     - **Per-crop metrics**: Precision (User's Accuracy), Recall (Producer's Accuracy), and F1-score for each crop class.
 
 ---
 
@@ -488,10 +500,10 @@ AIML_CropMapper_Cloud/
 
 ---
 
-## Troubleshooting and performance optimization
+## Troubleshooting and FAQ
 
-### 1. OpenMP / MKL library initialization conflict
-If you encounter `OMP: Error #15: Initializing libiomp5md.dll, but found libiomp5md.dll already initialized`, set environment variables:
+### 1. OpenMP / MKL concurrency conflict
+If you encounter `OMP: Error #15: Initializing libiomp5md.dll, but found libiomp5md.dll already initialized`, set:
 ```powershell
 $env:KMP_DUPLICATE_LIB_OK="TRUE"
 $env:OMP_NUM_THREADS="4"
@@ -504,21 +516,22 @@ conda install -y -c conda-forge libgdal-jp2openjpeg=3.10.3
 ```
 
 ### 3. SNAP Out of Memory (OOM)
-Edit `gpt.vmoptions` located in your SNAP installation `bin/` directory:
+Edit `gpt.vmoptions` in your SNAP installation `bin/` directory:
 ```text
 -Xmx16G
 ```
 
-### 4. Disk I/O optimization for large BigTIFF rasters
-When processing 100+ GB BigTIFF files on Windows:
-* Ensure GDAL multithreading is enabled: `GDAL_NUM_THREADS=ALL_CPUS`.
-* Build multiscale pyramid overviews (`tools/5_build_raster_overviews.py`) to reduce zoom rendering latency from minutes to milliseconds.
+### 4. High disk I/O latency when opening large BigTIFF rasters
+Run the pyramid overviews utility on your output rasters to enable smooth zooming:
+```powershell
+python tools/5_build_raster_overviews.py -i workingDir/NL/orbit_88/processed_raster/NL_orbit_88_S2_timeseries.tif
+```
 
 ---
 
 ## Authors and citation
 
-If you use this software in your research or production pipelines, please cite:
+If you use this software in your research or statistical production pipelines, please cite:
 
 **APA format:**
 > Slesinski, P., Kotulak, N., Roos, M., Mróz, M., Mleczko, M., Gabriel, C., Hofer, N., Belton, S., Logakrishnan, M., Kästenbauer, M., Martins, C., Pallister, I. L. M., Gonçalves, I. (2025). *Sentinel-1 & Sentinel-2 OBIA crop type mapping pipeline (v2.5)*. [AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics](https://cros.ec.europa.eu/dashboard/aiml4os), Work Package 7, European Commission / Eurostat. Available at: https://github.com/AIML4OS/WP7-Crop-type-mapping
