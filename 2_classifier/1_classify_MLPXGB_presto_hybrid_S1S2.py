@@ -1351,8 +1351,12 @@ class ProcessingPipelineS1S2:
         print(f"\n    Multimodal features saved to {self.sel_csv} ({df.shape[1] - 2} features).\n")
 
     # --- Stage 4: Train Unified MLP + XGBoost Fusion Ensemble ---
-    def stage_4_train_classifier(self, **kwargs):
+    def stage_4_train_classifier(self, force_recompute=False, **kwargs):
         stage = 4
+        if self.model_pkl.exists() and not force_recompute:
+            print(f"[Stage {stage}] Fusion Ensemble model exists ({self.model_pkl.name}), skipping.")
+            return
+
         print(f"[Stage {stage}/{self.total_stages}] Training Unified Multimodal Fusion Ensemble (PyTorch MLP + XGBoost)...")
 
         df = pd.read_csv(self.sel_csv)
@@ -1755,8 +1759,8 @@ def main_menu(pipeline):
             if choice == '0': pipeline.stage_0_generate_footprint(True)
             elif choice == '1': pipeline.stage_1_segmentation(True)
             elif choice == '2': pipeline.stage_2_split_samples(True)
-            elif choice == '3': pipeline.stage_3_selection()
-            elif choice == '4': pipeline.stage_4_train_classifier()
+            elif choice == '3': pipeline.stage_3_selection(True)
+            elif choice == '4': pipeline.stage_4_train_classifier(True)
             elif choice == '5': pipeline.stage_5_classify_vector(True)
             elif choice == '6': pipeline.stage_6_mask_classification(True)
             elif choice == '7': pipeline.stage_7_calculate_metrics()
@@ -1764,8 +1768,8 @@ def main_menu(pipeline):
                 pipeline.stage_0_generate_footprint(False)
                 pipeline.stage_1_segmentation(False)
                 pipeline.stage_2_split_samples(False)
-                pipeline.stage_3_selection()
-                pipeline.stage_4_train_classifier()
+                pipeline.stage_3_selection(False)
+                pipeline.stage_4_train_classifier(False)
                 pipeline.stage_5_classify_vector(True)
                 pipeline.stage_6_mask_classification(True)
                 pipeline.stage_7_calculate_metrics()
@@ -1803,16 +1807,16 @@ def main():
             pipeline.stage_0_generate_footprint(False)
             pipeline.stage_1_segmentation(False)
             pipeline.stage_2_split_samples(False)
-            pipeline.stage_3_selection()
-            pipeline.stage_4_train_classifier()
+            pipeline.stage_3_selection(False)
+            pipeline.stage_4_train_classifier(False)
             pipeline.stage_5_classify_vector(True)
             pipeline.stage_6_mask_classification(True)
             pipeline.stage_7_calculate_metrics()
         elif choice == '0': pipeline.stage_0_generate_footprint(True)
         elif choice == '1': pipeline.stage_1_segmentation(True)
         elif choice == '2': pipeline.stage_2_split_samples(True)
-        elif choice == '3': pipeline.stage_3_selection()
-        elif choice == '4': pipeline.stage_4_train_classifier()
+        elif choice == '3': pipeline.stage_3_selection(True)
+        elif choice == '4': pipeline.stage_4_train_classifier(True)
         elif choice == '5': pipeline.stage_5_classify_vector(True)
         elif choice == '6': pipeline.stage_6_mask_classification(True)
         elif choice == '7': pipeline.stage_7_calculate_metrics()
