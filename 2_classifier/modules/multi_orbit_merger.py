@@ -219,24 +219,31 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
                     
     return tracks
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--track', required=True,
-                        help='Base track prefix or country code (e.g. P1, PL, FR)')
-    parser.add_argument('--suffix', default='',
-                        help='Optional suffix of classification files (e.g. _prithvi)')
-    args = parser.parse_args()
-    prefix = args.track
-    suffix = args.suffix
-
+def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = '', method: str = 'confidence'):
+    prefix = country.upper()
     base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:\AIML_CropMapper_Cloud\workingDir"))
-    tracks   = discover_tracks(base_dir, prefix, suffix=suffix)
+
+    if not suffix:
+        candidate_suffixes = [
+            f"_mlpxgb_presto_{seg_mode}",
+            f"_presto_hybrid_{seg_mode}",
+            f"_{seg_mode}",
+            f"_{seg_mode}_masked",
+            ""
+        ]
+        for cand in candidate_suffixes:
+            t_cand = discover_tracks(base_dir, prefix, suffix=cand)
+            if t_cand:
+                suffix = cand
+                break
+
+    tracks = discover_tracks(base_dir, prefix, suffix=suffix)
     if not tracks:
         raise FileNotFoundError(
-            f"No valid classification/confidence files for tracks starting with {prefix}"
+            f"No valid classification/confidence files for tracks starting with {prefix} (suffix: '{suffix}')"
         )
 
-    print(f"Discovered tracks: {[t for t,_,_,_ in tracks]}")
+    print(f"Discovered tracks for {prefix}: {[t for t,_,_,_ in tracks]}")
 
     # --- compute union extent & grid ---------------------------------------
     ds0   = gdal.Open(str(tracks[0][2]))
@@ -510,6 +517,21 @@ def main():
 
     wb.save(str(xlsx))
     print(f"Final metrics saved: {xlsx}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Multi-orbit national classification merger.")
+    parser.add_argument('--track', required=True, help='Country code or base track prefix (e.g. NL, PL, FR)')
+    parser.add_argument('--suffix', default='', help='Optional suffix of classification files')
+    parser.add_argument('--seg_mode', default='slic', help='Segmentation mode (slic, sam, lpis)')
+    args = parser.parse_args()
+
+    run_merge_for_country(
+        country=args.track,
+        seg_mode=args.seg_mode,
+        suffix=args.suffix
+    )
+
 
 if __name__ == '__main__':
     main()
