@@ -13,3 +13,5 @@ scratch/
 scratch/SATMIROL/
 *.log
 *.xlsx
+AGENTS.md
+.agents/
