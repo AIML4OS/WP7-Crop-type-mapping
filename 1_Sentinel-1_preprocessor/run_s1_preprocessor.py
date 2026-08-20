@@ -168,12 +168,14 @@ def interactive_menu(pipeline: Sentinel1Pipeline):
 ============================================================
  Sentinel-1 SAR Preprocessing Pipeline (Sigma0 VH/VV)
  Track  : {pipeline.track}
- Source : {pipeline.source.upper()} (Auto-detected)
+ Source : [{pipeline.source.upper()}] (CREODIAS local / CDSE API)
  Range  : {pipeline.start_date} to {pipeline.end_date}
 ============================================================
- [1] Stage 1: Ingestion & calibration (CREODIAS / CDSE API)
+ [1] Stage 1: Ingestion & calibration ({pipeline.source.upper()})
  [2] Stage 2: SNAP coregistration & terrain correction
  [3] Stage 3: Multi-temporal stacking & AOI clipping
+ -----------------------------------------------------------
+ [S] Switch data source (Toggle: CREODIAS <-> CDSE)
  [A] Run all stages automatically (1 -> 2 -> 3)
  [Q] Quit
 ============================================================
@@ -183,6 +185,9 @@ def interactive_menu(pipeline: Sentinel1Pipeline):
             if choice == '1': pipeline.stage_1_calibration()
             elif choice == '2': pipeline.stage_2_coregistration()
             elif choice == '3': pipeline.stage_3_stack_clip()
+            elif choice == 'S':
+                pipeline.source = 'cdse' if pipeline.source == 'creodias' else 'creodias'
+                print(f"\n    Data source switched to: {pipeline.source.upper()}")
             elif choice == 'A': pipeline.run_all()
             elif choice == 'Q': break
         except (KeyboardInterrupt, EOFError):

@@ -192,12 +192,14 @@ def interactive_menu(pipeline: Sentinel2Pipeline):
 ============================================================
  Sentinel-2 Multi-Temporal Preprocessing Pipeline
  Track  : {pipeline.track}
- Source : {pipeline.source.upper()} (Auto-detected)
+ Source : [{pipeline.source.upper()}] (CREODIAS local / CDSE API)
  Range  : {pipeline.start_date_str} to {pipeline.end_date_str}
 ============================================================
- [1] Stage 1: Ingestion & SCL cloud masking (CREODIAS / CDSE API)
+ [1] Stage 1: Ingestion & SCL cloud masking ({pipeline.source.upper()})
  [2] Stage 2: Multi-temporal synthetic DOY interpolation (14 dates)
  [3] Stage 3: Mosaicking, S1 grid matching & 126-band BigTIFF stack
+ -----------------------------------------------------------
+ [S] Switch data source (Toggle: CREODIAS <-> CDSE)
  [A] Run all stages automatically (1 -> 2 -> 3)
  [Q] Quit
 ============================================================
@@ -207,6 +209,9 @@ def interactive_menu(pipeline: Sentinel2Pipeline):
             if choice == '1': pipeline.stage_1_download_extract()
             elif choice == '2': pipeline.stage_2_time_series()
             elif choice == '3': pipeline.stage_3_mosaic_stack()
+            elif choice == 'S':
+                pipeline.source = 'cdse' if pipeline.source == 'creodias' else 'creodias'
+                print(f"\n    Data source switched to: {pipeline.source.upper()}")
             elif choice == 'A': pipeline.run_all()
             elif choice == 'Q': break
         except (KeyboardInterrupt, EOFError):
