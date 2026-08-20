@@ -652,17 +652,7 @@ class ProcessingPipelineS1S2:
                 self.control_shp = c
                 break
 
-        candidate_csvs = [
-            self.samples_dir / f"{self.file_prefix}_mlpxgb_presto_learn_features_{self.seg_mode}.csv",
-            self.samples_dir / f"{self.file_prefix}_presto_hybrid_learn_features_{self.seg_mode}.csv",
-            self.model_dir / f"{self.file_prefix}_sel_s1s2.csv"
-        ]
-        self.sel_csv = candidate_csvs[0]
-        for c in candidate_csvs:
-            if c.exists():
-                self.sel_csv = c
-                break
-
+        self.sel_csv = self.samples_dir / f"{self.file_prefix}_mlpxgb_presto_learn_features_{self.seg_mode}.csv"
         self.model_pkl = self.model_dir / f"{self.file_prefix}_mlpxgb_presto_model_{self.seg_mode}.pkl"
         
         self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
@@ -1204,11 +1194,19 @@ class ProcessingPipelineS1S2:
         print(f"    Split {len(gdf)} points -> {len(gdf_train)} train, {len(gdf_val)} validation.")
 
     # --- Stage 3: Multimodal Feature Extraction ---
-    def stage_3_selection(self):
+    def stage_3_selection(self, force_recompute=False):
         stage = 3
-        if self.sel_csv.exists():
-            print(f"[Stage {stage}] Multimodal features already extracted, skipping.")
-            return
+        if self.sel_csv.exists() and not force_recompute:
+            try:
+                df_test = pd.read_csv(self.sel_csv, nrows=5)
+                n_feats = df_test.shape[1] - 2
+                if self.s1_ras and self.s2_ras and n_feats < 400:
+                    print(f"[Stage {stage}] Existing CSV has only {n_feats} features (expected ~426 multimodal features). Re-extracting...")
+                else:
+                    print(f"[Stage {stage}] Multimodal features already extracted ({n_feats} features in {self.sel_csv.name}), skipping.")
+                    return
+            except Exception:
+                pass
 
         print(f"[Stage {stage}/{self.total_stages}] Extracting Multimodal Features (S1 Sigma0 + S2 Optical + Presto S1/S2)...")
         device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
