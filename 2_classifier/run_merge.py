@@ -14,10 +14,12 @@ import argparse
 import sys
 from pathlib import Path
 
-# Ensure local imports work cleanly
+# Ensure local and modules imports work cleanly
 script_dir = Path(__file__).resolve().parent
-if str(script_dir) not in sys.path:
-    sys.path.insert(0, str(script_dir))
+modules_dir = script_dir / "modules"
+for p in [script_dir, modules_dir]:
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
 import importlib
 merge_mod = importlib.import_module("2_merge_classifications")
