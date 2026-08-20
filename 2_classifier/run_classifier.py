@@ -113,14 +113,14 @@ def run_pipeline(
 
     # Route to specialized engines if requested
     if classifier_model == 'otb':
-        otb_mod = importlib.import_module("1_classify_otb")
+        otb_mod = importlib.import_module("classifier_otb")
         pipeline = otb_mod.ProcessingPipeline(track=norm_track, seg_mode=seg_mode)
         if stage == 'A' or stage is None:
             pipeline.run_all()
         return
 
     if classifier_model == 'presto_s1':
-        s1_ann_mod = importlib.import_module("1_classify_ann_presto_hybrid")
+        s1_ann_mod = importlib.import_module("classifier_presto_s1")
         pipeline = s1_ann_mod.ProcessingPipeline(track=norm_track, seg_mode=seg_mode)
         if stage == 'A' or stage is None:
             pipeline.run_all()
@@ -133,7 +133,7 @@ def run_pipeline(
         mlp_weight = 0.0
 
     # Primary multimodal SOTA engine (S1 + S2 + Presto + MLP + XGBoost)
-    s1s2_mod = importlib.import_module("1_classify_MLPXGB_presto_hybrid_S1S2")
+    s1s2_mod = importlib.import_module("classifier_mlpxgb_presto")
     pipeline = s1s2_mod.ProcessingPipelineS1S2(
         track=norm_track,
         seg_mode=seg_mode,
@@ -165,7 +165,7 @@ def run_pipeline(
         elif choice == '6': pipeline.stage_6_mask_classification(True)
         elif choice == '7': pipeline.stage_7_calculate_metrics()
         elif choice in ['8', 'MERGE']:
-            merge_mod = importlib.import_module("2_merge_classifications")
+            merge_mod = importlib.import_module("multi_orbit_merger")
             merge_mod.run_merge_for_country(country, seg_mode=seg_mode)
 
 
@@ -175,7 +175,7 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic'):
     logging.info(f" [Phase 4] Multi-Orbit National Mosaic & Merging for {country.upper()}")
     logging.info(f" Segmentation mode: {seg_mode.upper()}")
     logging.info(f"============================================================")
-    merge_mod = importlib.import_module("2_merge_classifications")
+    merge_mod = importlib.import_module("multi_orbit_merger")
     merge_mod.run_merge_for_country(country.upper(), seg_mode=seg_mode)
 
 

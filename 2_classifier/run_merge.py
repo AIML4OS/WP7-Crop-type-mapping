@@ -36,7 +36,7 @@ for p in [script_dir, modules_dir]:
         sys.path.insert(0, str(p))
 
 import importlib
-merge_mod = importlib.import_module("2_merge_classifications")
+merge_mod = importlib.import_module("multi_orbit_merger")
 
 
 def main():

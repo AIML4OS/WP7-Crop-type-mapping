@@ -139,7 +139,7 @@ class Sentinel2Pipeline:
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
             if self.source == "creodias":
-                extract_mod = importlib.import_module("1a_extract_creodias_s2")
+                extract_mod = importlib.import_module("s2_extract_creodias")
                 extract_mod.process_orbit_creodias_s2(
                     country_code=self.country,
                     orbit_num=orb,
@@ -149,7 +149,7 @@ class Sentinel2Pipeline:
                     max_workers=self.threads
                 )
             else:
-                download_mod = importlib.import_module("1b_download_cdse_s2")
+                download_mod = importlib.import_module("s2_download_cdse")
                 download_mod.process_orbit_cdse_s2(
                     country_code=self.country,
                     orbit_num=orb,
@@ -166,7 +166,7 @@ class Sentinel2Pipeline:
         logging.info(f" Track: {self.track} | Target DOYs: {len(self.doys)} dates")
         logging.info(f"============================================================")
 
-        ts_mod = importlib.import_module("2_time_series_s2")
+        ts_mod = importlib.import_module("s2_time_series")
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
             track_name = f"{self.country}/orbit_{orb}"
@@ -183,7 +183,7 @@ class Sentinel2Pipeline:
         logging.info(f" Track: {self.track}")
         logging.info(f"============================================================")
 
-        mosaic_mod = importlib.import_module("3_mosaic_stack_clip_s2")
+        mosaic_mod = importlib.import_module("s2_mosaic_stack")
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
             track_name = f"{self.country}/orbit_{orb}"

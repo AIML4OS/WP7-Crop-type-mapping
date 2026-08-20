@@ -469,17 +469,33 @@ AIML_CropMapper_Cloud/
 │   ├── run_s1_preprocessor.py           # Unified S1 CLI & interactive menu
 │   ├── config_s1.json                   # Active S1 config (CDSE credentials, SNAP paths)
 │   ├── config_s1.example.json           # Template S1 config
-│   └── Archive_scripts/                 # Standalone legacy S1 scripts (calibration, coregistration, stack)
+│   ├── modules/                         # Core S1 processing modules
+│   │   ├── s1_calibration_creodias.py   # CREODIAS local GRDH calibration
+│   │   ├── s1_calibration_cdse.py       # CDSE API GRDH calibration
+│   │   ├── s1_coregistration.py         # SNAP multi-temporal coregistration
+│   │   └── s1_stack_clip.py             # Time-series stacking & NUTS2 clipping
+│   └── Archive_scripts/                 # Standalone legacy S1 scripts
 ├── 1a_Sentinel-2_preprocessor/          # Sentinel-2 optical pipeline
 │   ├── run_s2_preprocessor.py           # Unified S2 CLI & interactive menu
 │   ├── config_s2.json                   # Active S2 config (CDSE credentials, DOYs, bands)
 │   ├── config_s2.example.json           # Template S2 config
-│   └── Archive_scripts/                 # Standalone legacy S2 scripts (extract, download, time-series, mosaic)
+│   ├── modules/                         # Core S2 processing modules
+│   │   ├── s2_extract_creodias.py       # CREODIAS local tile extraction & SCL masking
+│   │   ├── s2_download_cdse.py          # CDSE API granule download & SCL masking
+│   │   ├── s2_time_series.py            # 14-DOY synthetic time-series interpolation
+│   │   ├── s2_mosaic_stack.py           # S1 grid matching & 126-band BigTIFF stacking
+│   │   └── s2_pipeline.py               # Pipeline orchestrator
+│   └── Archive_scripts/                 # Standalone legacy S2 scripts
 ├── 2_classifier/                        # Multimodal machine learning suite
 │   ├── run_classifier.py                # Unified classifier CLI & interactive menu
 │   ├── run_merge.py                     # Multi-orbit national mosaic & merger
-│   ├── 1_classify_MLPXGB_presto_hybrid_S1S2.py  # Core S1+S2 Presto + PyTorch MLP + XGBoost engine
-│   └── Archive_scripts/                 # Standalone legacy models (S1 Presto, OTB, Prithvi)
+│   ├── modules/                         # Core classification engines
+│   │   ├── classifier_mlpxgb_presto.py  # S1+S2 Presto + PyTorch MLP + XGBoost SOTA
+│   │   ├── classifier_presto_s1.py      # Single-radar S1-only Presto ANN model
+│   │   ├── classifier_otb.py            # Orfeo ToolBox machine learning models
+│   │   ├── multi_orbit_merger.py        # Nationwide multi-orbit confidence merger
+│   │   └── presto_model.py              # NASA Harvest Presto foundation architecture
+│   └── Archive_scripts/                 # Standalone legacy classifier models
 ├── tools/                               # Standalone preparation utilities
 │   ├── 1_download_nuts_boundaries.py    # GISCO NUTS boundaries downloader
 │   ├── 2_build_agricultural_mask.py     # Cropland mask builder

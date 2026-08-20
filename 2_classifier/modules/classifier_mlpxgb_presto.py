@@ -370,7 +370,10 @@ class PrestoMultimodalExtractor:
         if not self.weights_path.exists():
             raise FileNotFoundError(f"Presto model weights not found at {self.weights_path}")
         
-        import single_file_presto
+        try:
+            import presto_model as single_file_presto
+        except ImportError:
+            import single_file_presto
         self.model = single_file_presto.Presto.construct(max_sequence_length=36)
         state_dict = torch.load(self.weights_path, map_location=self.device)
         state_dict.pop('encoder.pos_embed', None)

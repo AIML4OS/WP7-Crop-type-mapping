@@ -131,7 +131,7 @@ class Sentinel1Pipeline:
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
             if self.source == "creodias":
-                calib_mod = importlib.import_module("1a_slice_calibration")
+                calib_mod = importlib.import_module("s1_calibration_creodias")
                 calib_mod.process_orbit(
                     country=self.country,
                     orbit=orb,
@@ -139,7 +139,7 @@ class Sentinel1Pipeline:
                     end_date=self.end_date
                 )
             else:
-                calib_cdse_mod = importlib.import_module("1c_slice_calibration_cdse")
+                calib_cdse_mod = importlib.import_module("s1_calibration_cdse")
                 calib_cdse_mod.process_orbit_cdse(
                     country=self.country,
                     orbit=orb,
@@ -154,7 +154,7 @@ class Sentinel1Pipeline:
         logging.info(f" Track: {self.track}")
         logging.info(f"============================================================")
 
-        coreg_mod = importlib.import_module("2_coregistration")
+        coreg_mod = importlib.import_module("s1_coregistration")
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
             track_name = f"{self.country}/orbit_{orb}"
@@ -167,7 +167,7 @@ class Sentinel1Pipeline:
         logging.info(f" Track: {self.track}")
         logging.info(f"============================================================")
 
-        stack_mod = importlib.import_module("3_stack_clip")
+        stack_mod = importlib.import_module("s1_stack_clip")
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
             track_name = f"{self.country}/orbit_{orb}"

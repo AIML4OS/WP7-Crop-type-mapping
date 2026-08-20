@@ -34,10 +34,10 @@ if str(script_dir) not in sys.path:
     sys.path.insert(0, str(script_dir))
 
 import importlib
-extract_creodias = importlib.import_module("1a_extract_creodias_s2")
-download_cdse = importlib.import_module("1b_download_cdse_s2")
-time_series = importlib.import_module("2_time_series_s2")
-mosaic_stack = importlib.import_module("3_mosaic_stack_clip_s2")
+extract_creodias = importlib.import_module("s2_extract_creodias")
+download_cdse = importlib.import_module("s2_download_cdse")
+time_series = importlib.import_module("s2_time_series")
+mosaic_stack = importlib.import_module("s2_mosaic_stack")
 
 logging.basicConfig(
     level=logging.INFO,
