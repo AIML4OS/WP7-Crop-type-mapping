@@ -1,6 +1,7 @@
 auxiliary_files/
 workingDir/
 workingDirs/
+docs/
 bin/
 venv/
 __pycache__/
