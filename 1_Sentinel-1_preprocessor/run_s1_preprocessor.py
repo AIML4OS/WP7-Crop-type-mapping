@@ -12,28 +12,25 @@ Features:
   - Country-wide Greedy Search: Minimum set cover orbit detection across EU countries.
 
 Execution Examples:
-  # 1. Full automated pipeline for a single orbit (all stages):
-  python run_s1_preprocessor.py --track NL/orbit_88 --stage A
+  # 1. Full automated pipeline for an entire country with explicit agricultural season dates:
+  python run_s1_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --stage A
 
-  # 2. Full automated pipeline for an entire country (Greedy search):
-  python run_s1_preprocessor.py --country NL --stage A
+  # 2. Full automated pipeline for a single orbit with custom dates:
+  python run_s1_preprocessor.py --track PT/orbit_81 -s 2024-10-15 -e 2025-09-15 --stage A
 
   # 3. Force downloading directly from Copernicus Data Space (CDSE API):
-  python run_s1_preprocessor.py --track NL/orbit_88 --source cdse --stage A
+  python run_s1_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --stage A
 
   # 4. Force local extraction on CREODIAS cloud (/eodata or Y: drive):
-  python run_s1_preprocessor.py --track NL/orbit_88 --source creodias --stage A
+  python run_s1_preprocessor.py --country PT --source creodias -s 2024-10-15 -e 2025-09-15 --stage A
 
   # 5. Run only individual stages:
-  python run_s1_preprocessor.py --track NL/orbit_88 --stage 1  # Ingestion & Calibration only
-  python run_s1_preprocessor.py --track NL/orbit_88 --stage 2  # SNAP Coregistration only
-  python run_s1_preprocessor.py --track NL/orbit_88 --stage 3  # Time-series Stacking & Clipping only
+  python run_s1_preprocessor.py --track PT/orbit_81 -s 2024-10-15 -e 2025-09-15 --stage 1  # Ingestion & Calibration only
+  python run_s1_preprocessor.py --track PT/orbit_81 -s 2024-10-15 -e 2025-09-15 --stage 2  # SNAP Coregistration only
+  python run_s1_preprocessor.py --track PT/orbit_81 -s 2024-10-15 -e 2025-09-15 --stage 3  # Time-series Stacking & Clipping only
 
-  # 6. Custom acquisition date range and worker threads:
-  python run_s1_preprocessor.py --track NL/orbit_88 -s 2024-10-15 -e 2025-09-15 --threads 8 --stage A
-
-  # 7. Interactive English CLI menu:
-  python run_s1_preprocessor.py --track NL/orbit_88
+  # 6. Interactive English CLI setup wizard (prompts for dates and orbits):
+  python run_s1_preprocessor.py
 ================================================================================
 """
 
