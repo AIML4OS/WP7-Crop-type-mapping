@@ -90,6 +90,15 @@ logging.basicConfig(
 
 BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir"))
 
+# Register unpickling compatibility in __main__
+try:
+    from modules.classifier_mlpxgb_presto import EnsembleClassifier, TorchMLPClassifier
+    import modules.classifier_mlpxgb_presto as _cls_mod
+    sys.modules['1_classify_MLPXGB_presto_hybrid_S1S2'] = _cls_mod
+    sys.modules['classifier_mlpxgb_presto'] = _cls_mod
+except Exception:
+    pass
+
 
 def discover_available_tracks() -> List[str]:
     """Scans workingDir to find all available country/orbit directories."""

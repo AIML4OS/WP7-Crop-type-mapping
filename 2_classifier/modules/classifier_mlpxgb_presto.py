@@ -357,6 +357,20 @@ class EnsembleClassifier:
             return le.inverse_transform(preds_enc)
         return self.classes_[preds_enc]
 
+# =====================================================================
+# Register model classes in __main__ and legacy namespaces for unpickling
+# =====================================================================
+import sys
+current_mod = sys.modules.get(__name__)
+if current_mod:
+    sys.modules['1_classify_MLPXGB_presto_hybrid_S1S2'] = current_mod
+    sys.modules['classifier_mlpxgb_presto'] = current_mod
+
+main_mod = sys.modules.get('__main__')
+if main_mod:
+    setattr(main_mod, 'EnsembleClassifier', EnsembleClassifier)
+    setattr(main_mod, 'TorchMLPClassifier', TorchMLPClassifier)
+
 
 # =====================================================================
 # 3. MULTIMODAL PRESTO EMBEDDINGS (S1 + S2)
@@ -1409,6 +1423,13 @@ class ProcessingPipelineS1S2:
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Running Tile-based Object Inference with Bayesian Priors...")
+        main_mod = sys.modules.get('__main__')
+        if main_mod:
+            setattr(main_mod, 'EnsembleClassifier', EnsembleClassifier)
+            setattr(main_mod, 'TorchMLPClassifier', TorchMLPClassifier)
+        sys.modules['1_classify_MLPXGB_presto_hybrid_S1S2'] = sys.modules[__name__]
+        sys.modules['classifier_mlpxgb_presto'] = sys.modules[__name__]
+
         data = joblib.load(self.model_pkl)
         clf = data['model']
         scaler = data['scaler']
