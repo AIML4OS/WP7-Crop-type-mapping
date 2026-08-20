@@ -1,21 +1,40 @@
 #!/usr/bin/env python
 """
-run_s2_preprocessor.py - Unified Sentinel-2 Multi-Temporal Preprocessing Pipeline.
+================================================================================
+AIML CropMapper Cloud - Sentinel-2 Optical Preprocessing Pipeline
+================================================================================
+Master orchestrator for multi-temporal Sentinel-2 L2A optical reflectance data.
 
-Provides a standardized English CLI and interactive menu for:
-  Stage 1: Ingestion & SCL Cloud Masking (CREODIAS local / CDSE API)
-  Stage 2: Multi-temporal Synthetic DOY Interpolation (14 target dates, 9 spectral bands)
-  Stage 3: Mosaicking, Sub-pixel S1 SAR Grid Matching & 126-band BigTIFF Stacking
+Features:
+  - Automated Ingestion & SCL Masking: Local CREODIAS (/eodata, Y:) or Copernicus CDSE API.
+  - Multi-temporal Synthetic DOY Interpolation: Pure Python linear interpolation across 14 dates.
+  - Sub-pixel S1 SAR Grid Matching & BigTIFF Stacking: 126-band mosaic aligned with SAR reference.
+  - Country-wide Greedy Search: Automated discovery of all S1/S2 orbits for an entire country.
 
-Usage examples:
-  # 1. Run all stages for a single orbit:
+Execution Examples:
+  # 1. Full automated pipeline for a single orbit (all stages):
   python run_s2_preprocessor.py --track NL/orbit_88 --stage A
 
-  # 2. Run all stages for an entire country using greedy search:
+  # 2. Full automated pipeline for an entire country (Greedy search):
   python run_s2_preprocessor.py --country NL --stage A
 
-  # 3. Interactive menu:
+  # 3. Force downloading directly from Copernicus Data Space (CDSE API):
+  python run_s2_preprocessor.py --track NL/orbit_88 --source cdse --stage A
+
+  # 4. Force local extraction on CREODIAS cloud (/eodata or Y: drive):
+  python run_s2_preprocessor.py --track NL/orbit_88 --source creodias --stage A
+
+  # 5. Run only individual stages:
+  python run_s2_preprocessor.py --track NL/orbit_88 --stage 1  # Ingestion & SCL Cloud Masking only
+  python run_s2_preprocessor.py --track NL/orbit_88 --stage 2  # Synthetic DOY Interpolation only
+  python run_s2_preprocessor.py --track NL/orbit_88 --stage 3  # Mosaicking & BigTIFF Stacking only
+
+  # 6. Custom cloud cover threshold, dates, and worker threads:
+  python run_s2_preprocessor.py --track NL/orbit_88 --cloud_cover 60.0 --threads 8 --stage A
+
+  # 7. Interactive English CLI menu:
   python run_s2_preprocessor.py --track NL/orbit_88
+================================================================================
 """
 
 import argparse
@@ -220,17 +239,27 @@ def interactive_menu(pipeline: Sentinel2Pipeline):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Unified Sentinel-2 Multi-Temporal Preprocessing Pipeline.")
-    parser.add_argument('-t', '--track', default=None, help="Track identifier, e.g. NL/orbit_88, PL/orbit_22")
-    parser.add_argument('-c', '--country', default=None, help="Country code, e.g. NL, PL, FR, PT")
+    parser = argparse.ArgumentParser(
+        description="Unified Sentinel-2 Multi-Temporal Preprocessing Pipeline.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python run_s2_preprocessor.py --track NL/orbit_88 --stage A
+  python run_s2_preprocessor.py --country NL --stage A
+  python run_s2_preprocessor.py --track NL/orbit_88 --source cdse --stage 1
+  python run_s2_preprocessor.py --track NL/orbit_88
+"""
+    )
+    parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
+    parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
     parser.add_argument('-o', '--orbit', type=int, default=None, help="Specific relative orbit number")
-    parser.add_argument('--stage', default=None, choices=['A', '1', '2', '3'], help="Stage to execute: 'A' (all), '1', '2', '3'")
-    parser.add_argument('--source', default='auto', choices=['auto', 'creodias', 'cdse'], help="Data source (default: auto)")
-    parser.add_argument('-s', '--start_date', default='2024-10-15', help="Acquisition start date (YYYY-MM-DD)")
-    parser.add_argument('-e', '--end_date', default='2025-09-15', help="Acquisition end date (YYYY-MM-DD)")
+    parser.add_argument('--stage', default=None, choices=['A', '1', '2', '3'], help="Stage to execute: 'A' (all), '1' (ingest), '2' (time series), '3' (stack)")
+    parser.add_argument('--source', default='auto', choices=['auto', 'creodias', 'cdse'], help="Data source: 'auto' (detect local), 'creodias', 'cdse' (default: auto)")
+    parser.add_argument('-s', '--start_date', default='2024-10-15', help="Acquisition start date (YYYY-MM-DD, default: 2024-10-15)")
+    parser.add_argument('-e', '--end_date', default='2025-09-15', help="Acquisition end date (YYYY-MM-DD, default: 2025-09-15)")
     parser.add_argument('--cloud_cover', type=float, default=80.0, help="Max scene cloud cover percentage (default: 80.0)")
-    parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="Target DOYs list")
-    parser.add_argument('--threads', type=int, default=4, help="Worker threads (default: 4)")
+    parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="Target DOYs list (default: 14 dates)")
+    parser.add_argument('--threads', type=int, default=4, help="Worker threads for parallel processing (default: 4)")
 
     args = parser.parse_args()
 

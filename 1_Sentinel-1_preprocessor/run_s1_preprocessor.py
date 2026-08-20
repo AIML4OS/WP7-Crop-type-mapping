@@ -1,21 +1,40 @@
 #!/usr/bin/env python
 """
-run_s1_preprocessor.py - Unified Sentinel-1 SAR Preprocessing Pipeline.
+================================================================================
+AIML CropMapper Cloud - Sentinel-1 SAR Preprocessing Pipeline
+================================================================================
+Master orchestrator for multi-temporal Sentinel-1 GRDH SAR data (Sigma0 VH/VV).
 
-Provides a standardized English CLI and interactive menu for:
-  Stage 1: Ingestion & Calibration (CREODIAS local / CDSE API)
-  Stage 2: Multi-temporal Coregistration (SNAP)
-  Stage 3: Time-series Stacking & Area Clipping (BigTIFF)
+Features:
+  - Automated Ingestion & Calibration: Local CREODIAS (/eodata, Y:) or Copernicus CDSE API.
+  - Multi-temporal Coregistration: ESA SNAP GPT for precise pixel alignment.
+  - Time-series Stacking & Area Clipping: Sub-pixel resampling and BigTIFF generation.
+  - Country-wide Greedy Search: Minimum set cover orbit detection across EU countries.
 
-Usage examples:
-  # 1. Run all stages for a single orbit:
+Execution Examples:
+  # 1. Full automated pipeline for a single orbit (all stages):
   python run_s1_preprocessor.py --track NL/orbit_88 --stage A
 
-  # 2. Run all stages for an entire country using greedy search:
+  # 2. Full automated pipeline for an entire country (Greedy search):
   python run_s1_preprocessor.py --country NL --stage A
 
-  # 3. Interactive menu:
+  # 3. Force downloading directly from Copernicus Data Space (CDSE API):
+  python run_s1_preprocessor.py --track NL/orbit_88 --source cdse --stage A
+
+  # 4. Force local extraction on CREODIAS cloud (/eodata or Y: drive):
+  python run_s1_preprocessor.py --track NL/orbit_88 --source creodias --stage A
+
+  # 5. Run only individual stages:
+  python run_s1_preprocessor.py --track NL/orbit_88 --stage 1  # Ingestion & Calibration only
+  python run_s1_preprocessor.py --track NL/orbit_88 --stage 2  # SNAP Coregistration only
+  python run_s1_preprocessor.py --track NL/orbit_88 --stage 3  # Time-series Stacking & Clipping only
+
+  # 6. Custom acquisition date range and worker threads:
+  python run_s1_preprocessor.py --track NL/orbit_88 -s 2024-10-15 -e 2025-09-15 --threads 8 --stage A
+
+  # 7. Interactive English CLI menu:
   python run_s1_preprocessor.py --track NL/orbit_88
+================================================================================
 """
 
 import argparse
@@ -196,15 +215,25 @@ def interactive_menu(pipeline: Sentinel1Pipeline):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Unified Sentinel-1 SAR Preprocessing Pipeline.")
-    parser.add_argument('-t', '--track', default=None, help="Track identifier, e.g. NL/orbit_88, PL/orbit_22")
-    parser.add_argument('-c', '--country', default=None, help="Country code, e.g. NL, PL, FR, PT")
+    parser = argparse.ArgumentParser(
+        description="Unified Sentinel-1 SAR Preprocessing Pipeline.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python run_s1_preprocessor.py --track NL/orbit_88 --stage A
+  python run_s1_preprocessor.py --country NL --stage A
+  python run_s1_preprocessor.py --track NL/orbit_88 --source cdse --stage 1
+  python run_s1_preprocessor.py --track NL/orbit_88
+"""
+    )
+    parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
+    parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
     parser.add_argument('-o', '--orbit', type=int, default=None, help="Specific relative orbit number")
-    parser.add_argument('--stage', default=None, choices=['A', '1', '2', '3'], help="Stage to execute: 'A' (all), '1', '2', '3'")
-    parser.add_argument('--source', default='auto', choices=['auto', 'creodias', 'cdse'], help="Data source (default: auto)")
-    parser.add_argument('-s', '--start_date', default='2024-10-15', help="Acquisition start date (YYYY-MM-DD)")
-    parser.add_argument('-e', '--end_date', default='2025-09-15', help="Acquisition end date (YYYY-MM-DD)")
-    parser.add_argument('--threads', type=int, default=4, help="Worker threads (default: 4)")
+    parser.add_argument('--stage', default=None, choices=['A', '1', '2', '3'], help="Stage to execute: 'A' (all), '1' (calib), '2' (snap), '3' (stack)")
+    parser.add_argument('--source', default='auto', choices=['auto', 'creodias', 'cdse'], help="Data source: 'auto' (detect local), 'creodias', 'cdse' (default: auto)")
+    parser.add_argument('-s', '--start_date', default='2024-10-15', help="Acquisition start date (YYYY-MM-DD, default: 2024-10-15)")
+    parser.add_argument('-e', '--end_date', default='2025-09-15', help="Acquisition end date (YYYY-MM-DD, default: 2025-09-15)")
+    parser.add_argument('--threads', type=int, default=4, help="Worker threads for parallel processing (default: 4)")
 
     args = parser.parse_args()
 
