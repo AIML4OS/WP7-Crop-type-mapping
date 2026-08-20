@@ -238,16 +238,99 @@ def interactive_menu(pipeline: Sentinel2Pipeline):
             break
 
 
+def interactive_setup_wizard():
+    """Interactive CLI wizard shown when run_s2_preprocessor.py is called without arguments."""
+    print("""
+============================================================
+ AIML CropMapper Cloud - Sentinel-2 Optical Preprocessor Wizard
+============================================================""")
+
+    # Step 1: Discover tracks
+    tracks = []
+    if BASE_DIR.exists():
+        for c_dir in sorted(BASE_DIR.iterdir()):
+            if c_dir.is_dir() and len(c_dir.name) in [2, 3]:
+                for orb_dir in sorted(c_dir.glob("orbit_*")):
+                    if orb_dir.is_dir():
+                        tracks.append(f"{c_dir.name}/{orb_dir.name}")
+
+    selected_track = None
+    selected_country = None
+    selected_orbit = None
+
+    if tracks:
+        print(" Discovered tracks in working directory:")
+        for idx, t in enumerate(tracks, 1):
+            print(f"  [{idx}] {t}")
+        print("  [C] Enter custom track (e.g. PL/orbit_22)")
+        print("  [N] Process entire country (e.g. NL, PL, FR)")
+        print("  [Q] Quit")
+        choice = input("\n Select track or option [1-%d/C/N/Q] (default: 1): " % len(tracks)).strip().upper()
+        if choice == 'Q': return
+        elif choice == 'C':
+            selected_track = input(" Enter track identifier (e.g. NL/orbit_88): ").strip()
+        elif choice == 'N':
+            selected_country = input(" Enter country code (e.g. NL, PL, FR): ").strip().upper()
+        elif choice.isdigit() and 1 <= int(choice) <= len(tracks):
+            selected_track = tracks[int(choice) - 1]
+        else:
+            selected_track = tracks[0]
+    else:
+        val = input(" Enter track (e.g. NL/orbit_88) or country (e.g. NL): ").strip()
+        if '/' in val:
+            selected_track = val
+        else:
+            selected_country = val.upper()
+
+    if selected_track:
+        parts = selected_track.replace('\\', '/').split('/')
+        selected_country = parts[0].upper()
+        if len(parts) > 1:
+            m = re.search(r'orbit_(\d+)', parts[1])
+            if m:
+                selected_orbit = int(m.group(1))
+
+    # Step 2: Select Source
+    detected = detect_s2_source()
+    print(f"""
+============================================================
+ Select Data Ingestion Source:
+  [1] Auto-detect (Current: {detected.upper()})
+  [2] CREODIAS Local Storage (/eodata or Y: drive)
+  [3] Copernicus Data Space Ecosystem API (CDSE download)
+============================================================""")
+    src_choice = input(" Enter choice [1-3] (default: 1): ").strip()
+    sources = {'1': 'auto', '2': 'creodias', '3': 'cdse'}
+    source = sources.get(src_choice, 'auto')
+
+    # Step 3: Date Range
+    start_date = input(" Enter acquisition start date [YYYY-MM-DD] (default: 2024-10-15): ").strip() or "2024-10-15"
+    end_date = input(" Enter acquisition end date [YYYY-MM-DD] (default: 2025-09-15): ").strip() or "2025-09-15"
+
+    pipeline = Sentinel2Pipeline(
+        country=selected_country,
+        orbit=selected_orbit,
+        start_date=start_date,
+        end_date=end_date,
+        source=source
+    )
+    interactive_menu(pipeline)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Unified Sentinel-2 Multi-Temporal Preprocessing Pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Launch interactive wizard (zero arguments):
+  python run_s2_preprocessor.py
+
+  # Single orbit automated run:
   python run_s2_preprocessor.py --track NL/orbit_88 --stage A
+
+  # Entire country automated run:
   python run_s2_preprocessor.py --country NL --stage A
-  python run_s2_preprocessor.py --track NL/orbit_88 --source cdse --stage 1
-  python run_s2_preprocessor.py --track NL/orbit_88
 """
     )
     parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
@@ -262,6 +345,11 @@ Examples:
     parser.add_argument('--threads', type=int, default=4, help="Worker threads for parallel processing (default: 4)")
 
     args = parser.parse_args()
+
+    # Zero arguments: open interactive wizard!
+    if not args.track and not args.country and not args.stage:
+        interactive_setup_wizard()
+        return
 
     country = args.country
     orbit = args.orbit
