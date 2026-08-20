@@ -1253,6 +1253,10 @@ class ProcessingPipelineS1S2:
         month_tensor_s2 = torch.tensor(months_s2, dtype=torch.long, device=device)
 
         feature_records = []
+        batch_records = []
+        batch_s1_profiles = []
+        batch_s2_profiles = []
+        batch_latlons = []
         count = 0
         total = len(target_segments)
 
@@ -1269,8 +1273,10 @@ class ProcessingPipelineS1S2:
                 continue
 
             record = {'crop_id': cid, 'seg_id': sid}
+            lat, lon = segment_coords.get(sid, (52.0, 5.0))
 
             # S1 features
+            s1_prof = None
             if ds_s1:
                 s1_data = [np.nan_to_num(ds_s1.GetRasterBand(b).ReadAsArray(xmin, ymin, w, h)) for b in range(1, nbands_s1 + 1)]
                 s1_arr = np.stack(s1_data, axis=0)
@@ -1278,19 +1284,13 @@ class ProcessingPipelineS1S2:
                 for b_i, val in enumerate(s1_means):
                     record[f's1_b{b_i}'] = val
 
-                s1_profile = np.zeros((num_dates_s1, 2), dtype=np.float32)
+                s1_prof = np.zeros((num_dates_s1, 2), dtype=np.float32)
                 for d in range(num_dates_s1):
-                    s1_profile[d, 0] = (s1_means[num_dates_s1 + d] + 25.0) / 25.0 # VV
-                    s1_profile[d, 1] = (s1_means[d] + 25.0) / 25.0 # VH
-
-                lat, lon = segment_coords.get(sid, (52.0, 5.0))
-                s1_in = torch.from_numpy(s1_profile).unsqueeze(0).to(device)
-                latlons = torch.tensor([[lat, lon]], dtype=torch.float32, device=device)
-                emb_s1 = extractor.get_s1_embeddings(s1_in, latlons, month_tensor_s1)[0]
-                for f_i, f_val in enumerate(emb_s1):
-                    record[f'presto_s1_{f_i}'] = f_val
+                    s1_prof[d, 0] = (s1_means[num_dates_s1 + d] + 25.0) / 25.0 # VV
+                    s1_prof[d, 1] = (s1_means[d] + 25.0) / 25.0 # VH
 
             # S2 features
+            s2_prof = None
             if ds_s2:
                 s2_data = [np.nan_to_num(ds_s2.GetRasterBand(b).ReadAsArray(xmin, ymin, w, h)) for b in range(1, nbands_s2 + 1)]
                 s2_arr = np.stack(s2_data, axis=0)
@@ -1298,17 +1298,10 @@ class ProcessingPipelineS1S2:
                 for b_i, val in enumerate(s2_means):
                     record[f's2_b{b_i}'] = val
 
-                s2_profile = np.zeros((num_dates_s2, 9), dtype=np.float32)
+                s2_prof = np.zeros((num_dates_s2, 9), dtype=np.float32)
                 for d in range(num_dates_s2):
                     for band_idx in range(9):
-                        s2_profile[d, band_idx] = s2_means[d * 9 + band_idx] / 10000.0
-
-                lat, lon = segment_coords.get(sid, (52.0, 5.0))
-                s2_in = torch.from_numpy(s2_profile).unsqueeze(0).to(device)
-                latlons = torch.tensor([[lat, lon]], dtype=torch.float32, device=device)
-                emb_s2 = extractor.get_s2_embeddings(s2_in, latlons, month_tensor_s2)[0]
-                for f_i, f_val in enumerate(emb_s2):
-                    record[f'presto_s2_{f_i}'] = f_val
+                        s2_prof[d, band_idx] = s2_means[d * 9 + band_idx] / 10000.0
 
             # Validate valid multimodal data
             is_valid = True
@@ -1318,13 +1311,42 @@ class ProcessingPipelineS1S2:
                 is_valid = False
 
             if is_valid:
-                feature_records.append(record)
+                batch_records.append(record)
+                if s1_prof is not None: batch_s1_profiles.append(s1_prof)
+                if s2_prof is not None: batch_s2_profiles.append(s2_prof)
+                batch_latlons.append([lat, lon])
+
             count += 1
-            if count % 100 == 0 or count == total:
-                sys.stdout.write(f"\r    Extracted features for {count}/{total} segments...  ")
+            if count % 200 == 0 or count == total:
+                sys.stdout.write(f"\r    Extracting raster stats: {count}/{total} segments...  ")
                 sys.stdout.flush()
 
-        df = pd.DataFrame(feature_records)
+        print(f"\n    Computing Presto embeddings in parallel batches (total {len(batch_records)} valid segments)...")
+        batch_size = 256
+        n_batches = math.ceil(len(batch_records) / batch_size) if batch_records else 0
+        for b_idx in range(n_batches):
+            start_i = b_idx * batch_size
+            end_i = min(len(batch_records), (b_idx + 1) * batch_size)
+            b_ll = torch.tensor(batch_latlons[start_i:end_i], dtype=torch.float32, device=device)
+
+            if ds_s1 and batch_s1_profiles:
+                b_s1_tensor = torch.from_numpy(np.stack(batch_s1_profiles[start_i:end_i], axis=0)).to(device)
+                embs_s1 = extractor.get_s1_embeddings(b_s1_tensor, b_ll, month_tensor_s1)
+                for rec_i, emb in enumerate(embs_s1):
+                    for f_i, f_val in enumerate(emb):
+                        batch_records[start_i + rec_i][f'presto_s1_{f_i}'] = f_val
+
+            if ds_s2 and batch_s2_profiles:
+                b_s2_tensor = torch.from_numpy(np.stack(batch_s2_profiles[start_i:end_i], axis=0)).to(device)
+                embs_s2 = extractor.get_s2_embeddings(b_s2_tensor, b_ll, month_tensor_s2)
+                for rec_i, emb in enumerate(embs_s2):
+                    for f_i, f_val in enumerate(emb):
+                        batch_records[start_i + rec_i][f'presto_s2_{f_i}'] = f_val
+
+            sys.stdout.write(f"\r    Presto batch progress: {end_i}/{len(batch_records)} segments ({(end_i/len(batch_records)*100):.1f}%)...  ")
+            sys.stdout.flush()
+
+        df = pd.DataFrame(batch_records)
         df.to_csv(self.sel_csv, index=False)
         print(f"\n    Multimodal features saved to {self.sel_csv} ({df.shape[1] - 2} features).\n")
 
@@ -1359,7 +1381,7 @@ class ProcessingPipelineS1S2:
                 subsample=0.8,
                 colsample_bytree=0.25,
                 random_state=42,
-                n_jobs=4,
+                n_jobs=-1,
                 tree_method='hist'
             )
         else:
@@ -1452,7 +1474,11 @@ class ProcessingPipelineS1S2:
                 if len(u_sids) == 0:
                     continue
 
-                features_list = []
+                s1_means_list = []
+                s2_means_list = []
+                s1_profiles_list = []
+                s2_profiles_list = []
+                latlons_list = []
                 valid_ids = []
 
                 for sid in u_sids:
@@ -1467,53 +1493,58 @@ class ProcessingPipelineS1S2:
                     if not np.any(sub_mask):
                         continue
 
-                    feat_row = []
+                    cx, cy = xmin + w / 2.0, ymin + h / 2.0
+                    mx, my = gt[0] + cx * gt[1] + cy * gt[2], gt[3] + cx * gt[4] + cy * gt[5]
+                    lon, lat = transformer_to_wgs84.transform(mx, my)
 
                     # S1
                     if ds_s1:
                         s1_arr = np.stack([np.nan_to_num(ds_s1.GetRasterBand(b).ReadAsArray(xmin, ymin, w, h)) for b in range(1, nbands_s1 + 1)], axis=0)
                         s1_means = [float(np.mean(s1_arr[b][sub_mask])) for b in range(nbands_s1)]
-                        feat_row.extend(s1_means)
+                        s1_means_list.append(s1_means)
 
                         s1_profile = np.zeros((num_dates_s1, 2), dtype=np.float32)
                         for d in range(num_dates_s1):
                             s1_profile[d, 0] = (s1_means[num_dates_s1 + d] + 25.0) / 25.0
                             s1_profile[d, 1] = (s1_means[d] + 25.0) / 25.0
-
-                        cx, cy = xmin + w / 2.0, ymin + h / 2.0
-                        mx, my = gt[0] + cx * gt[1] + cy * gt[2], gt[3] + cx * gt[4] + cy * gt[5]
-                        lon, lat = transformer_to_wgs84.transform(mx, my)
-                        s1_in = torch.from_numpy(s1_profile).unsqueeze(0).to(device)
-                        latlons = torch.tensor([[lat, lon]], dtype=torch.float32, device=device)
-                        emb_s1 = extractor.get_s1_embeddings(s1_in, latlons, month_tensor_s1)[0]
-                        feat_row.extend(emb_s1)
+                        s1_profiles_list.append(s1_profile)
 
                     # S2
                     if ds_s2:
                         s2_arr = np.stack([np.nan_to_num(ds_s2.GetRasterBand(b).ReadAsArray(xmin, ymin, w, h)) for b in range(1, nbands_s2 + 1)], axis=0)
                         s2_means = [float(np.mean(s2_arr[b][sub_mask])) for b in range(nbands_s2)]
-                        feat_row.extend(s2_means)
+                        s2_means_list.append(s2_means)
 
                         s2_profile = np.zeros((num_dates_s2, 9), dtype=np.float32)
                         for d in range(num_dates_s2):
                             for band_idx in range(9):
                                 s2_profile[d, band_idx] = s2_means[d * 9 + band_idx] / 10000.0
+                        s2_profiles_list.append(s2_profile)
 
-                        cx, cy = xmin + w / 2.0, ymin + h / 2.0
-                        mx, my = gt[0] + cx * gt[1] + cy * gt[2], gt[3] + cx * gt[4] + cy * gt[5]
-                        lon, lat = transformer_to_wgs84.transform(mx, my)
-                        s2_in = torch.from_numpy(s2_profile).unsqueeze(0).to(device)
-                        latlons = torch.tensor([[lat, lon]], dtype=torch.float32, device=device)
-                        emb_s2 = extractor.get_s2_embeddings(s2_in, latlons, month_tensor_s2)[0]
-                        feat_row.extend(emb_s2)
-
-                    features_list.append(feat_row)
+                    latlons_list.append([lat, lon])
                     valid_ids.append(sid)
 
                 if not valid_ids:
                     continue
 
-                X_tile = np.array(features_list)
+                feat_blocks = []
+                b_ll = torch.tensor(latlons_list, dtype=torch.float32, device=device)
+
+                if ds_s1 and s1_profiles_list:
+                    s1_means_arr = np.array(s1_means_list, dtype=np.float32)
+                    feat_blocks.append(s1_means_arr)
+                    b_s1 = torch.from_numpy(np.stack(s1_profiles_list, axis=0)).to(device)
+                    embs_s1 = extractor.get_s1_embeddings(b_s1, b_ll, month_tensor_s1)
+                    feat_blocks.append(embs_s1)
+
+                if ds_s2 and s2_profiles_list:
+                    s2_means_arr = np.array(s2_means_list, dtype=np.float32)
+                    feat_blocks.append(s2_means_arr)
+                    b_s2 = torch.from_numpy(np.stack(s2_profiles_list, axis=0)).to(device)
+                    embs_s2 = extractor.get_s2_embeddings(b_s2, b_ll, month_tensor_s2)
+                    feat_blocks.append(embs_s2)
+
+                X_tile = np.hstack(feat_blocks)
                 X_tile_scaled = scaler.transform(X_tile)
                 raw_probs = clf.predict_proba(X_tile_scaled)
 
