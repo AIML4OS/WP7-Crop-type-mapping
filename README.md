@@ -378,17 +378,14 @@ python tools/5_build_raster_overviews.py -c NL
 ### Phase 1: Sentinel-1 SAR preprocessing
 
 ```powershell
-# Step 1a: Calibrate slices from local CREODIAS storage (Y: drive)
-python 1_Sentinel-1_preprocessor/1a_slice_calibration.py -s 2024-10-15 -e 2025-09-15 -c NL
+# Run full automated pipeline for a single orbit:
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track NL/orbit_88 --stage A
 
-# Step 1c: Calibrate slices directly from CDSE API
-python 1_Sentinel-1_preprocessor/1c_slice_calibration_cdse.py -s 2024-10-15 -e 2025-09-15 -c NL
+# Run full automated pipeline for an entire country (Greedy Set Cover):
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country NL --stage A
 
-# Step 2: Multi-temporal coregistration
-python 1_Sentinel-1_preprocessor/2_coregistration.py -c NL
-
-# Step 3: Spatial clipping to NUTS2 boundaries
-python 1_Sentinel-1_preprocessor/3_stack_clip.py -c NL
+# Interactive menu mode:
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track NL/orbit_88
 ```
 
 ---
@@ -396,11 +393,14 @@ python 1_Sentinel-1_preprocessor/3_stack_clip.py -c NL
 ### Phase 2: Sentinel-2 optical preprocessing
 
 ```powershell
-# Full automated execution across all orbits for a country:
-python 1a_Sentinel-2_preprocessor/sentinel2_preprocessor.py -s 2025-03-01 -e 2025-09-15 -c NL --source cdse --mode all
+# Run full automated pipeline for a single orbit:
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track NL/orbit_88 --stage A
 
-# Single orbit execution:
-python 1a_Sentinel-2_preprocessor/sentinel2_preprocessor.py -s 2025-03-01 -e 2025-09-15 -c NL -o 88 --source cdse --mode all
+# Run full automated pipeline for an entire country:
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country NL --stage A
+
+# Interactive menu mode:
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track NL/orbit_88
 ```
 
 ---
@@ -408,17 +408,17 @@ python 1a_Sentinel-2_preprocessor/sentinel2_preprocessor.py -s 2025-03-01 -e 202
 ### Phase 3: Multimodal crop classification
 
 ```powershell
-# Run full automated pipeline with SLIC superpixels:
-python 2_classifier/1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode slic --stage A
+# Run full automated pipeline with SLIC superpixels (Recommended):
+python 2_classifier/run_classifier.py --track NL/orbit_88 --seg_mode slic --stage A
 
 # Run full automated pipeline with official LPIS cadastral parcel vectors:
-python 2_classifier/1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode lpis --stage A
+python 2_classifier/run_classifier.py --track NL/orbit_88 --seg_mode lpis --stage A
 
 # Run full automated pipeline with Meta AI SAM deep segmentation:
-python 2_classifier/1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode sam --stage A
+python 2_classifier/run_classifier.py --track NL/orbit_88 --seg_mode sam --stage A
 
-# Interactive menu mode (select individual stages 0-7):
-python 2_classifier/1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode slic
+# Interactive menu mode (select individual stages 0-7, change models or segmentation):
+python 2_classifier/run_classifier.py --track NL/orbit_88
 ```
 
 ---
@@ -426,11 +426,11 @@ python 2_classifier/1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 
 ### Phase 4: Multi-orbit nationwide merge
 
 ```powershell
-# Merge SLIC classifications for NL:
-python 2_classifier/2_merge_classifications.py --track NL --suffix _mlpxgb_presto_slic
+# Merge SLIC classifications into a seamless national map:
+python 2_classifier/run_merge.py --country NL --seg_mode slic
 
-# Merge LPIS classifications for NL:
-python 2_classifier/2_merge_classifications.py --track NL --suffix _mlpxgb_presto_lpis
+# Merge LPIS classifications into a seamless national map:
+python 2_classifier/run_merge.py --country NL --seg_mode lpis
 ```
 
 ---
@@ -460,26 +460,20 @@ All outputs are saved in `workingDir/{COUNTRY}/orbit_{ORBIT}/classification_resu
 ```text
 AIML_CropMapper_Cloud/
 ├── 1_Sentinel-1_preprocessor/           # Sentinel-1 SAR pipeline
+│   ├── run_s1_preprocessor.py           # Unified S1 CLI & interactive menu
 │   ├── config_s1.json                   # Active S1 config (CDSE credentials, SNAP paths)
 │   ├── config_s1.example.json           # Template S1 config
-│   ├── 1a_slice_calibration.py          # CREODIAS calibration
-│   ├── 1c_slice_calibration_cdse.py     # CDSE API calibration
-│   ├── 2_coregistration.py              # Multi-temporal coregistration
-│   └── 3_stack_clip.py                  # NUTS2 spatial clipping
-├── 1a_Sentinel-2_preprocessor/          # Sentinel-2 Optical pipeline
+│   └── Archive_scripts/                 # Standalone legacy S1 scripts (calibration, coregistration, stack)
+├── 1a_Sentinel-2_preprocessor/          # Sentinel-2 optical pipeline
+│   ├── run_s2_preprocessor.py           # Unified S2 CLI & interactive menu
 │   ├── config_s2.json                   # Active S2 config (CDSE credentials, DOYs, bands)
 │   ├── config_s2.example.json           # Template S2 config
-│   ├── 1a_extract_creodias_s2.py        # CREODIAS tile extraction
-│   ├── 1b_download_cdse_s2.py           # CDSE API granule download
-│   ├── 2_time_series_s2.py              # 10-day synthetic DOY interpolation
-│   ├── 3_mosaic_stack_clip_s2.py        # S1 grid matching & BigTIFF stacking
-│   └── sentinel2_preprocessor.py        # Master pipeline orchestrator
-├── 2_classifier/                        # Multimodal Machine Learning suite
-│   ├── 1_classify_MLPXGB_presto_hybrid_S1S2.py  # S1+S2 Presto + PyTorch MLP + XGBoost
-│   ├── 1_classify_ann_presto_hybrid.py          # S1-only Presto + ANN classifier
-│   ├── 1_classify_otb.py                        # Orfeo ToolBox classifier
-│   ├── 2_merge_classifications.py               # Nationwide multi-orbit merge
-│   └── Archive_scripts/                         # Archived experimental models
+│   └── Archive_scripts/                 # Standalone legacy S2 scripts (extract, download, time-series, mosaic)
+├── 2_classifier/                        # Multimodal machine learning suite
+│   ├── run_classifier.py                # Unified classifier CLI & interactive menu
+│   ├── run_merge.py                     # Multi-orbit national mosaic & merger
+│   ├── 1_classify_MLPXGB_presto_hybrid_S1S2.py  # Core S1+S2 Presto + PyTorch MLP + XGBoost engine
+│   └── Archive_scripts/                 # Standalone legacy models (S1 Presto, OTB, Prithvi)
 ├── tools/                               # Standalone preparation utilities
 │   ├── 1_download_nuts_boundaries.py    # GISCO NUTS boundaries downloader
 │   ├── 2_build_agricultural_mask.py     # Cropland mask builder
