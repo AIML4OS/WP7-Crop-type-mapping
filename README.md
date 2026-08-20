@@ -56,10 +56,11 @@ If you are an IT administrator or data engineer running this pipeline for the fi
 3. **Place your ground truth samples**:
    - Put your training points in `auxiliary_files/shapefiles_samples/{COUNTRY}/samples.shp` (with attribute `crop_id`).
 4. **Run the preprocessors**:
-   - Preprocess Sentinel-1 SAR: `python 1_Sentinel-1_preprocessor/1c_slice_calibration_cdse.py -s 2024-10-15 -e 2025-09-15 -c NL`
-   - Preprocess Sentinel-2 Optical: `python 1a_Sentinel-2_preprocessor/sentinel2_preprocessor.py -s 2025-03-01 -e 2025-09-15 -c NL --source cdse --mode all`
+   - Preprocess Sentinel-1 SAR: `python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track NL/orbit_88 --source cdse --stage A`
+   - Preprocess Sentinel-2 Optical: `python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track NL/orbit_88 --source cdse --stage A`
 5. **Run the multimodal classifier**:
-   - `python 2_classifier/1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode slic --stage A`
+   - `python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A`
+   *(Tip: You can also simply run `python 2_classifier/run_classifier.py` without arguments to launch the interactive setup wizard!)*
 
 ---
 
