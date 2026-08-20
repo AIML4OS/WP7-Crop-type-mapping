@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import List, Optional
 from osgeo import gdal
 
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir"))
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,13 +65,20 @@ def build_overviews_for_file(
 def build_overviews_for_directory(
     directory: Path,
     levels: Optional[List[int]] = None,
-    resampling: str = "AVERAGE",
-    pattern: str = "*.tif"
+    resampling: str = "AVERAGE"
 ):
-    tifs = list(directory.glob(pattern))
-    logging.info(f"Found {len(tifs)} GeoTIFF files matching '{pattern}' in {directory}...")
-    for f in tifs:
-        build_overviews_for_file(f, levels, resampling)
+    if not directory.exists():
+        logging.error(f"Directory not found: {directory}")
+        return
+
+    tifs = list(directory.glob("*.tif"))
+    if not tifs:
+        logging.warning(f"No .tif files found in {directory}")
+        return
+
+    for tif in tifs:
+        if not tif.name.endswith(".tmp.tif"):
+            build_overviews_for_file(tif, levels, resampling)
 
 
 def resolve_raster_path(path_str: str) -> Path:
@@ -94,7 +101,7 @@ def main():
     parser = argparse.ArgumentParser(description="Universal GDAL Pyramid Overviews Generator.")
     parser.add_argument('-i', '--input', type=str, default=None, help="Path to single GeoTIFF file")
     parser.add_argument('-d', '--directory', type=str, default=None, help="Directory containing GeoTIFF files")
-    parser.add_argument('-c', '--country', type=str, default=None, help="Country code in workingDir (e.g. NL, PL)")
+    parser.add_argument('-c', '--country', type=str, default=None, help="Country code in workingDirs (e.g. NL, PL)")
     parser.add_argument('--levels', nargs='+', type=int, default=[2, 4, 8, 16, 32, 64], help="Overview levels (default: 2 4 8 16 32 64)")
     parser.add_argument('--resampling', default="AVERAGE", choices=["NEAREST", "AVERAGE", "GAUSS", "CUBIC", "MODE"], help="Resampling method (default: AVERAGE, use NEAREST/MODE for classification maps)")
     parser.add_argument('--compress', default="LZW", choices=["LZW", "DEFLATE", "JPEG", "NONE"], help="Compression for overviews (default: LZW)")
@@ -108,12 +115,15 @@ def main():
         target_dir = resolve_raster_path(args.directory)
         build_overviews_for_directory(target_dir, args.levels, args.resampling)
     elif args.country:
-        country_dir = BASE_DIR / args.country.upper()
-        if country_dir.exists():
-            for proc_dir in country_dir.glob("orbit_*/processed_raster"):
-                build_overviews_for_directory(proc_dir, args.levels, args.resampling)
-        else:
-            logging.error(f"Country directory not found: {country_dir}")
+        candidate_bases = [BASE_DIR, Path(r"D:/AIML_CropMapper_Cloud/workingDir")]
+        for b in candidate_bases:
+            country_dir = b / args.country.upper()
+            if country_dir.exists():
+                for proc_dir in list(country_dir.glob("orbit_*/1_input_stacks")) + list(country_dir.glob("orbit_*/processed_raster")) + list(country_dir.glob("orbit_*/2_classification/3_maps")):
+                    build_overviews_for_directory(proc_dir, args.levels, args.resampling)
+                nat_dir = country_dir / "national_products"
+                if nat_dir.exists():
+                    build_overviews_for_directory(nat_dir, args.levels, args.resampling)
     else:
         parser.print_help()
 

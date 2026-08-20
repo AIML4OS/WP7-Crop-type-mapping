@@ -90,7 +90,7 @@ except ImportError:
     HAS_SKIMAGE = False
 
 # Global project directories
-base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir"))
+base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
 aux_dir = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxiliary_files"))
 presto_dir = aux_dir / "Presto_models"
 
@@ -621,14 +621,16 @@ class ProcessingPipelineS1S2:
             self.file_prefix = self.sanitized_track
 
         # Define directories
+        # Define directories (New sequential structure in workingDirs/)
         self.base_dir = base_dir
         self.aux_dir = aux_dir
-        self.proc_dir = self.base_dir / self.track / 'processed_raster'
-        self.out_dir = self.base_dir / self.track / 'classification_results'
-        self.samples_dir = self.out_dir / 'samples'
-        self.model_dir = self.out_dir / 'train_model'
-        self.seg_dir = self.out_dir / 'segmentation'
-        self.class_dir = self.out_dir / 'classification'
+        self.proc_dir = self.base_dir / self.track / '1_input_stacks'
+        self.out_dir = self.base_dir / self.track / '2_classification'
+        self.seg_dir = self.out_dir / '0_segmentation'
+        self.samples_dir = self.out_dir / '1_samples_and_features'
+        self.model_dir = self.out_dir / '2_models'
+        self.class_dir = self.out_dir / '3_maps'
+        self.reports_dir = self.out_dir / '4_reports'
 
         self._ensure_directories()
 
@@ -650,7 +652,11 @@ class ProcessingPipelineS1S2:
         candidate_learn = [
             self.samples_dir / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
             self.samples_dir / f"learn_{self.seg_mode}.shp",
-            self.samples_dir / f"{self.file_prefix}_learn.shp"
+            self.samples_dir / f"{self.file_prefix}_learn.shp",
+            # Fallbacks for existing legacy samples
+            self.base_dir / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn.shp"
         ]
         self.learn_shp = candidate_learn[0]
         for c in candidate_learn:
@@ -661,7 +667,11 @@ class ProcessingPipelineS1S2:
         candidate_control = [
             self.samples_dir / f"{self.file_prefix}_control_{self.seg_mode}.shp",
             self.samples_dir / f"control_{self.seg_mode}.shp",
-            self.samples_dir / f"{self.file_prefix}_control.shp"
+            self.samples_dir / f"{self.file_prefix}_control.shp",
+            # Fallbacks for existing legacy control
+            self.base_dir / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control_{self.seg_mode}.shp",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control_{self.seg_mode}.shp",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control.shp"
         ]
         self.control_shp = candidate_control[0]
         for c in candidate_control:
@@ -676,7 +686,10 @@ class ProcessingPipelineS1S2:
         candidate_segs = [
             self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif",
             self.seg_dir / f"{self.file_prefix}_{self.seg_mode}_segments.tif",
-            self.seg_dir / f"{self.file_prefix}_segmentation.tif"
+            self.seg_dir / f"{self.file_prefix}_segmentation.tif",
+            # Fallbacks
+            self.base_dir / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif"
         ]
         self.seg_tif = candidate_segs[0]
         for c in candidate_segs:
@@ -689,7 +702,7 @@ class ProcessingPipelineS1S2:
         self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence{self.suffix}.tif"
         self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked{self.suffix}.tif"
         self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked{self.suffix}.tif"
-        self.metrics_fp = self.out_dir / f"{self.file_prefix}_metrics{self.suffix}.xlsx"
+        self.metrics_fp = self.reports_dir / f"report_{self.file_prefix}{self.suffix}.xlsx"
 
         self.agri_mask = self._resolve_agri_mask()
 
@@ -710,7 +723,7 @@ class ProcessingPipelineS1S2:
         }
 
     def _ensure_directories(self):
-        for d in [self.samples_dir, self.model_dir, self.seg_dir, self.class_dir]:
+        for d in [self.proc_dir, self.seg_dir, self.samples_dir, self.model_dir, self.class_dir, self.reports_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
     def _resolve_sam_checkpoint(self) -> Optional[str]:
@@ -722,23 +735,35 @@ class ProcessingPipelineS1S2:
         return None
 
     def _resolve_s1_raster(self) -> Optional[Path]:
-        if not self.proc_dir.exists():
-            return None
-        patterns = [f"*{self.sanitized_track}*_VH_VV*.tif", f"*_VH_VV*.tif", f"*{self.country}*_VH_VV*.tif"]
-        for pat in patterns:
-            matches = list(self.proc_dir.glob(pat))
-            if matches:
-                return matches[0]
+        candidate_dirs = [
+            self.base_dir / self.track / '1_input_stacks',
+            self.base_dir / self.track / 'processed_raster',
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / '1_input_stacks',
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'processed_raster'
+        ]
+        patterns = [f"*{self.sanitized_track}*_VH_VV*.tif", f"*_VH_VV*.tif", f"*{self.country}*_VH_VV*.tif", f"*{self.sanitized_track}*Sigma0*.tif", f"*Sigma0*.tif"]
+        for c_dir in candidate_dirs:
+            if c_dir.exists():
+                for pat in patterns:
+                    matches = list(c_dir.glob(pat))
+                    if matches:
+                        return matches[0]
         return None
 
     def _resolve_s2_raster(self) -> Optional[Path]:
-        if not self.proc_dir.exists():
-            return None
+        candidate_dirs = [
+            self.base_dir / self.track / '1_input_stacks',
+            self.base_dir / self.track / 'processed_raster',
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / '1_input_stacks',
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'processed_raster'
+        ]
         patterns = [f"*{self.sanitized_track}*S2*.tif", f"*S2_timeseries*.tif", f"*S2*.tif"]
-        for pat in patterns:
-            matches = list(self.proc_dir.glob(pat))
-            if matches:
-                return matches[0]
+        for c_dir in candidate_dirs:
+            if c_dir.exists():
+                for pat in patterns:
+                    matches = list(c_dir.glob(pat))
+                    if matches:
+                        return matches[0]
         return None
 
     def _resolve_samples_shp(self) -> Optional[Path]:

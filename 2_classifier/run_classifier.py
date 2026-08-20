@@ -88,7 +88,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir"))
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
 
 # Register unpickling compatibility in __main__
 try:
@@ -101,15 +101,17 @@ except Exception:
 
 
 def discover_available_tracks() -> List[str]:
-    """Scans workingDir to find all available country/orbit directories."""
-    tracks = []
-    if BASE_DIR.exists():
-        for country_dir in sorted(BASE_DIR.iterdir()):
-            if country_dir.is_dir() and len(country_dir.name) in [2, 3]:
-                for orbit_dir in sorted(country_dir.glob("orbit_*")):
-                    if orbit_dir.is_dir():
-                        tracks.append(f"{country_dir.name}/{orbit_dir.name}")
-    return tracks
+    """Scans workingDirs and workingDir to find all available country/orbit directories."""
+    tracks = set()
+    candidate_bases = [BASE_DIR, Path(r"D:/AIML_CropMapper_Cloud/workingDir")]
+    for b in candidate_bases:
+        if b.exists():
+            for country_dir in sorted(b.iterdir()):
+                if country_dir.is_dir() and len(country_dir.name) in [2, 3]:
+                    for orbit_dir in sorted(country_dir.glob("orbit_*")):
+                        if orbit_dir.is_dir():
+                            tracks.add(f"{country_dir.name}/{orbit_dir.name}")
+    return sorted(list(tracks))
 
 
 def run_pipeline(

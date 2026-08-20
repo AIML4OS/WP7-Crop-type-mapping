@@ -25,7 +25,7 @@ from typing import List, Dict, Optional, Tuple
 from osgeo import gdal, ogr, osr
 
 # ================= CONFIGURATION =================
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir"))
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
 AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxiliary_files"))
 SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
 DEFAULT_DOYS = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]
@@ -61,33 +61,39 @@ def get_country_shapefile(country_code: str) -> Optional[Path]:
 
 
 def get_s1_raster_reference(track_dir: Path) -> Optional[Dict]:
-    proc_dir = track_dir / "processed_raster"
-    if proc_dir.exists():
-        s1_tifs = list(proc_dir.glob("*_VH_VV*.tif"))
-        if s1_tifs:
-            ds = gdal.Open(str(s1_tifs[0]))
-            if ds:
-                proj = ds.GetProjection()
-                gt = ds.GetGeoTransform()
-                w = ds.RasterXSize
-                h = ds.RasterYSize
-                res_x = abs(gt[1])
-                res_y = abs(gt[5])
-                min_x = gt[0]
-                max_x = gt[0] + w * gt[1]
-                max_y = gt[3]
-                min_y = gt[3] + h * gt[5]
-                bounds = [min_x, min_y, max_x, max_y]
-                ds = None
-                return {
-                    'proj': proj,
-                    'gt': gt,
-                    'width': w,
-                    'height': h,
-                    'res_x': res_x,
-                    'res_y': res_y,
-                    'bounds': bounds
-                }
+    candidate_dirs = [
+        track_dir / "1_input_stacks",
+        track_dir / "processed_raster",
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track_dir.relative_to(BASE_DIR) / "1_input_stacks" if BASE_DIR in track_dir.parents else None,
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track_dir.relative_to(BASE_DIR) / "processed_raster" if BASE_DIR in track_dir.parents else None
+    ]
+    for proc_dir in candidate_dirs:
+        if proc_dir and proc_dir.exists():
+            s1_tifs = list(proc_dir.glob("*_VH_VV*.tif")) + list(proc_dir.glob("*Sigma0*.tif"))
+            if s1_tifs:
+                ds = gdal.Open(str(s1_tifs[0]))
+                if ds:
+                    proj = ds.GetProjection()
+                    gt = ds.GetGeoTransform()
+                    w = ds.RasterXSize
+                    h = ds.RasterYSize
+                    res_x = abs(gt[1])
+                    res_y = abs(gt[5])
+                    min_x = gt[0]
+                    max_y = gt[3]
+                    max_x = min_x + w * gt[1]
+                    min_y = max_y + h * gt[5]
+                    ds = None
+                    return {
+                        'proj': proj,
+                        'gt': gt,
+                        'res_x': res_x,
+                        'res_y': res_y,
+                        'bounds': (min_x, min_y, max_x, min_y),
+                        'width': w,
+                        'height': h,
+                        'ref_file': s1_tifs[0]
+                    }
     return None
 
 
@@ -168,13 +174,23 @@ def mosaic_stack_clip_single_track(
     norm_track = track.replace('\\', '/')
     sanitized_track = norm_track.replace('/', '_')
     track_dir = BASE_DIR / track
-    s2_base = track_dir / "S2"
+
+    candidate_s2_bases = [
+        track_dir / "_temp_processing" / "s2_optical",
+        track_dir / "S2",
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track / "S2"
+    ]
+    s2_base = candidate_s2_bases[0]
+    for c in candidate_s2_bases:
+        if c.exists() and (list(c.glob("**/_synthetic_s2")) or list(c.glob("day*_*"))):
+            s2_base = c
+            break
 
     if not s2_base.exists():
         return
 
-    out_final_dir = track_dir / "S2_final_preprocessing"
-    out_proc_dir = track_dir / "processed_raster"
+    out_final_dir = track_dir / "_temp_processing" / "s2_optical" / "3_doy_mosaics"
+    out_proc_dir = track_dir / "1_input_stacks"
     out_final_dir.mkdir(parents=True, exist_ok=True)
     out_proc_dir.mkdir(parents=True, exist_ok=True)
 

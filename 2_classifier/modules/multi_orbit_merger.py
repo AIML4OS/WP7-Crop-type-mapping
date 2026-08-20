@@ -133,10 +133,8 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
         country = parts[0].upper()
         sanitized = tr.replace('/', '_')
         
-        track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
-        filename_pairs = get_masked_filenames(track_prefix, suffix)
-        
         candidates = [
+            specific_path / '2_classification' / '3_maps',
             specific_path / 'classification_results' / 'classification',
             specific_path / 'classification_results'
         ]
@@ -167,6 +165,7 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
                 filename_pairs = get_masked_filenames(track_prefix, suffix)
                 
                 candidates = [
+                    sub / '2_classification' / '3_maps',
                     sub / 'classification_results' / 'classification',
                     sub / 'classification_results'
                 ]
@@ -302,12 +301,9 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
 
     # --- Prepare output file ------------------------------------------------
     base_tr, base_country, _, _ = tracks[0]
-    if '/' in base_tr or '\\' in base_tr:
-        out_dir = base_dir / base_country / 'classification_results'
-    else:
-        out_dir = base_dir / base_tr / 'classification_results'
+    out_dir = base_dir / base_country / 'national_products'
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_tif = out_dir / f"{base_country}_final_classification{suffix}.tif"
+    out_tif = out_dir / f"{base_country}_national_crop_map{suffix}.tif"
     
     drv = gdal.GetDriverByName('GTiff')
     ds_out = drv.Create(str(out_tif), cols, rows, 1, gdal.GDT_Int32, 

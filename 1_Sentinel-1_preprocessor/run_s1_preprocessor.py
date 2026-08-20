@@ -62,7 +62,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir"))
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
 COUNTRY_ORBITS = {
     'NL': [88, 161],
     'PL': [22, 29, 73, 95, 102, 124, 146, 168, 175],
@@ -87,15 +87,16 @@ def detect_s1_source() -> str:
 
 def discover_country_orbits(country_code: str) -> List[int]:
     """Finds existing orbit folders or falls back to standard greedy orbit list."""
-    c_dir = BASE_DIR / country_code.upper()
-    if c_dir.exists():
-        found = []
-        for d in c_dir.glob("orbit_*"):
-            m = re.search(r'orbit_(\d+)', d.name)
-            if m:
-                found.append(int(m.group(1)))
-        if found:
-            return sorted(list(set(found)))
+    found = set()
+    for b in [BASE_DIR, Path(r"D:/AIML_CropMapper_Cloud/workingDir")]:
+        c_dir = b / country_code.upper()
+        if c_dir.exists():
+            for d in c_dir.glob("orbit_*"):
+                m = re.search(r'orbit_(\d+)', d.name)
+                if m:
+                    found.add(int(m.group(1)))
+    if found:
+        return sorted(list(found))
     return COUNTRY_ORBITS.get(country_code.upper(), [88, 161])
 
 

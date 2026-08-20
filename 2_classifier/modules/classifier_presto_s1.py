@@ -53,8 +53,8 @@ except ImportError:
     print("WARNING: scikit-image not found.")
 
 # Global Paths
-base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
-aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
+base_dir = Path(os.environ.get("AIML_WORKING_DIR", "D:/AIML_CropMapper_Cloud/workingDirs"))
+aux_dir = Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files"))
 presto_dir = aux_dir / "Presto_models"
 
 TOTAL_STAGES = 8

@@ -18,8 +18,8 @@ from openpyxl.styles import Font
 # python 1_classify_otb.py --track P1a
 
 # Base Paths provided by user
-base_dir = Path("D:/AIML_CropMapper_Cloud/workingDir")
-aux_dir = Path("D:/AIML_CropMapper_Cloud/auxiliary_files")
+base_dir = Path(os.environ.get("AIML_WORKING_DIR", "D:/AIML_CropMapper_Cloud/workingDirs"))
+aux_dir = Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files"))
 
 # OTB Installation Path
 otb_dir = Path("D:/AIML_CropMapper_Cloud/bin/OTB-6.2.0-Win64")
@@ -51,15 +51,16 @@ class ProcessingPipeline:
         self.total_stages = TOTAL_STAGES
         print(f"Initializing pipeline for Track: {self.track}, Country: {self.country}")
 
-        # --- 1. Define all paths ---
+        # --- 1. Define all paths (Sequential workingDirs structure) ---
         self.base_dir = base_dir
         self.aux_dir = aux_dir
-        self.proc_dir = self.base_dir / self.track / 'processed_raster'
-        self.out_dir = self.base_dir / self.track / 'classification_results'
-        self.samples_dir = self.out_dir / 'samples'
-        self.model_dir = self.out_dir / 'train_model'
-        self.seg_dir = self.out_dir / 'segmentation'
-        self.class_dir = self.out_dir / 'classification'
+        self.proc_dir = self.base_dir / self.track / '1_input_stacks'
+        self.out_dir = self.base_dir / self.track / '2_classification'
+        self.seg_dir = self.out_dir / '0_segmentation'
+        self.samples_dir = self.out_dir / '1_samples_and_features'
+        self.model_dir = self.out_dir / '2_models'
+        self.class_dir = self.out_dir / '3_maps'
+        self.reports_dir = self.out_dir / '4_reports'
 
         # --- Ensure directories exist immediately upon init ---
         self._ensure_directories()
@@ -158,7 +159,7 @@ class ProcessingPipeline:
         self.cutline_shp = self.proc_dir / f"{self.file_prefix}_valid_coverage.shp"
         self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked.tif"
         self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked.tif"
-        self.metrics_fp = self.class_dir / f"{self.file_prefix}_metrics.xlsx"
+        self.metrics_fp = self.reports_dir / f"{self.file_prefix}_metrics.xlsx"
 
         # --- 4. Define default parameters for configurable stages ---
         self.stage1_params = {
@@ -181,7 +182,7 @@ class ProcessingPipeline:
 
     def _ensure_directories(self):
         """Helper to enforce directory existence before writing files."""
-        for d in [self.samples_dir, self.model_dir, self.seg_dir, self.class_dir]:
+        for d in [self.proc_dir, self.samples_dir, self.model_dir, self.seg_dir, self.class_dir, self.reports_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
     def _run_cmd(self, cmd, stage, desc):

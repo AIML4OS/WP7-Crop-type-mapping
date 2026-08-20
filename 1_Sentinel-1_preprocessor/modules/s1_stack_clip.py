@@ -12,7 +12,7 @@ from osgeo import gdal, gdalconst, ogr, osr
 
 # ================= CONFIGURATION =================
 # Update these paths to match your system
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", "D:/AIML_CropMapper_Cloud/workingDir"))
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", "D:/AIML_CropMapper_Cloud/workingDirs"))
 SHAPEFILES_DIR = Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files")) / "shapefiles_nuts"
 
 
@@ -58,35 +58,38 @@ def reproject_shapefile(src_shp, dst_shp, target_epsg=3857, force_src_epsg=None)
         return False
 
     src_layer = src_ds.GetLayer()
+    src_srs = src_layer.GetSpatialRef()
+    if not src_srs:
+        if force_src_epsg:
+            src_srs = osr.SpatialReference()
+            src_srs.ImportFromEPSG(force_src_epsg)
+        else:
+            print("Shapefile has no spatial reference. Cannot reproject.")
+            return False
 
-    # Determine Source SRS
-    if force_src_epsg:
-        src_srs = osr.SpatialReference()
-        src_srs.ImportFromEPSG(force_src_epsg)
-        print(f"    [Override] Forcing source SRS to EPSG:{force_src_epsg}")
-    else:
-        src_srs = src_layer.GetSpatialRef()
+    target_srs = osr.SpatialReference()
+    target_srs.ImportFromEPSG(target_epsg)
+    target_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
-    dst_srs = osr.SpatialReference()
-    dst_srs.ImportFromEPSG(target_epsg)
+    transform = osr.CoordinateTransformation(src_srs, target_srs)
 
-    # Create output
-    if os.path.exists(str(dst_shp)):
+    if Path(dst_shp).exists():
         driver.DeleteDataSource(str(dst_shp))
 
     dst_ds = driver.CreateDataSource(str(dst_shp))
-    dst_layer = dst_ds.CreateLayer(src_layer.GetName(), geom_type=src_layer.GetGeomType(), srs=dst_srs)
+    dst_layer = dst_ds.CreateLayer(src_layer.GetName(), target_srs, src_layer.GetGeomType())
 
-    # Coordinate Transformation
-    coord_trans = osr.CoordinateTransformation(src_srs, dst_srs)
+    layer_defn = src_layer.GetLayerDefn()
+    for i in range(layer_defn.GetFieldCount()):
+        field_defn = layer_defn.GetFieldDefn(i)
+        dst_layer.CreateField(field_defn)
 
-    # Copy features
-    src_layer.ResetReading()
     for feature in src_layer:
         geom = feature.GetGeometryRef()
-        geom.Transform(coord_trans)
-
+        if geom:
+            geom.Transform(transform)
         new_feature = ogr.Feature(dst_layer.GetLayerDefn())
+        new_feature.SetFrom(feature)
         new_feature.SetGeometry(geom)
         dst_layer.CreateFeature(new_feature)
         new_feature = None
@@ -97,8 +100,18 @@ def reproject_shapefile(src_shp, dst_shp, target_epsg=3857, force_src_epsg=None)
 
 
 def stack_and_clip(track: str):
-    final_dir = BASE_DIR / track / 'S1_final_preprocessing'
-    out_dir = BASE_DIR / track / 'processed_raster'
+    candidate_finals = [
+        BASE_DIR / track / '_temp_processing' / 's1_sar' / '3_coregistered',
+        BASE_DIR / track / 'S1_final_preprocessing',
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track / 'S1_final_preprocessing'
+    ]
+    final_dir = candidate_finals[0]
+    for c in candidate_finals:
+        if c.exists() and (list(c.glob('*_VH.data')) or list(c.glob('*_VV.data'))):
+            final_dir = c
+            break
+
+    out_dir = BASE_DIR / track / '1_input_stacks'
     out_dir.mkdir(parents=True, exist_ok=True)
 
     vh_folder = next(final_dir.glob('*_VH.data'), None)

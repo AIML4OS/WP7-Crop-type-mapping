@@ -541,7 +541,7 @@ Edit `gpt.vmoptions` in your SNAP installation `bin/` directory:
 ### 4. High disk I/O latency when opening large BigTIFF rasters
 Run the pyramid overviews utility on your output rasters to enable smooth zooming:
 ```powershell
-python tools/5_build_raster_overviews.py -i workingDir/NL/orbit_88/processed_raster/NL_orbit_88_S2_timeseries.tif
+python tools/5_build_raster_overviews.py -i workingDirs/NL/orbit_88/1_input_stacks/NL_orbit_88_S2_timeseries.tif
 ```
 
 ---
