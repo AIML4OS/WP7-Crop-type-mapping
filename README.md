@@ -363,12 +363,12 @@ python tools/4_generate_crop_priors.py -c PL --input path/to/arimr.shp --crop_co
 ### 5. Multi-scale pyramid overviews builder (`tools/5_build_raster_overviews.py`)
 ```powershell
 # Single raster file:
-python tools/5_build_raster_overviews.py -i workingDir/NL/orbit_88/processed_raster/NL_orbit_88_S2_timeseries.tif
+python tools/5_build_raster_overviews.py -i workingDirs/NL/orbit_88/1_input_stacks/NL_orbit_88_S2_timeseries.tif
 
-# Entire orbit directory:
-python tools/5_build_raster_overviews.py -d workingDir/NL/orbit_88/processed_raster/
+# Entire orbit input stacks directory:
+python tools/5_build_raster_overviews.py -d workingDirs/NL/orbit_88/1_input_stacks/
 
-# All country orbits:
+# All country orbits and national products:
 python tools/5_build_raster_overviews.py -c NL
 ```
 
@@ -379,14 +379,17 @@ python tools/5_build_raster_overviews.py -c NL
 ### Phase 1: Sentinel-1 SAR preprocessing
 
 ```powershell
+# Run full automated pipeline for an entire country with explicit agricultural season dates:
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --stage A
+
 # Run full automated pipeline for a single orbit:
-python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track NL/orbit_88 --stage A
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_81 -s 2024-10-15 -e 2025-09-15 --stage A
 
-# Run full automated pipeline for an entire country (Greedy Set Cover):
-python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country NL --stage A
+# Force downloading directly from Copernicus Data Space (CDSE API):
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --stage A
 
-# Interactive menu mode:
-python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track NL/orbit_88
+# Interactive menu mode (prompts for dates, orbits, and stages):
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py
 ```
 
 ---
@@ -394,14 +397,17 @@ python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track NL/orbit_88
 ### Phase 2: Sentinel-2 optical preprocessing
 
 ```powershell
+# Run full automated pipeline for an entire country with explicit agricultural season dates:
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --stage A
+
 # Run full automated pipeline for a single orbit:
-python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track NL/orbit_88 --stage A
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track PT/orbit_81 -s 2024-10-15 -e 2025-09-15 --stage A
 
-# Run full automated pipeline for an entire country:
-python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country NL --stage A
+# Force downloading directly from Copernicus Data Space (CDSE API):
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --stage A
 
-# Interactive menu mode:
-python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track NL/orbit_88
+# Interactive menu mode (prompts for dates, orbits, and stages):
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py
 ```
 
 ---
@@ -410,22 +416,25 @@ python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track NL/orbit_88
 
 ```powershell
 # Run full automated pipeline with SLIC superpixels (Recommended SOTA):
-python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A
+python 2_classifier/run_classifier.py --track PT/orbit_81 --classifier mlpxgb_presto --seg_mode slic --stage A
+
+# Run full automated pipeline for an entire country across all orbits:
+python 2_classifier/run_classifier.py --country PT --classifier mlpxgb_presto --seg_mode slic --stage A
 
 # Run full automated pipeline with official LPIS cadastral parcel vectors:
-python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
+python 2_classifier/run_classifier.py --track PT/orbit_81 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
 
 # Run full automated pipeline with Meta AI SAM deep segmentation:
-python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode sam --stage A
+python 2_classifier/run_classifier.py --track PT/orbit_81 --classifier mlpxgb_presto --seg_mode sam --stage A
 
 # Single-radar S1-only Presto ANN classifier:
-python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier presto_s1 --seg_mode slic --stage A
+python 2_classifier/run_classifier.py --track PT/orbit_81 --classifier presto_s1 --seg_mode slic --stage A
 
 # Orfeo ToolBox Machine Learning classifier:
-python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier otb --seg_mode slic --stage A
+python 2_classifier/run_classifier.py --track PT/orbit_81 --classifier otb --seg_mode slic --stage A
 
-# Interactive menu mode (select individual stages 0-7, change models or segmentation):
-python 2_classifier/run_classifier.py --track NL/orbit_88
+# Interactive setup wizard (prompts for track, classifier model, segmentation, and stage):
+python 2_classifier/run_classifier.py
 ```
 
 ---
@@ -434,31 +443,34 @@ python 2_classifier/run_classifier.py --track NL/orbit_88
 
 ```powershell
 # Merge SLIC classifications into a seamless national map:
-python 2_classifier/run_merge.py --country NL --seg_mode slic
+python 2_classifier/run_merge.py --country PT --seg_mode slic
 
 # Merge LPIS classifications into a seamless national map:
-python 2_classifier/run_merge.py --country NL --seg_mode lpis
+python 2_classifier/run_merge.py --country PT --seg_mode lpis
 ```
 
 ---
 
 ## How to inspect and use output products
 
-All outputs are saved in `workingDir/{COUNTRY}/orbit_{ORBIT}/classification_results/` and `workingDir/{COUNTRY}/classification_results/`:
+All outputs are saved in the sequential directory structure in `workingDirs/`:
 
-1. **Classification map (`*_classified_masked_*.tif`)**:
-   - Single-band raster where each pixel value corresponds to a numeric `crop_id`.
+1. **Per-orbit classification map (`workingDirs/{COUNTRY}/orbit_{ORBIT}/2_classification/3_maps/`)**:
+   - `*_classified_masked_*.tif`: Single-band raster where each pixel value corresponds to a numeric `crop_id`.
+   - `*_confidence_masked_*.tif`: Single-band floating-point raster ($0.0$ to $1.0$) indicating classification confidence.
    - Open in **QGIS** or **ArcGIS Pro**:
      - Right-click layer $\rightarrow$ **Properties** $\rightarrow$ **Symbology** $\rightarrow$ select **Paletted / Unique values**.
      - Click **Classify** to display distinct colors for each crop class.
-2. **Confidence map (`*_confidence_masked_*.tif`)**:
-   - Single-band floating-point raster ($0.0$ to $1.0$) indicating classification confidence for each parcel.
-3. **Accuracy and validation report (`*_metrics_*.xlsx`)**:
-   - Excel spreadsheet containing:
+2. **Per-orbit accuracy report (`workingDirs/{COUNTRY}/orbit_{ORBIT}/2_classification/4_reports/`)**:
+   - `report_*_metrics_*.xlsx`: Excel spreadsheet containing:
      - **Overall Accuracy (OA)**: Percentage of correctly classified validation samples.
      - **Cohen's Kappa ($\kappa$)**: Statistical metric accounting for chance agreement.
      - **Full confusion matrix**: Rows represent ground truth; columns represent model predictions.
      - **Per-crop metrics**: Precision (User's Accuracy), Recall (Producer's Accuracy), and F1-score for each crop class.
+3. **Nationwide merged products (`workingDirs/{COUNTRY}/national_products/`)**:
+   - `{COUNTRY}_national_crop_map_{SEG_MODE}.tif`: Seamless national crop type GeoTIFF.
+   - `{COUNTRY}_national_confidence_{SEG_MODE}.tif`: Seamless national confidence GeoTIFF.
+   - `{COUNTRY}_national_accuracy_report_{SEG_MODE}.xlsx`: Comprehensive national statistical report.
 
 ---
 
@@ -475,7 +487,7 @@ AIML_CropMapper_Cloud/
 │   │   ├── s1_calibration_cdse.py       # CDSE API GRDH calibration
 │   │   ├── s1_coregistration.py         # SNAP multi-temporal coregistration
 │   │   └── s1_stack_clip.py             # Time-series stacking & NUTS2 clipping
-│   └── Archive_scripts/                 # Standalone legacy S1 scripts
+│   └── Archive_scripts/                 # Frozen historical archive (read-only)
 ├── 1a_Sentinel-2_preprocessor/          # Sentinel-2 optical pipeline
 │   ├── run_s2_preprocessor.py           # Unified S2 CLI & interactive menu
 │   ├── config_s2.json                   # Active S2 config (CDSE credentials, DOYs, bands)
@@ -486,7 +498,7 @@ AIML_CropMapper_Cloud/
 │   │   ├── s2_time_series.py            # 14-DOY synthetic time-series interpolation
 │   │   ├── s2_mosaic_stack.py           # S1 grid matching & 126-band BigTIFF stacking
 │   │   └── s2_pipeline.py               # Pipeline orchestrator
-│   └── Archive_scripts/                 # Standalone legacy S2 scripts
+│   └── Archive_scripts/                 # Frozen historical archive (read-only)
 ├── 2_classifier/                        # Multimodal machine learning suite
 │   ├── run_classifier.py                # Unified classifier CLI & interactive menu
 │   ├── run_merge.py                     # Multi-orbit national mosaic & merger
@@ -496,7 +508,7 @@ AIML_CropMapper_Cloud/
 │   │   ├── classifier_otb.py            # Orfeo ToolBox machine learning models
 │   │   ├── multi_orbit_merger.py        # Nationwide multi-orbit confidence merger
 │   │   └── presto_model.py              # NASA Harvest Presto foundation architecture
-│   └── Archive_scripts/                 # Standalone legacy classifier models
+│   └── Archive_scripts/                 # Frozen historical archive (read-only)
 ├── tools/                               # Standalone preparation utilities
 │   ├── 1_download_nuts_boundaries.py    # GISCO NUTS boundaries downloader
 │   ├── 2_build_agricultural_mask.py     # Cropland mask builder
@@ -506,11 +518,21 @@ AIML_CropMapper_Cloud/
 ├── auxiliary_files/                     # Auxiliary data
 │   ├── raster_files/AgriMasks/{COUNTRY}/# High-resolution agricultural masks & LPIS
 │   ├── shapefiles_nuts/                 # Downloaded GISCO NUTS boundaries
-│   └── shapefiles_samples/{COUNTRY}/    # Ground truth samples (samples.shp) & priors.json
-├── workingDir/                          # Output working directory
-│   └── {COUNTRY}/orbit_{ORBIT}/
-│       ├── processed_raster/            # S1 and S2 BigTIFF timeseries stacks
-│       └── classification_results/      # Segmentations, models, maps, reports
+│   ├── shapefiles_samples/{COUNTRY}/    # Ground truth samples (samples.shp) & priors.json
+│   ├── Presto_models/                   # Pre-trained Presto foundation model weights
+│   └── SAM_models/                      # Meta AI Segment Anything Model weights
+├── workingDirs/                         # Unified sequential output working directory
+│   └── {COUNTRY}/
+│       ├── national_products/           # [Phase 4] Seamless national crop map & metrics (.xlsx)
+│       └── orbit_{ORBIT}/
+│           ├── 1_input_stacks/          # Multimodal S1 (Sigma0) & S2 (126-band) BigTIFF stacks
+│           ├── 2_classification/        # Full lineage classification products
+│           │   ├── 0_segmentation/      # Data footprint & OBIA segments (SLIC, SAM, LPIS)
+│           │   ├── 1_samples_and_features/ # Train/test shapefiles & extracted feature vectors (CSV)
+│           │   ├── 2_models/            # Serialized trained model weights (.pkl)
+│           │   ├── 3_maps/              # Classified GeoTIFFs & confidence maps
+│           │   └── 4_reports/           # Validation accuracy reports & confusion matrices (.xlsx)
+│           └── _temp_processing/        # Isolated transient buffer (slices, tiles, DOY mosaics)
 ├── environment.yml                      # Conda / Mamba environment definition
 └── README.md                            # Complete technical documentation
 ```
