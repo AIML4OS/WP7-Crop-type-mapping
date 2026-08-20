@@ -14,12 +14,12 @@ Features:
   - Feature Extraction:
       * Multimodal SAR statistics + Optical multi-temporal reflectances.
       * NASA Harvest Presto 128-d multi-temporal geospatial foundation embeddings.
-  - Classification Architectures:
-      * 'mlpxgb_presto' (Default): Soft-voting ensemble of Deep PyTorch MLP + XGBoost GBDT.
-      * 'presto_s1'    : Single-radar S1-only Presto ANN model.
-      * 'otb'          : Orfeo ToolBox machine learning models (Random Forest / SVM).
-      * 'mlp'          : Pure Deep PyTorch MLP classifier.
-      * 'xgb'          : Pure XGBoost GBDT classifier.
+  - Classification Architectures (--classifier):
+      * 'mlpxgb_presto' (Default): Soft-voting ensemble of Deep PyTorch MLP + XGBoost GBDT + Presto.
+      * 'presto_s1'              : Single-radar S1-only Presto ANN model.
+      * 'otb'                    : Orfeo ToolBox machine learning models (Random Forest / SVM).
+      * 'mlp'                    : Pure Deep PyTorch MLP classifier.
+      * 'xgb'                    : Pure XGBoost GBDT classifier.
   - Post-Processing & Assessment:
       * Bayesian prior calibration against official crop acreage statistics.
       * Morphological sieve noise removal and agricultural cropland masking.
@@ -28,32 +28,38 @@ Features:
       * Confidence-weighted seamless blending across overlapping satellite tracks.
 
 Execution Examples:
-  # 1. Full automated pipeline for a single orbit (SLIC + Multimodal Ensemble):
-  python run_classifier.py --track NL/orbit_88 --stage A
+  # 1. Full automated pipeline (SLIC + Multimodal Deep MLP + XGBoost + Presto):
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A
 
   # 2. Full automated pipeline using Meta AI SAM deep vision segmentation:
-  python run_classifier.py --track NL/orbit_88 --seg_mode sam --stage A
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode sam --stage A
 
   # 3. Full automated pipeline using official LPIS cadastral parcel vectors:
-  python run_classifier.py --track NL/orbit_88 --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
 
-  # 4. Sequential automated classification for all orbits in a country:
-  python run_classifier.py --country NL --seg_mode slic --stage A
+  # 4. Single-radar S1-only Presto ANN classification:
+  python run_classifier.py --track NL/orbit_88 --classifier presto_s1 --seg_mode slic --stage A
 
-  # 5. Run only individual stages:
-  python run_classifier.py --track NL/orbit_88 --stage 0  # Multimodal footprint only
-  python run_classifier.py --track NL/orbit_88 --stage 1  # Segmentation only
-  python run_classifier.py --track NL/orbit_88 --stage 2  # Stratified sample split only
-  python run_classifier.py --track NL/orbit_88 --stage 3  # Feature extraction & Presto embeddings
-  python run_classifier.py --track NL/orbit_88 --stage 4  # Model training (MLP + XGBoost)
-  python run_classifier.py --track NL/orbit_88 --stage 5  # Tile-based object inference & Bayesian priors
-  python run_classifier.py --track NL/orbit_88 --stage 6  # Agricultural cropland masking
-  python run_classifier.py --track NL/orbit_88 --stage 7  # Accuracy assessment & Excel report export
+  # 5. Orfeo ToolBox (Random Forest / SVM) machine learning classification:
+  python run_classifier.py --track NL/orbit_88 --classifier otb --seg_mode slic --stage A
 
-  # 6. Merge all classified orbits for a country into a seamless national map (Phase 4):
+  # 6. Sequential automated classification for all orbits in a country:
+  python run_classifier.py --country NL --classifier mlpxgb_presto --seg_mode slic --stage A
+
+  # 7. Run only individual stages:
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 0  # Multimodal footprint only
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 1  # Segmentation only
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 2  # Stratified sample split only
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 3  # Feature extraction & Presto embeddings
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 4  # Model training (MLP + XGBoost)
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 5  # Tile-based object inference & Bayesian priors
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 6  # Agricultural cropland masking
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 7  # Accuracy assessment & Excel report export
+
+  # 8. Merge all classified orbits for a country into a seamless national map (Phase 4):
   python run_classifier.py --country NL --seg_mode slic --stage merge
 
-  # 7. Interactive English CLI menu:
+  # 9. Interactive English CLI menu:
   python run_classifier.py --track NL/orbit_88
 ================================================================================
 """
@@ -98,6 +104,13 @@ def run_pipeline(
     norm_track = track.replace('\\', '/')
     country = norm_track.split('/')[0].upper() if '/' in norm_track else track.upper()
 
+    logging.info(f"\n============================================================")
+    logging.info(f" Multimodal Crop Classifier (AIML CropMapper Cloud)")
+    logging.info(f" Track            : {norm_track}")
+    logging.info(f" Segmentation     : [{seg_mode.upper()}]")
+    logging.info(f" Classifier Model : [{classifier_model.upper()}]")
+    logging.info(f"============================================================")
+
     # Route to specialized engines if requested
     if classifier_model == 'otb':
         otb_mod = importlib.import_module("1_classify_otb")
@@ -131,7 +144,7 @@ def run_pipeline(
     )
 
     if stage is None:
-        interactive_menu(pipeline, country, norm_track)
+        interactive_menu(pipeline, country, norm_track, classifier_model)
     else:
         choice = stage.strip().upper()
         if choice == 'A':
@@ -166,14 +179,17 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic'):
     merge_mod.run_merge_for_country(country.upper(), seg_mode=seg_mode)
 
 
-def interactive_menu(pipeline, country: str, track: str):
+def interactive_menu(pipeline, country: str, track: str, classifier_model: str = 'mlpxgb_presto'):
+    seg_modes = ['slic', 'sam', 'lpis']
+    cls_models = ['mlpxgb_presto', 'presto_s1', 'otb', 'mlp', 'xgb']
+
     while True:
         menu_text = f"""
 ============================================================
  Multimodal Crop Classifier (AIML CropMapper Cloud)
  Track            : {track}
  Segmentation     : [{pipeline.seg_mode.upper()}]
- Fusion Ensemble  : [{pipeline.mlp_weight:.2f} Deep MLP + {1.0-pipeline.mlp_weight:.2f} XGBoost + Presto]
+ Classifier Model : [{classifier_model.upper()}]
 ============================================================
  [0] Stage 0: Generate multimodal data footprint (S1 & S2)
  [1] Stage 1: Object-based segmentation ({pipeline.seg_mode.upper()})
@@ -184,6 +200,8 @@ def interactive_menu(pipeline, country: str, track: str):
  [6] Stage 6: Apply agricultural area masks
  [7] Stage 7: Calculate accuracy metrics & export Excel report
  -----------------------------------------------------------
+ [M] Change segmentation mode (Current: {pipeline.seg_mode.upper()})
+ [C] Change classifier model (Current: {classifier_model.upper()})
  [8] Phase 4: Multi-orbit national mosaic & seamless merge
  [A] Run all classification stages automatically (0 -> 7)
  [Q] Quit
@@ -199,6 +217,14 @@ def interactive_menu(pipeline, country: str, track: str):
             elif choice == '5': pipeline.stage_5_classify_vector(True)
             elif choice == '6': pipeline.stage_6_mask_classification(True)
             elif choice == '7': pipeline.stage_7_calculate_metrics()
+            elif choice == 'M':
+                idx = (seg_modes.index(pipeline.seg_mode) + 1) % len(seg_modes)
+                pipeline.seg_mode = seg_modes[idx]
+                print(f"\n    Segmentation mode switched to: {pipeline.seg_mode.upper()}")
+            elif choice == 'C':
+                idx = (cls_models.index(classifier_model) + 1) % len(cls_models)
+                classifier_model = cls_models[idx]
+                print(f"\n    Classifier model switched to: {classifier_model.upper()}")
             elif choice == '8': run_merge_for_country(country, pipeline.seg_mode)
             elif choice == 'A':
                 pipeline.stage_0_generate_footprint(False)
@@ -221,18 +247,30 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python run_classifier.py --track NL/orbit_88 --stage A
-  python run_classifier.py --track NL/orbit_88 --seg_mode sam --stage A
-  python run_classifier.py --country NL --seg_mode slic --stage A
-  python run_classifier.py --country NL --stage merge
-  python run_classifier.py --track NL/orbit_88
+  # Multimodal Deep MLP + XGBoost + Presto (Recommended SOTA):
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A
+
+  # Vision Foundation Model Segmentation (Meta AI SAM):
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode sam --stage A
+
+  # Cadastral Parcels Segmentation (LPIS):
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
+
+  # Single-radar S1-only Presto ANN:
+  python run_classifier.py --track NL/orbit_88 --classifier presto_s1 --seg_mode slic --stage A
+
+  # Orfeo ToolBox Machine Learning:
+  python run_classifier.py --track NL/orbit_88 --classifier otb --seg_mode slic --stage A
+
+  # Multi-orbit National Merging:
+  python run_classifier.py --country NL --seg_mode slic --stage merge
 """
     )
     parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
     parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
     parser.add_argument('--stage', default=None, help="Stage to execute: 'A' (all 0-7), '0'..'7', '8' or 'merge'")
+    parser.add_argument('--classifier', default='mlpxgb_presto', choices=['mlpxgb_presto', 'presto_s1', 'otb', 'mlp', 'xgb'], help="Classifier model: 'mlpxgb_presto' (default), 'presto_s1', 'otb', 'mlp', 'xgb'")
     parser.add_argument('--seg_mode', default='slic', choices=['slic', 'sam', 'lpis'], help="Segmentation mode: 'slic' (superpixels), 'sam' (Meta AI), 'lpis' (cadastre) (default: slic)")
-    parser.add_argument('--classifier', default='mlpxgb_presto', choices=['mlpxgb_presto', 'presto_s1', 'otb', 'mlp', 'xgb'], help="Classifier model (default: mlpxgb_presto)")
     parser.add_argument('--mlp_weight', type=float, default=0.65, help="Weight of MLP in fusion ensemble (0.0 to 1.0, default: 0.65)")
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 GeoTIFF raster")
     parser.add_argument('--s2_raster', default=None, help="Override path to Sentinel-2 Multi-temporal GeoTIFF raster")

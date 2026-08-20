@@ -408,14 +408,20 @@ python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track NL/orbit_88
 ### Phase 3: Multimodal crop classification
 
 ```powershell
-# Run full automated pipeline with SLIC superpixels (Recommended):
-python 2_classifier/run_classifier.py --track NL/orbit_88 --seg_mode slic --stage A
+# Run full automated pipeline with SLIC superpixels (Recommended SOTA):
+python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A
 
 # Run full automated pipeline with official LPIS cadastral parcel vectors:
-python 2_classifier/run_classifier.py --track NL/orbit_88 --seg_mode lpis --stage A
+python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
 
 # Run full automated pipeline with Meta AI SAM deep segmentation:
-python 2_classifier/run_classifier.py --track NL/orbit_88 --seg_mode sam --stage A
+python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode sam --stage A
+
+# Single-radar S1-only Presto ANN classifier:
+python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier presto_s1 --seg_mode slic --stage A
+
+# Orfeo ToolBox Machine Learning classifier:
+python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier otb --seg_mode slic --stage A
 
 # Interactive menu mode (select individual stages 0-7, change models or segmentation):
 python 2_classifier/run_classifier.py --track NL/orbit_88
