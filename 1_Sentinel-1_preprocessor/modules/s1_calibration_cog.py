@@ -515,9 +515,18 @@ class LocalSentinel1Finder:
         current_date = start_date
 
         while current_date <= end_date:
+            if exclude_winter:
+                m, d = current_date.month, current_date.day
+                if m == 12 or m == 1 or (m == 2 and d <= 14):
+                    next_year = current_date.year if (m == 1 or (m == 2 and d <= 14)) else current_date.year + 1
+                    target_date = datetime.date(next_year, 2, 15)
+                    logging.info(f"[INFO] Skipping winter dormancy period ({current_date.isoformat()} to {datetime.date(next_year, 2, 14).isoformat()}). Resuming scan at {target_date.isoformat()}...")
+                    current_date = target_date
+                    continue
+
             should_scan = False
             if first_orbit_match_date is None:
-                # Scan every day until the first match
+                # Scan until first match
                 should_scan = True
             else:
                 # After first match, only scan on the 6-day cycle
@@ -525,13 +534,6 @@ class LocalSentinel1Finder:
                     should_scan = True
 
             if should_scan:
-                if exclude_winter:
-                    m, d = current_date.month, current_date.day
-                    if m == 12 or m == 1 or (m == 2 and d <= 14):
-                        logging.info(f"Skipping winter date: {current_date} (exclude_winter=True)")
-                        current_date += datetime.timedelta(days=1)
-                        continue
-
                 day_products = []
 
                 # --- CHECK IF FINAL SLICED PRODUCT ALREADY EXISTS ---
@@ -554,9 +556,6 @@ class LocalSentinel1Finder:
 
                 try:
                     if day_path.exists() and any(day_path.iterdir()):
-                        scan_msg = f"Scanning {day_path} for orbit {orbit_num}"
-                        logging.info(scan_msg)
-
                         for safe_dir in day_path.glob("*.SAFE"):
                             # 1. Check Orbit
                             parsed_orbit = self._get_relative_orbit(safe_dir)
