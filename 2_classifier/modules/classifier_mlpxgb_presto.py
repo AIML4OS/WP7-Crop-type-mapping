@@ -1539,8 +1539,16 @@ class ProcessingPipelineS1S2:
         transformer_to_wgs84 = Transformer.from_crs(f"EPSG:{ras_epsg}", "EPSG:4326", always_xy=True)
 
         tile_size = 2048
+        total_tiles = math.ceil(cols / tile_size) * math.ceil(rows / tile_size)
+        tile_cnt = 0
+        total_segments_classified = 0
+        t_infer_start = time.time()
+
+        print(f"    Starting tile-based inference ({total_tiles} tiles of {tile_size}x{tile_size} px)...")
+
         for y in range(0, rows, tile_size):
             for x in range(0, cols, tile_size):
+                tile_cnt += 1
                 xsize = min(tile_size, cols - x)
                 ysize = min(tile_size, rows - y)
 
@@ -1550,6 +1558,16 @@ class ProcessingPipelineS1S2:
                 u_sids = np.unique(sub_seg)
                 u_sids = u_sids[u_sids > 0]
                 if len(u_sids) == 0:
+                    if tile_cnt % 25 == 0 or tile_cnt == total_tiles:
+                        elapsed = time.time() - t_infer_start
+                        rate = tile_cnt / elapsed if elapsed > 0 else 0
+                        eta_sec = (total_tiles - tile_cnt) / rate if rate > 0 else 0
+                        eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60):02d}s"
+                        sys.stdout.write(
+                            f"\r    [INFERENCE] Tile {tile_cnt}/{total_tiles} ({(tile_cnt/total_tiles*100):.1f}%) | "
+                            f"Objects: {total_segments_classified:,} | Time: {int(elapsed//60)}m {int(elapsed%60):02d}s | ETA: {eta_str}  "
+                        )
+                        sys.stdout.flush()
                     continue
 
                 s1_means_list = []
@@ -1650,11 +1668,25 @@ class ProcessingPipelineS1S2:
                 ds_cls.GetRasterBand(1).WriteArray(pred_arr, x, y)
                 ds_conf.GetRasterBand(1).WriteArray(prob_arr, x, y)
 
+                total_segments_classified += len(valid_ids)
+
+                elapsed = time.time() - t_infer_start
+                rate = tile_cnt / elapsed if elapsed > 0 else 0
+                eta_sec = (total_tiles - tile_cnt) / rate if rate > 0 else 0
+                eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60):02d}s"
+                sys.stdout.write(
+                    f"\r    [INFERENCE] Tile {tile_cnt}/{total_tiles} ({(tile_cnt/total_tiles*100):.1f}%) | "
+                    f"Objects: {total_segments_classified:,} | Time: {int(elapsed//60)}m {int(elapsed%60):02d}s | ETA: {eta_str}  "
+                )
+                sys.stdout.flush()
+
         ds_cls.FlushCache()
         ds_conf.FlushCache()
         ds_cls = None
         ds_conf = None
-        print(f"    Classification completed: {self.class_tif}\n")
+        total_time_min = (time.time() - t_infer_start) / 60.0
+        print(f"\n    [INFERENCE COMPLETE] Successfully classified {total_segments_classified:,} objects across {total_tiles} tiles in {total_time_min:.1f} minutes.")
+        print(f"    Raw classification saved: {self.class_tif}\n")
 
     # --- Stage 6: Apply Masking ---
     def stage_6_mask_classification(self, force_recompute=False):
