@@ -70,9 +70,9 @@ COUNTRY_ORBITS = {
     'IE': [30, 74, 103, 132, 147],
     'FR': [8, 30, 37, 59, 81, 88, 103, 110, 132, 139, 153, 161],
     'AT': [22, 29, 73, 95, 102, 124, 146, 168],
-    'PT': [81, 153, 161, 8, 88, 110],
+    'PT': [45, 147],
     'DE': [22, 29, 73, 95, 102, 124, 146, 168, 175],
-    'ES': [8, 81, 88, 153, 161],
+    'ES': [8, 81, 88, 153, 161, 45, 147],
     'IT': [44, 117, 146, 168]
 }
 
@@ -90,7 +90,7 @@ def detect_s1_source() -> str:
 
 
 def discover_country_orbits(country_code: str) -> List[int]:
-    """Finds existing orbit folders or falls back to standard greedy orbit list."""
+    """Finds existing orbit folders (containing calibrated data) or falls back to standard greedy orbit list."""
     found = set()
     for b in [BASE_DIR, Path(r"D:/AIML_CropMapper_Cloud/workingDir")]:
         c_dir = b / country_code.upper()
@@ -98,7 +98,10 @@ def discover_country_orbits(country_code: str) -> List[int]:
             for d in c_dir.glob("orbit_*"):
                 m = re.search(r'orbit_(\d+)', d.name)
                 if m:
-                    found.add(int(m.group(1)))
+                    # Only consider directory as discovered if it contains actual slice data
+                    slice_dir = d / "slice_assembly"
+                    if slice_dir.exists() and any(slice_dir.iterdir()):
+                        found.add(int(m.group(1)))
     if found:
         return sorted(list(found))
     return COUNTRY_ORBITS.get(country_code.upper(), [88, 161])

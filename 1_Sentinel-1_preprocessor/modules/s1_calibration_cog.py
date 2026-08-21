@@ -316,7 +316,11 @@ class CountryOrbitOptimizer:
                 'PL': [22, 29, 73, 95, 102, 124, 146, 168, 175],
                 'IE': [30, 74, 103, 132, 147],
                 'FR': [8, 30, 37, 59, 81, 88, 103, 110, 132, 139, 153, 161],
-                'AT': [22, 29, 73, 95, 102, 124, 146, 168]
+                'AT': [22, 29, 73, 95, 102, 124, 146, 168],
+                'PT': [45, 147, 23, 125],
+                'ES': [8, 81, 88, 153, 161, 45, 147, 23, 125],
+                'DE': [22, 29, 73, 95, 102, 124, 146, 168, 175],
+                'IT': [44, 117, 146, 168]
             }
             candidate_orbits = country_orbits.get(country_code.upper())
             if candidate_orbits:
@@ -557,10 +561,15 @@ class LocalSentinel1Finder:
                 try:
                     if day_path.exists() and any(day_path.iterdir()):
                         for safe_dir in day_path.glob("*.SAFE"):
-                            # 1. Check Orbit
-                            parsed_orbit = self._get_relative_orbit(safe_dir)
-                            if parsed_orbit != orbit_num:
-                                continue
+                            # 1. Check Orbit (Fast filename parse first to avoid slow disk read)
+                            fast_orbit = self._estimate_relative_orbit_from_name(safe_dir.name)
+                            if fast_orbit is not None:
+                                if fast_orbit != orbit_num:
+                                    continue
+                            else:
+                                parsed_orbit = self._get_relative_orbit(safe_dir)
+                                if parsed_orbit != orbit_num:
+                                    continue
 
                             # 2. Check Pass Direction
                             if pass_direction:
