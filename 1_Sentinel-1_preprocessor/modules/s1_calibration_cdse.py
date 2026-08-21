@@ -512,7 +512,7 @@ class CDSESentinel1Finder:
     def find_products_by_orbit(self, orbit_num: int, target_geom: ogr.Geometry,
                                start_date: datetime.date, end_date: datetime.date,
                                working_dir: pathlib.Path = None, country_code: str = None,
-                               pass_direction: str = None):
+                               pass_direction: str = None, exclude_winter: bool = False):
         """Query CDSE for S1 products matching spatial bounds and download them locally on-demand."""
         simplified_geom = target_geom.Simplify(0.05)
         wkt_geom = simplified_geom.ExportToWkt()
@@ -560,6 +560,12 @@ class CDSESentinel1Finder:
 
         # Iterate through the dates in chronological order
         for prod_date in sorted(date_groups.keys()):
+            if exclude_winter:
+                m, d = prod_date.month, prod_date.day
+                if m == 12 or m == 1 or (m == 2 and d <= 14):
+                    logging.info(f"Skipping winter date: {prod_date} (exclude_winter=True)")
+                    continue
+
             if working_dir and country_code:
                 date_str_formatted = prod_date.strftime("%Y%m%d")
                 final_output_dir = working_dir / country_code / f"orbit_{orbit_num}" / "slice_assembly"
@@ -783,6 +789,41 @@ def run_slice_assembly_stage(track_name, calibrated_dims, working_dir, roi_wkt=N
     calibrated_dir = track_dir / "calibrated"
     if calibrated_dir.exists():
         logging.info(f"Clean up disabled by user. Keeping intermediate files in: {calibrated_dir}")
+
+
+def process_orbit_cdse(country: str, orbit: int, start_date: str, end_date: str, exclude_winter: bool = False, download_dir: str = None):
+    """Programmatic API to query, download, calibrate, and slice a Sentinel-1 orbit from CDSE."""
+    start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date() if isinstance(start_date, str) else start_date
+    end = datetime.datetime.strptime(end_date, "%Y-%m-%d").date() if isinstance(end_date, str) else end_date
+    work_dir = pathlib.Path(WORKING_DIR)
+    dl_dir = pathlib.Path(download_dir) if download_dir else work_dir / "S1_downloads"
+    dl_dir.mkdir(parents=True, exist_ok=True)
+
+    if not CDSE_USERNAME or not CDSE_PASSWORD:
+        raise ValueError("CDSE_USERNAME or CDSE_PASSWORD environment variables are not set.")
+
+    token_manager = CDSETokenManager(CDSE_USERNAME, CDSE_PASSWORD)
+    country_code = country.upper()
+    country_geom = get_country_geometry(country_code)
+    if not country_geom:
+        raise FileNotFoundError(f"Could not load boundary geometry for country {country_code}")
+
+    env = country_geom.GetEnvelope()
+    roi_wkt = f"POLYGON (({env[0]} {env[2]}, {env[1]} {env[2]}, {env[1]} {env[3]}, {env[0]} {env[3]}, {env[0]} {env[2]}))"
+
+    finder = CDSESentinel1Finder(token_manager, dl_dir)
+    track_name = f"{country_code}/orbit_{orbit}"
+
+    logging.info(f"--- STARTING CDSE ORBIT: {orbit} (Country: {country_code}, Range: {start} to {end}, Exclude Winter: {exclude_winter}) ---")
+    for date_obj, found_safes in finder.find_products_by_orbit(
+        orbit, country_geom, start, end, working_dir=work_dir, country_code=country_code, exclude_winter=exclude_winter
+    ):
+        logging.info(f"Processing {len(found_safes)} products for date {date_obj}")
+        calibrated_files = run_calibration_stage(track_name, found_safes, work_dir)
+        if not calibrated_files:
+            continue
+        run_slice_assembly_stage(track_name, calibrated_files, work_dir, roi_wkt=roi_wkt)
+    logging.info(f"--- FINISHED CDSE ORBIT: {orbit} (Country: {country_code}) ---")
 
 
 # ================= MAIN =================

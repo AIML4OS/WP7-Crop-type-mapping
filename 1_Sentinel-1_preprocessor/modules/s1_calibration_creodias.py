@@ -510,7 +510,7 @@ class LocalSentinel1Finder:
     def find_products_by_orbit(self, orbit_num: int, target_geom: ogr.Geometry,
                                start_date: datetime.date, end_date: datetime.date,
                                working_dir: pathlib.Path = None, country_code: str = None,
-                               pass_direction: str = None):
+                               pass_direction: str = None, exclude_winter: bool = False):
         """Finds Sentinel-1 SAFE directories for a given relative orbit that intersect the country's geometry."""
         first_orbit_match_date = None
         current_date = start_date
@@ -526,6 +526,13 @@ class LocalSentinel1Finder:
                     should_scan = True
 
             if should_scan:
+                if exclude_winter:
+                    m, d = current_date.month, current_date.day
+                    if m == 12 or m == 1 or (m == 2 and d <= 14):
+                        logging.info(f"Skipping winter date: {current_date} (exclude_winter=True)")
+                        current_date += datetime.timedelta(days=1)
+                        continue
+
                 day_products = []
 
                 # --- CHECK IF FINAL SLICED PRODUCT ALREADY EXISTS ---
@@ -766,6 +773,36 @@ def run_slice_assembly_stage(track_name, calibrated_dims, working_dir, roi_wkt=N
     calibrated_dir = track_dir / "calibrated"
     if calibrated_dir.exists():
         logging.info(f"Clean up disabled by user. Keeping intermediate files in: {calibrated_dir}")
+
+
+def process_orbit(country: str, orbit: int, start_date: str, end_date: str, exclude_winter: bool = False, source_repo: str = None):
+    """Programmatic API to calibrate and slice a specific Sentinel-1 orbit."""
+    start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date() if isinstance(start_date, str) else start_date
+    end = datetime.datetime.strptime(end_date, "%Y-%m-%d").date() if isinstance(end_date, str) else end_date
+    repo = pathlib.Path(source_repo if source_repo else LOCAL_REPO_PATH)
+    work_dir = pathlib.Path(WORKING_DIR)
+
+    country_code = country.upper()
+    country_geom = get_country_geometry(country_code)
+    if not country_geom:
+        raise FileNotFoundError(f"Could not load boundary geometry for country {country_code}")
+
+    env = country_geom.GetEnvelope()
+    roi_wkt = f"POLYGON (({env[0]} {env[2]}, {env[1]} {env[2]}, {env[1]} {env[3]}, {env[0]} {env[3]}, {env[0]} {env[2]}))"
+
+    finder = LocalSentinel1Finder(repo)
+    track_name = f"{country_code}/orbit_{orbit}"
+
+    logging.info(f"--- STARTING ORBIT: {orbit} (Country: {country_code}, Range: {start} to {end}, Exclude Winter: {exclude_winter}) ---")
+    for date_obj, found_safes in finder.find_products_by_orbit(
+        orbit, country_geom, start, end, working_dir=work_dir, country_code=country_code, exclude_winter=exclude_winter
+    ):
+        logging.info(f"Processing {len(found_safes)} products for date {date_obj}")
+        calibrated_files = run_calibration_stage(track_name, found_safes, work_dir)
+        if not calibrated_files:
+            continue
+        run_slice_assembly_stage(track_name, calibrated_files, work_dir, roi_wkt=roi_wkt)
+    logging.info(f"--- FINISHED ORBIT: {orbit} (Country: {country_code}) ---")
 
 
 # ================= MAIN =================

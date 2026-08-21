@@ -12,24 +12,28 @@ Features:
   - Country-wide Greedy Search: Minimum set cover orbit detection across EU countries.
 
 Execution Examples:
-  # 1. Full automated pipeline for an entire country with explicit agricultural season dates:
-  python run_s1_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --stage A
+  # 1. Full automated pipeline for an entire country excluding winter dormancy (01.12 - 14.02):
+  python run_s1_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 2
 
-  # 2. Full automated pipeline for a single orbit with custom dates:
-  python run_s1_preprocessor.py --track PT/orbit_81 -s 2024-10-15 -e 2025-09-15 --stage A
+  # 2. Full automated pipeline for a single orbit excluding winter:
+  python run_s1_preprocessor.py --track PT/orbit_161 -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 2
 
-  # 3. Force downloading directly from Copernicus Data Space (CDSE API):
-  python run_s1_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --stage A
+  # 3. Manual 2-window seasonal split (Autumn + Spring/Summer):
+  #    Step 1a: Autumn calibration (15 Oct - 30 Nov)
+  python run_s1_preprocessor.py --country PT -s 2024-10-15 -e 2024-11-30 --stage 1 --threads 2
+  #    Step 1b: Spring/Summer calibration (15 Feb - 15 Sep)
+  python run_s1_preprocessor.py --country PT -s 2025-02-15 -e 2025-09-15 --stage 1 --threads 2
+  #    Step 2 & 3: SNAP Coregistration & BigTIFF stacking across all calibrated dates:
+  python run_s1_preprocessor.py --country PT --stage 2
+  python run_s1_preprocessor.py --country PT --stage 3
 
-  # 4. Force local extraction on CREODIAS cloud (/eodata or Y: drive):
-  python run_s1_preprocessor.py --country PT --source creodias -s 2024-10-15 -e 2025-09-15 --stage A
+  # 4. Force downloading directly from Copernicus Data Space (CDSE API):
+  python run_s1_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 2
 
-  # 5. Run only individual stages:
-  python run_s1_preprocessor.py --track PT/orbit_81 -s 2024-10-15 -e 2025-09-15 --stage 1  # Ingestion & Calibration only
-  python run_s1_preprocessor.py --track PT/orbit_81 -s 2024-10-15 -e 2025-09-15 --stage 2  # SNAP Coregistration only
-  python run_s1_preprocessor.py --track PT/orbit_81 -s 2024-10-15 -e 2025-09-15 --stage 3  # Time-series Stacking & Clipping only
+  # 5. Force local extraction on CREODIAS cloud (/eodata or Y: drive):
+  python run_s1_preprocessor.py --country PT --source creodias -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 2
 
-  # 6. Interactive English CLI setup wizard (prompts for dates and orbits):
+  # 6. Interactive English CLI setup wizard (prompts for dates, winter exclusion, and orbits):
   python run_s1_preprocessor.py
 ================================================================================
 """
@@ -104,6 +108,7 @@ class Sentinel1Pipeline:
         orbit: Optional[int] = None,
         start_date: str = "2024-10-15",
         end_date: str = "2025-09-15",
+        exclude_winter: bool = False,
         source: str = "auto",
         threads: int = 4
     ):
@@ -111,6 +116,7 @@ class Sentinel1Pipeline:
         self.orbit = orbit
         self.start_date = start_date
         self.end_date = end_date
+        self.exclude_winter = exclude_winter
         self.threads = threads
         self.source = detect_s1_source() if source == "auto" else source.lower()
 
@@ -121,8 +127,9 @@ class Sentinel1Pipeline:
 
     def stage_1_calibration(self):
         """Stage 1: Calibration & Slicing via CREODIAS or CDSE API."""
+        winter_str = " [Excluding Winter 01.12-14.02]" if self.exclude_winter else ""
         logging.info(f"\n============================================================")
-        logging.info(f" [Stage 1/3] Sentinel-1 SAR Ingestion & Calibration ({self.source.upper()})")
+        logging.info(f" [Stage 1/3] Sentinel-1 SAR Ingestion & Calibration ({self.source.upper()}){winter_str}")
         logging.info(f" Track: {self.track} | Date range: {self.start_date} to {self.end_date}")
         logging.info(f"============================================================")
 
@@ -134,7 +141,8 @@ class Sentinel1Pipeline:
                     country=self.country,
                     orbit=orb,
                     start_date=self.start_date,
-                    end_date=self.end_date
+                    end_date=self.end_date,
+                    exclude_winter=self.exclude_winter
                 )
             else:
                 calib_cdse_mod = importlib.import_module("s1_calibration_cdse")
@@ -142,7 +150,8 @@ class Sentinel1Pipeline:
                     country=self.country,
                     orbit=orb,
                     start_date=self.start_date,
-                    end_date=self.end_date
+                    end_date=self.end_date,
+                    exclude_winter=self.exclude_winter
                 )
 
     def stage_2_coregistration(self):
@@ -277,15 +286,18 @@ def interactive_setup_wizard():
     sources = {'1': 'auto', '2': 'creodias', '3': 'cdse'}
     source = sources.get(src_choice, 'auto')
 
-    # Step 3: Date Range
+    # Step 3: Date Range & Winter Exclusion
     start_date = input(" Enter acquisition start date [YYYY-MM-DD] (default: 2024-10-15): ").strip() or "2024-10-15"
     end_date = input(" Enter acquisition end date [YYYY-MM-DD] (default: 2025-09-15): ").strip() or "2025-09-15"
+    winter_ans = input(" Exclude winter dormancy period 01.12-14.02? [Y/n] (default: Y): ").strip().upper()
+    exclude_winter = (winter_ans != 'N')
 
     pipeline = Sentinel1Pipeline(
         country=selected_country,
         orbit=selected_orbit,
         start_date=start_date,
         end_date=end_date,
+        exclude_winter=exclude_winter,
         source=source
     )
     interactive_menu(pipeline)
@@ -303,8 +315,8 @@ Examples:
   # Single orbit automated run:
   python run_s1_preprocessor.py --track NL/orbit_88 --stage A
 
-  # Entire country greedy run:
-  python run_s1_preprocessor.py --country NL --stage A
+  # Entire country greedy run excluding winter (01.12 - 14.02):
+  python run_s1_preprocessor.py --country PT --exclude_winter --stage A --threads 2
 """
     )
     parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
@@ -314,6 +326,7 @@ Examples:
     parser.add_argument('--source', default='auto', choices=['auto', 'creodias', 'cdse'], help="Data source: 'auto' (detect local), 'creodias', 'cdse' (default: auto)")
     parser.add_argument('-s', '--start_date', default='2024-10-15', help="Acquisition start date (YYYY-MM-DD, default: 2024-10-15)")
     parser.add_argument('-e', '--end_date', default='2025-09-15', help="Acquisition end date (YYYY-MM-DD, default: 2025-09-15)")
+    parser.add_argument('--exclude_winter', action='store_true', help="Exclude winter dormancy period (December 1 to February 14) from processing (default: False)")
     parser.add_argument('--threads', type=int, default=4, help="Worker threads for parallel processing (default: 4)")
 
     args = parser.parse_args()
@@ -342,6 +355,7 @@ Examples:
         orbit=orbit,
         start_date=args.start_date,
         end_date=args.end_date,
+        exclude_winter=args.exclude_winter,
         source=args.source,
         threads=args.threads
     )
