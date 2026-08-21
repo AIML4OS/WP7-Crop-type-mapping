@@ -29,7 +29,7 @@ logging.basicConfig(
 
 GISCO_NUTS_URL = "https://gisco-services.ec.europa.eu/distribution/v2/nuts/download/ref-nuts-2021-01m.shp.zip"
 WORKSPACE_DIR = pathlib.Path(__file__).resolve().parent.parent
-TEMP_DIR = WORKSPACE_DIR / "workingDir" / "temp_nuts"
+TEMP_DIR = WORKSPACE_DIR / "workingDirs" / "temp_nuts"
 OUTPUT_BASE_DIR = WORKSPACE_DIR / "auxiliary_files" / "shapefiles_nuts"
 
 

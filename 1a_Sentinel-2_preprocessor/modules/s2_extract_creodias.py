@@ -28,7 +28,7 @@ from typing import List, Dict, Optional, Tuple
 
 from osgeo import gdal, ogr, osr
 
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir"))
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
 AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxiliary_files"))
 SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
 S2_REPO_PATH = Path(os.environ.get("S2_REPO_PATH", r"Y:\Sentinel-2\MSI\L2A"))

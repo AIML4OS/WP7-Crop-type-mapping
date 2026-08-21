@@ -34,7 +34,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 AUX_DIR = PROJECT_ROOT / 'auxiliary_files'
 AGRIMASKS_DIR = AUX_DIR / 'raster_files' / 'AgriMasks'
 NUTS_DIR = AUX_DIR / 'shapefiles_nuts'
-WORKING_DIR = PROJECT_ROOT / 'workingDir'
+WORKING_DIR = Path(os.environ.get("AIML_WORKING_DIR", PROJECT_ROOT / 'workingDirs'))
 
 CLASS_3_INCLUDE = {
     1110, 1120, 1150, 1430, 1130, 1210, 1220, 1310, 1320, 1410, 1420, 1440, 3100
@@ -56,12 +56,14 @@ def find_nuts_boundary(country: str) -> Optional[Path]:
 
 
 def find_reference_raster(country: str) -> Optional[Path]:
-    """Finds any processed S1 or S2 raster in workingDir to inherit exact pixel grid & CRS."""
-    country_working = WORKING_DIR / country.upper()
-    if country_working.exists():
-        rasters = list(country_working.glob("**/processed_raster/*.tif"))
-        if rasters:
-            return rasters[0]
+    """Finds any processed S1 or S2 raster in workingDirs to inherit exact pixel grid & CRS."""
+    candidate_bases = [WORKING_DIR, PROJECT_ROOT / 'workingDirs', PROJECT_ROOT / 'workingDir']
+    for base in candidate_bases:
+        country_working = base / country.upper()
+        if country_working.exists():
+            rasters = list(country_working.glob("**/1_input_stacks/*.tif")) + list(country_working.glob("**/processed_raster/*.tif"))
+            if rasters:
+                return rasters[0]
     return None
 
 

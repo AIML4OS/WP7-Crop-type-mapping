@@ -27,7 +27,7 @@ AUXDATA_PATH = os.environ.get("SNAP_AUXDATA_PATH", r"C:/Users/Administrator/.sna
 # Repository where raw .SAFE data is stored
 LOCAL_REPO_PATH = os.environ.get("S1_REPO_PATH", r"Y:\Sentinel-1\SAR\IW_GRDH_1S-COG")
 # Directory where processing results (calibrated/sliced) will be saved
-WORKING_DIR = os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir")
+WORKING_DIR = os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs")
 
 
 # ================= XML TEMPLATES =================

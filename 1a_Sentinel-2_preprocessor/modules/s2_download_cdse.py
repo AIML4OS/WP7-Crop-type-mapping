@@ -33,7 +33,7 @@ import requests
 from osgeo import gdal, ogr, osr
 
 # ================= CONFIGURATION =================
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDir"))
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
 AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxiliary_files"))
 SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
 
