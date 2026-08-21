@@ -367,15 +367,27 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
     import pandas as pd
     ctrl_list = []
     for tr, country, _, _ in tracks:
-        track_ctrl_shp = base_dir / tr / 'classification_results' / 'samples' / f"control{suffix}.shp"
-        if not track_ctrl_shp.exists():
-            track_ctrl_shp = base_dir / tr / 'classification_results' / 'samples' / 'control.shp'
-        if track_ctrl_shp.exists():
+        cand_ctrls = [
+            base_dir / tr / '2_classification' / '1_samples_and_features' / f"{tr.replace('/', '_')}_control{suffix}.shp",
+            base_dir / tr / '2_classification' / '1_samples_and_features' / f"control{suffix}.shp",
+            base_dir / tr / '2_classification' / '1_samples_and_features' / f"{tr.replace('/', '_')}_control_{seg_mode}.shp",
+            base_dir / tr / '2_classification' / '1_samples_and_features' / f"control_{seg_mode}.shp",
+            base_dir / tr / 'classification_results' / 'samples' / f"control{suffix}.shp",
+            base_dir / tr / 'classification_results' / 'samples' / f"control_{seg_mode}.shp",
+            base_dir / tr / 'classification_results' / 'samples' / 'control.shp',
+        ]
+        track_ctrl_shp = None
+        for c in cand_ctrls:
+            if c.exists():
+                track_ctrl_shp = c
+                break
+
+        if track_ctrl_shp and track_ctrl_shp.exists():
             try:
                 gdf = gpd.read_file(str(track_ctrl_shp))
                 if not gdf.empty:
                     ctrl_list.append(gdf)
-                    print(f"  Loaded {len(gdf)} control points from {tr}")
+                    print(f"  Loaded {len(gdf)} control points from {tr} ({track_ctrl_shp.name})")
             except Exception as e:
                 print(f"  [WARNING] Failed to load control points from {tr}: {e}")
                 
