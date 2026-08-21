@@ -380,6 +380,11 @@ def run_full_processing(selected_tracks, overwrite=False):
         logging.info(f"Finished {track}")
 
 
+def process_track(track: str, overwrite: bool = False):
+    """Programmatic API for single track coregistration."""
+    run_full_processing([track], overwrite=overwrite)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-t', '--track', nargs='+', required=True, help="Track path(s) to process, e.g. PL/orbit_12")

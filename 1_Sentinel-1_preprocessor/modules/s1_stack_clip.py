@@ -239,6 +239,11 @@ def stack_and_clip(track: str):
         vrt_file.unlink()
 
 
+def process_track(track: str):
+    """Programmatic API for single track stacking & clipping."""
+    stack_and_clip(track)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-t', '--track', nargs='+', required=True, help="Track path(s) to process, e.g. PL/orbit_12")
