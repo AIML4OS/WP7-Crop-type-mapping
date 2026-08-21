@@ -220,7 +220,11 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
 
 def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = '', method: str = 'confidence'):
     prefix = country.upper()
-    base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:\AIML_CropMapper_Cloud\workingDir"))
+    base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:\AIML_CropMapper_Cloud\workingDirs"))
+    if not base_dir.exists() or not (base_dir / prefix).exists():
+        fallback_dir = Path(r"D:\AIML_CropMapper_Cloud\workingDir")
+        if (fallback_dir / prefix).exists():
+            base_dir = fallback_dir
 
     if not suffix:
         candidate_suffixes = [

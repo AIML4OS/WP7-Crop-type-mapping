@@ -649,101 +649,85 @@ class ProcessingPipelineS1S2:
         # Resolve Samples & Output Paths
         self.sample_shp = self._resolve_samples_shp()
         
-        candidate_learn = [
-            self.samples_dir / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
-            self.samples_dir / f"learn_{self.seg_mode}.shp",
-            self.samples_dir / f"{self.file_prefix}_learn.shp",
-            # Fallbacks for existing legacy samples
-            self.base_dir / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
-            self.base_dir / self.track / 'classification_results' / 'samples' / f"learn_{self.seg_mode}.shp",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"learn_{self.seg_mode}.shp",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn.shp"
-        ]
-        self.learn_shp = candidate_learn[0]
-        for c in candidate_learn:
-            if c.exists():
-                self.learn_shp = c
-                break
+        self.suffix = f"_mlpxgb_presto_{self.seg_mode}"
 
-        candidate_control = [
-            self.samples_dir / f"{self.file_prefix}_control_{self.seg_mode}.shp",
-            self.samples_dir / f"control_{self.seg_mode}.shp",
-            self.samples_dir / f"{self.file_prefix}_control.shp",
-            # Fallbacks for existing legacy control
-            self.base_dir / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control_{self.seg_mode}.shp",
-            self.base_dir / self.track / 'classification_results' / 'samples' / f"control_{self.seg_mode}.shp",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control_{self.seg_mode}.shp",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"control_{self.seg_mode}.shp",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control.shp"
-        ]
-        self.control_shp = candidate_control[0]
-        for c in candidate_control:
-            if c.exists():
-                self.control_shp = c
-                break
-
+        # Standard canonical targets in workingDirs/
+        self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
+        self.seg_tif = self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif"
+        self.learn_shp = self.samples_dir / f"{self.file_prefix}_learn_{self.seg_mode}.shp"
+        self.control_shp = self.samples_dir / f"{self.file_prefix}_control_{self.seg_mode}.shp"
         self.sel_csv = self.samples_dir / f"{self.file_prefix}_mlpxgb_presto_learn_features_{self.seg_mode}.csv"
         self.model_pkl = self.model_dir / f"{self.file_prefix}_mlpxgb_presto_model_{self.seg_mode}.pkl"
-        
-        self.suffix = f"_mlpxgb_presto_{self.seg_mode}"
-        
-        candidate_footprints = [
-            self.seg_dir / f"{self.file_prefix}_data_footprint.tif",
-            self.base_dir / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_data_footprint.tif",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_data_footprint.tif",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'segmentation' / f"{self.file_prefix}_data_footprint.tif"
-        ]
-        self.footprint_mask = candidate_footprints[0]
-        for c in candidate_footprints:
-            if c.exists():
-                self.footprint_mask = c
-                break
+        self.class_tif = self.class_dir / f"{self.file_prefix}_classified{self.suffix}.tif"
+        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence{self.suffix}.tif"
+        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked{self.suffix}.tif"
+        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked{self.suffix}.tif"
+        self.metrics_fp = self.reports_dir / f"report_{self.file_prefix}{self.suffix}.xlsx"
 
-        candidate_segs = [
-            self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif",
-            self.seg_dir / f"{self.file_prefix}_{self.seg_mode}_segments.tif",
-            self.seg_dir / f"{self.file_prefix}_segmentation.tif",
-            # Fallbacks
-            self.base_dir / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif"
-        ]
-        self.seg_tif = candidate_segs[0]
-        for c in candidate_segs:
-            if c.exists():
-                self.seg_tif = c
-                break
+        # Fallback to legacy workingDir/ only if input stacks exist in legacy location and not in workingDirs
+        if not self.proc_dir.exists():
+            legacy_samples = [
+                self.base_dir / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
+                self.base_dir / self.track / 'classification_results' / 'samples' / f"learn_{self.seg_mode}.shp",
+                Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
+                Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"learn_{self.seg_mode}.shp",
+            ]
+            for c in legacy_samples:
+                if c.exists():
+                    self.learn_shp = c
+                    break
 
-        candidate_classes = [
-            self.class_dir / f"{self.file_prefix}_classified{self.suffix}.tif",
-            self.base_dir / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_classified{self.suffix}.tif",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_classified{self.suffix}.tif"
-        ]
-        self.class_tif = candidate_classes[0]
-        for c in candidate_classes:
-            if c.exists():
-                self.class_tif = c
-                break
+            legacy_controls = [
+                self.base_dir / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control_{self.seg_mode}.shp",
+                self.base_dir / self.track / 'classification_results' / 'samples' / f"control_{self.seg_mode}.shp",
+                Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control_{self.seg_mode}.shp",
+                Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"control_{self.seg_mode}.shp",
+            ]
+            for c in legacy_controls:
+                if c.exists():
+                    self.control_shp = c
+                    break
 
-        candidate_confs = [
-            self.class_dir / f"{self.file_prefix}_confidence{self.suffix}.tif",
-            self.base_dir / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_confidence{self.suffix}.tif",
-            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_confidence{self.suffix}.tif"
-        ]
-        self.conf_tif = candidate_confs[0]
-        for c in candidate_confs:
-            if c.exists():
-                self.conf_tif = c
-                break
+            legacy_footprints = [
+                self.base_dir / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_data_footprint.tif",
+                Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_data_footprint.tif",
+            ]
+            for c in legacy_footprints:
+                if c.exists():
+                    self.footprint_mask = c
+                    break
 
-        # Output masked tifs placed alongside class_tif if existing in legacy dir
-        target_class_dir = self.class_tif.parent if self.class_tif.exists() else self.class_dir
-        self.masked_class = target_class_dir / f"{self.file_prefix}_classified_masked{self.suffix}.tif"
-        self.masked_conf = target_class_dir / f"{self.file_prefix}_confidence_masked{self.suffix}.tif"
-        if target_class_dir != self.class_dir:
-            self.metrics_fp = target_class_dir.parent / f"{self.file_prefix}_metrics{self.suffix}.xlsx"
-        else:
-            self.metrics_fp = self.reports_dir / f"report_{self.file_prefix}{self.suffix}.xlsx"
+            legacy_segs = [
+                self.base_dir / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif",
+                Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif",
+            ]
+            for c in legacy_segs:
+                if c.exists():
+                    self.seg_tif = c
+                    break
+
+            legacy_classes = [
+                self.base_dir / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_classified{self.suffix}.tif",
+                Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_classified{self.suffix}.tif",
+            ]
+            for c in legacy_classes:
+                if c.exists():
+                    self.class_tif = c
+                    self.masked_class = c.parent / f"{self.file_prefix}_classified_masked{self.suffix}.tif"
+                    break
+
+            legacy_confs = [
+                self.base_dir / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_confidence{self.suffix}.tif",
+                Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_confidence{self.suffix}.tif",
+            ]
+            for c in legacy_confs:
+                if c.exists():
+                    self.conf_tif = c
+                    self.masked_conf = c.parent / f"{self.file_prefix}_confidence_masked{self.suffix}.tif"
+                    break
+
+            if self.class_tif.parent != self.class_dir:
+                self.metrics_fp = self.class_tif.parent.parent / f"{self.file_prefix}_metrics{self.suffix}.xlsx"
 
         self.agri_mask = self._resolve_agri_mask()
 
