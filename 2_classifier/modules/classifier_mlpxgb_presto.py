@@ -655,7 +655,9 @@ class ProcessingPipelineS1S2:
             self.samples_dir / f"{self.file_prefix}_learn.shp",
             # Fallbacks for existing legacy samples
             self.base_dir / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
+            self.base_dir / self.track / 'classification_results' / 'samples' / f"learn_{self.seg_mode}.shp",
             Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn_{self.seg_mode}.shp",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"learn_{self.seg_mode}.shp",
             Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_learn.shp"
         ]
         self.learn_shp = candidate_learn[0]
@@ -670,7 +672,9 @@ class ProcessingPipelineS1S2:
             self.samples_dir / f"{self.file_prefix}_control.shp",
             # Fallbacks for existing legacy control
             self.base_dir / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control_{self.seg_mode}.shp",
+            self.base_dir / self.track / 'classification_results' / 'samples' / f"control_{self.seg_mode}.shp",
             Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control_{self.seg_mode}.shp",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"control_{self.seg_mode}.shp",
             Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'samples' / f"{self.file_prefix}_control.shp"
         ]
         self.control_shp = candidate_control[0]
@@ -682,7 +686,20 @@ class ProcessingPipelineS1S2:
         self.sel_csv = self.samples_dir / f"{self.file_prefix}_mlpxgb_presto_learn_features_{self.seg_mode}.csv"
         self.model_pkl = self.model_dir / f"{self.file_prefix}_mlpxgb_presto_model_{self.seg_mode}.pkl"
         
-        self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
+        self.suffix = f"_mlpxgb_presto_{self.seg_mode}"
+        
+        candidate_footprints = [
+            self.seg_dir / f"{self.file_prefix}_data_footprint.tif",
+            self.base_dir / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_data_footprint.tif",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'segmentation' / f"{self.file_prefix}_data_footprint.tif",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'segmentation' / f"{self.file_prefix}_data_footprint.tif"
+        ]
+        self.footprint_mask = candidate_footprints[0]
+        for c in candidate_footprints:
+            if c.exists():
+                self.footprint_mask = c
+                break
+
         candidate_segs = [
             self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif",
             self.seg_dir / f"{self.file_prefix}_{self.seg_mode}_segments.tif",
@@ -697,12 +714,36 @@ class ProcessingPipelineS1S2:
                 self.seg_tif = c
                 break
 
-        self.suffix = f"_mlpxgb_presto_{self.seg_mode}"
-        self.class_tif = self.class_dir / f"{self.file_prefix}_classified{self.suffix}.tif"
-        self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence{self.suffix}.tif"
-        self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked{self.suffix}.tif"
-        self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked{self.suffix}.tif"
-        self.metrics_fp = self.reports_dir / f"report_{self.file_prefix}{self.suffix}.xlsx"
+        candidate_classes = [
+            self.class_dir / f"{self.file_prefix}_classified{self.suffix}.tif",
+            self.base_dir / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_classified{self.suffix}.tif",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_classified{self.suffix}.tif"
+        ]
+        self.class_tif = candidate_classes[0]
+        for c in candidate_classes:
+            if c.exists():
+                self.class_tif = c
+                break
+
+        candidate_confs = [
+            self.class_dir / f"{self.file_prefix}_confidence{self.suffix}.tif",
+            self.base_dir / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_confidence{self.suffix}.tif",
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'classification_results' / 'classification' / f"{self.file_prefix}_confidence{self.suffix}.tif"
+        ]
+        self.conf_tif = candidate_confs[0]
+        for c in candidate_confs:
+            if c.exists():
+                self.conf_tif = c
+                break
+
+        # Output masked tifs placed alongside class_tif if existing in legacy dir
+        target_class_dir = self.class_tif.parent if self.class_tif.exists() else self.class_dir
+        self.masked_class = target_class_dir / f"{self.file_prefix}_classified_masked{self.suffix}.tif"
+        self.masked_conf = target_class_dir / f"{self.file_prefix}_confidence_masked{self.suffix}.tif"
+        if target_class_dir != self.class_dir:
+            self.metrics_fp = target_class_dir.parent / f"{self.file_prefix}_metrics{self.suffix}.xlsx"
+        else:
+            self.metrics_fp = self.reports_dir / f"report_{self.file_prefix}{self.suffix}.xlsx"
 
         self.agri_mask = self._resolve_agri_mask()
 
@@ -1634,18 +1675,128 @@ class ProcessingPipelineS1S2:
     # --- Stage 6: Apply Masking ---
     def stage_6_mask_classification(self, force_recompute=False):
         stage = 6
-        if self.masked_class.exists() and not force_recompute:
+        if self.masked_class.exists() and self.masked_conf.exists() and not force_recompute:
             print(f"[Stage {stage}] Masked outputs already exist, skipping.")
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Applying Agricultural & Footprint Masks...")
-        if not self.class_tif.exists():
-            print("ERROR: Run Stage 5 first.")
+        ref_ras = self.class_tif if self.class_tif.exists() else (self.s1_ras if self.s1_ras else self.s2_ras)
+        if not ref_ras or not ref_ras.exists():
+            print("ERROR: Reference raster or classification output not found.")
             return
 
-        shutil.copy(str(self.class_tif), str(self.masked_class))
-        shutil.copy(str(self.conf_tif), str(self.masked_conf))
-        print(f"    Masked classification saved to {self.masked_class}\n")
+        if not self.class_tif.exists() or not self.conf_tif.exists():
+            print("ERROR: Classification outputs not found. Run Stage 5 first.")
+            return
+
+        ds_ref = gdal.Open(str(ref_ras))
+        cols = ds_ref.RasterXSize
+        rows = ds_ref.RasterYSize
+        gt = ds_ref.GetGeoTransform()
+        proj = ds_ref.GetProjection()
+        ds_ref = None
+
+        mask_tif = self.agri_mask
+        ds_mask = None
+        temp_mask_vrt = None
+        if mask_tif and mask_tif.exists():
+            print(f"    Warping country agricultural mask to match classification raster bounds...")
+            minx = gt[0]
+            maxy = gt[3]
+            maxx = minx + gt[1] * cols
+            miny = maxy + gt[5] * rows
+
+            temp_mask_vrt = str(self.masked_class).replace('.tif', '_mask_temp.vrt')
+            mask_opts = gdal.WarpOptions(
+                format='VRT',
+                outputBounds=(minx, miny, maxx, maxy),
+                width=cols,
+                height=rows,
+                dstSRS=proj,
+                resampleAlg=gdal.GRA_NearestNeighbour
+            )
+            ds_mask = gdal.Warp(temp_mask_vrt, str(mask_tif), options=mask_opts)
+            if not ds_mask:
+                print(f"    [WARNING] Failed to warp agricultural mask ({mask_tif}). Continuing without it.")
+            else:
+                print(f"    Applying country agricultural mask: {mask_tif.name}")
+        else:
+            print("    [INFO] Arable mask not found or not configured. Masking with data footprint only.")
+
+        ds_foot = gdal.Open(str(self.footprint_mask)) if (self.footprint_mask and self.footprint_mask.exists()) else None
+        ds_cls = gdal.Open(str(self.class_tif))
+        ds_conf = gdal.Open(str(self.conf_tif))
+
+        driver = gdal.GetDriverByName('GTiff')
+        out_cls = driver.Create(str(self.masked_class), cols, rows, 1, gdal.GDT_Int32,
+                                options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+        out_cls.SetGeoTransform(gt)
+        out_cls.SetProjection(proj)
+        out_cls.GetRasterBand(1).SetNoDataValue(0)
+
+        out_conf = driver.Create(str(self.masked_conf), cols, rows, 1, gdal.GDT_Float32,
+                                 options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+        out_conf.SetGeoTransform(gt)
+        out_conf.SetProjection(proj)
+        out_conf.GetRasterBand(1).SetNoDataValue(0)
+
+        tile_size = 4096
+        total_tiles = math.ceil(cols / tile_size) * math.ceil(rows / tile_size)
+        tile_cnt = 0
+
+        for y in range(0, rows, tile_size):
+            for x in range(0, cols, tile_size):
+                xsize = min(tile_size, cols - x)
+                ysize = min(tile_size, rows - y)
+
+                cls_arr = ds_cls.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                conf_arr = ds_conf.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+
+                combined_mask = np.ones((ysize, xsize), dtype=bool)
+                if ds_foot:
+                    foot_arr = ds_foot.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    combined_mask = combined_mask & (foot_arr > 0)
+
+                if ds_mask:
+                    mask_arr = ds_mask.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    combined_mask = combined_mask & (mask_arr > 0)
+
+                cls_arr[~combined_mask] = 0
+                conf_arr[~combined_mask] = 0.0
+
+                out_cls.GetRasterBand(1).WriteArray(cls_arr, x, y)
+                out_conf.GetRasterBand(1).WriteArray(conf_arr, x, y)
+
+                tile_cnt += 1
+                if tile_cnt % 20 == 0 or tile_cnt == total_tiles:
+                    pct = (tile_cnt / total_tiles) * 100.0
+                    print(f"    [MASKING PROGRESS] {tile_cnt}/{total_tiles} tiles ({pct:.1f}%)", flush=True)
+
+        out_cls.GetRasterBand(1).FlushCache()
+        out_conf.GetRasterBand(1).FlushCache()
+
+        # Build pyramids
+        try:
+            out_cls.BuildOverviews('NEAREST', [2, 4, 8, 16, 32, 64])
+            out_conf.BuildOverviews('AVERAGE', [2, 4, 8, 16, 32, 64])
+        except Exception:
+            pass
+
+        out_cls = None
+        out_conf = None
+        ds_mask = None
+        ds_foot = None
+        ds_cls = None
+        ds_conf = None
+
+        if temp_mask_vrt and os.path.exists(temp_mask_vrt):
+            try:
+                os.remove(temp_mask_vrt)
+            except Exception:
+                pass
+
+        print(f"    Masked classification saved to {self.masked_class}")
+        print(f"    Masked confidence saved to {self.masked_conf}\n")
 
     # --- Stage 7: Validation Metrics ---
     def stage_7_calculate_metrics(self):
