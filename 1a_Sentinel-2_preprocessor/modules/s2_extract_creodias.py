@@ -15,11 +15,13 @@ Usage examples:
 import argparse
 import datetime
 import glob
+import json
 import logging
 import os
 import pathlib
 import re
 import sys
+import threading
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
