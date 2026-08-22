@@ -241,72 +241,88 @@ def extract_tile_and_date_from_safe_name(safe_name: str) -> tuple:
 
 
 def find_b02_path_in_safe(safe_dir: Path) -> Optional[Path]:
-    g_dir = safe_dir / 'GRANULE'
-    if not g_dir.exists():
+    try:
+        g_dir = safe_dir / 'GRANULE'
+        if not g_dir.exists():
+            return None
+        for granule in g_dir.iterdir():
+            if granule.is_dir():
+                r20m_dir = granule / 'IMG_DATA' / 'R20m'
+                if r20m_dir.exists():
+                    b02_files = list(r20m_dir.glob("*_B02_20m.jp2"))
+                    if b02_files:
+                        return b02_files[0]
+                    b02_tif = list(r20m_dir.glob("*_B02_20m.tif"))
+                    if b02_tif:
+                        return b02_tif[0]
+                r10m_dir = granule / 'IMG_DATA' / 'R10m'
+                if r10m_dir.exists():
+                    b02_files = list(r10m_dir.glob("*_B02_10m.jp2")) + list(r10m_dir.glob("*_B02*.jp2"))
+                    if b02_files:
+                        return b02_files[0]
+    except Exception as e:
+        logging.debug(f"Could not inspect granules in {safe_dir.name}: {e}")
         return None
-    for granule in g_dir.iterdir():
-        if granule.is_dir():
-            r20m_dir = granule / 'IMG_DATA' / 'R20m'
-            if r20m_dir.exists():
-                b02_files = list(r20m_dir.glob("*_B02_20m.jp2"))
-                if b02_files:
-                    return b02_files[0]
-                b02_tif = list(r20m_dir.glob("*_B02_20m.tif"))
-                if b02_tif:
-                    return b02_tif[0]
     return None
 
 
 def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
-    output_dest_dir.mkdir(parents=True, exist_ok=True)
-    b02_file = find_b02_path_in_safe(safe_dir)
-    if not b02_file or not b02_file.exists():
-        return False
+    try:
+        output_dest_dir.mkdir(parents=True, exist_ok=True)
+        b02_file = find_b02_path_in_safe(safe_dir)
+        if not b02_file or not b02_file.exists():
+            return False
 
-    b02_dest_tif = output_dest_dir / f"{safe_dir.stem}_B02_20m.tif"
-    if b02_dest_tif.exists() and b02_dest_tif.stat().st_size > 1024:
-        return True
+        b02_dest_tif = output_dest_dir / f"{safe_dir.stem}_B02_20m.tif"
+        if b02_dest_tif.exists() and b02_dest_tif.stat().st_size > 1024:
+            return True
 
-    success = True
-    b02_str = str(b02_file)
-    for band in S2_BANDS_20M:
-        band_src = Path(b02_str.replace('_B02_20m', f'_{band}_20m'))
-        if not band_src.exists():
-            band_src = Path(b02_str.replace('B02', band))
-        if not band_src.exists():
-            candidates = list(b02_file.parent.glob(f"*_{band}_20m.jp2"))
-            if not candidates:
-                candidates = list(b02_file.parent.glob(f"*{band}*.jp2"))
-            if candidates:
-                band_src = candidates[0]
-            else:
+        success = True
+        b02_str = str(b02_file)
+        for band in S2_BANDS_20M:
+            band_src = Path(b02_str.replace('_B02_20m', f'_{band}_20m'))
+            if not band_src.exists():
+                band_src = Path(b02_str.replace('B02', band))
+            if not band_src.exists():
+                try:
+                    candidates = list(b02_file.parent.glob(f"*_{band}_20m.jp2"))
+                    if not candidates:
+                        candidates = list(b02_file.parent.glob(f"*{band}*.jp2"))
+                    if candidates:
+                        band_src = candidates[0]
+                    else:
+                        continue
+                except Exception:
+                    continue
+
+            band_dst_tif = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tif"
+            if band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024:
                 continue
 
-        band_dst_tif = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tif"
-        if band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024:
-            continue
-
-        band_dst_tmp = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tmp.tif"
-        try:
-            ds = gdal.Open(str(band_src))
-            if ds is None:
-                continue
-            options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
-            gdal.Translate(str(band_dst_tmp), ds, options=options)
-            ds = None
-            if band_dst_tmp.exists() and band_dst_tmp.stat().st_size > 1024:
-                if band_dst_tif.exists():
-                    band_dst_tif.unlink()
-                band_dst_tmp.rename(band_dst_tif)
-            else:
+            band_dst_tmp = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tmp.tif"
+            try:
+                ds = gdal.Open(str(band_src))
+                if ds is None:
+                    continue
+                options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
+                gdal.Translate(str(band_dst_tmp), ds, options=options)
+                ds = None
+                if band_dst_tmp.exists() and band_dst_tmp.stat().st_size > 1024:
+                    if band_dst_tif.exists():
+                        band_dst_tif.unlink()
+                    band_dst_tmp.rename(band_dst_tif)
+                else:
+                    success = False
+            except Exception as e:
+                logging.debug(f"Failed converting band {band_src.name}: {e}")
+                if band_dst_tmp.exists():
+                    try: band_dst_tmp.unlink()
+                    except: pass
                 success = False
-        except Exception as e:
-            logging.error(f"Error converting {band_src.name}: {e}")
-            if band_dst_tmp.exists():
-                try: band_dst_tmp.unlink()
-                except: pass
-            success = False
-    return success
+        return success
+    except Exception as e:
+        logging.warning(f"Error converting scene {safe_dir.name}: {e}")
+        return False
 
 
 def scan_creodias_for_dates(
@@ -460,14 +476,18 @@ def process_orbit_creodias_s2(
 
     def _worker_convert_creodias(sc: dict):
         nonlocal converted_count
-        tile_upper = sc['tile'].upper()
-        out_tile_dir = dest_track_s2 / f"{tile_upper}_tif" / sc['title']
-        convert_safe_to_geotiff(sc['safe_path'], out_tile_dir)
-        with lock:
-            converted_count += 1
-            if converted_count % 10 == 0 or converted_count == total_scenes:
-                pct = (converted_count / total_scenes) * 100.0
-                logging.info(f"  [CREODIAS CONVERSION] {converted_count}/{total_scenes} products completed ({pct:.1f}%)")
+        try:
+            tile_upper = sc['tile'].upper()
+            out_tile_dir = dest_track_s2 / f"{tile_upper}_tif" / sc['title']
+            convert_safe_to_geotiff(sc['safe_path'], out_tile_dir)
+        except Exception as e:
+            logging.debug(f"Skipping damaged scene {sc.get('title')}: {e}")
+        finally:
+            with lock:
+                converted_count += 1
+                if converted_count % 10 == 0 or converted_count == total_scenes:
+                    pct = (converted_count / total_scenes) * 100.0
+                    logging.info(f"  [CREODIAS CONVERSION] {converted_count}/{total_scenes} products completed ({pct:.1f}%)")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         list(executor.map(_worker_convert_creodias, scenes_to_process))
