@@ -30,9 +30,10 @@ CDSE_PASSWORD = os.environ.get("CDSE_PASSWORD")
 try:
     _root_dir = pathlib.Path(__file__).resolve().parent.parent
     _cfg_paths = [
-        pathlib.Path(__file__).resolve().parent / "config_s1.json",
+        _root_dir / "config_s1.json",
         _root_dir / "config_cdse.json",
-        _root_dir / "config.json"
+        _root_dir / "config.json",
+        pathlib.Path(__file__).resolve().parent / "config_s1.json"
     ]
     for _cp in _cfg_paths:
         if _cp.exists():
