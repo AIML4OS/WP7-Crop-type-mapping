@@ -218,6 +218,7 @@ def interactive_menu(pipeline: Sentinel2Pipeline):
  [2] Stage 2: Multi-temporal synthetic DOY interpolation (14 dates)
  [3] Stage 3: Mosaicking, S1 grid matching & 126-band BigTIFF stack
  -----------------------------------------------------------
+ [D] Change Date Range (Current: {pipeline.start_date_str} to {pipeline.end_date_str})
  [S] Switch data source (Toggle: CREODIAS <-> CDSE)
  [A] Run all stages automatically (1 -> 2 -> 3)
  [Q] Quit
@@ -228,6 +229,16 @@ def interactive_menu(pipeline: Sentinel2Pipeline):
             if choice == '1': pipeline.stage_1_download_extract()
             elif choice == '2': pipeline.stage_2_time_series()
             elif choice == '3': pipeline.stage_3_mosaic_stack()
+            elif choice == 'D':
+                new_s = input(f" Enter new start date [YYYY-MM-DD] (current: {pipeline.start_date_str}): ").strip()
+                new_e = input(f" Enter new end date [YYYY-MM-DD] (current: {pipeline.end_date_str}): ").strip()
+                if new_s:
+                    pipeline.start_date_str = new_s
+                    pipeline.start_date = datetime.datetime.strptime(new_s, "%Y-%m-%d").date()
+                if new_e:
+                    pipeline.end_date_str = new_e
+                    pipeline.end_date = datetime.datetime.strptime(new_e, "%Y-%m-%d").date()
+                print(f"\n    Date range updated to: {pipeline.start_date_str} -> {pipeline.end_date_str}")
             elif choice == 'S':
                 pipeline.source = 'cdse' if pipeline.source == 'creodias' else 'creodias'
                 print(f"\n    Data source switched to: {pipeline.source.upper()}")

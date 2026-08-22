@@ -89,8 +89,9 @@ def generate_s2_time_series_for_tile(
             'b02_path': b02_p
         })
 
-    acquisitions.sort(key=lambda x: x['doy'])
-    year = acquisitions[0]['date'].year
+    acquisitions.sort(key=lambda x: (x['date'].year, x['doy']))
+    years = [a['date'].year for a in acquisitions]
+    year = max(years) if years else datetime.date.today().year
 
     for target_doy in doys:
         day_folder = result_synthetic_dir / f"day{target_doy}_{year}"
