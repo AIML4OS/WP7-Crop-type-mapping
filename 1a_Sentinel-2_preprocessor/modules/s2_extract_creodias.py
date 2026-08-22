@@ -219,14 +219,19 @@ def get_s1_orbit_extent_geometry(country_code: str, orbit_num: int) -> Optional[
 def parse_metadata_cloud_cover(safe_dir: Path) -> float:
     """Extracts cloudy pixel percentage from MTD_MSIL2A.xml in SAFE directory."""
     try:
-        xml_candidates = list(safe_dir.glob("*MTD_MSIL2A*.xml")) + list(safe_dir.glob("*.xml"))
-        for xml_path in xml_candidates:
-            tree = ET.parse(str(xml_path))
-            root = tree.getroot()
-            for elem in root.iter():
-                if elem.tag.endswith("Cloud_Coverage_Assessment") or elem.tag.endswith("CLOUDY_PIXEL_PERCENTAGE"):
-                    if elem.text:
-                        return float(elem.text)
+        xml_path = safe_dir / "MTD_MSIL2A.xml"
+        if not xml_path.exists():
+            candidates = list(safe_dir.glob("*.xml"))
+            if candidates:
+                xml_path = candidates[0]
+            else:
+                return 0.0
+        tree = ET.parse(str(xml_path))
+        root = tree.getroot()
+        for elem in root.iter():
+            if elem.tag.endswith("Cloud_Coverage_Assessment") or elem.tag.endswith("CLOUDY_PIXEL_PERCENTAGE"):
+                if elem.text:
+                    return float(elem.text)
     except Exception:
         pass
     return 0.0
