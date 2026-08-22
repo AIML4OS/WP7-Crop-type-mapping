@@ -109,7 +109,8 @@ class Sentinel2Pipeline:
         source: str = "auto",
         cloud_cover: float = 80.0,
         doys: List[int] = DEFAULT_DOYS,
-        threads: int = 4
+        threads: int = 4,
+        overwrite: bool = False
     ):
         self.country = country.upper()
         self.orbit = orbit
@@ -120,6 +121,7 @@ class Sentinel2Pipeline:
         self.cloud_cover = cloud_cover
         self.doys = doys
         self.threads = threads
+        self.overwrite = overwrite
         self.source = detect_s2_source() if source == "auto" else source.lower()
 
         if self.orbit:
@@ -191,7 +193,7 @@ class Sentinel2Pipeline:
                 target_epsg=3857,
                 doys=self.doys,
                 max_workers=self.threads,
-                overwrite=False,
+                overwrite=self.overwrite,
                 build_overviews=True
             )
 
@@ -341,6 +343,7 @@ Examples:
     parser.add_argument('--cloud_cover', type=float, default=80.0, help="Max scene cloud cover percentage (default: 80.0)")
     parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="Target DOYs list (default: 14 dates)")
     parser.add_argument('--threads', type=int, default=4, help="Worker threads for parallel processing (default: 4)")
+    parser.add_argument('--overwrite', action='store_true', help="Force re-generation of existing intermediate and final stacks")
 
     args = parser.parse_args()
 
@@ -371,7 +374,8 @@ Examples:
         source=args.source,
         cloud_cover=args.cloud_cover,
         doys=args.doys,
-        threads=args.threads
+        threads=args.threads,
+        overwrite=args.overwrite
     )
 
     if args.stage is None:
