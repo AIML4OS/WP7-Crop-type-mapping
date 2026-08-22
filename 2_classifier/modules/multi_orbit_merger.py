@@ -127,11 +127,13 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
             specific_path = alt_path
             normalized_prefix = alt_prefix
 
-    if specific_path.is_dir():
+    if specific_path.is_dir() and (specific_path.name.startswith("orbit_") or "/" in normalized_prefix):
         tr = normalized_prefix
         parts = tr.split('/')
         country = parts[0].upper()
         sanitized = tr.replace('/', '_')
+        track_prefix = sanitized if sanitized.upper().startswith(country.upper() + "_") else f"{country}_{sanitized}"
+        filename_pairs = get_masked_filenames(track_prefix, suffix)
         
         candidates = [
             specific_path / '2_classification' / '3_maps',
