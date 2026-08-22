@@ -313,13 +313,28 @@ def run_full_processing(selected_tracks, overwrite=False):
             continue
 
         input_files = sorted(slice_folder.glob('*.dim'))
+        valid_files = []
+        for f in input_files:
+            data_d = f.with_suffix('.data')
+            if f.exists() and data_d.is_dir():
+                imgs = list(data_d.glob('*.img'))
+                if imgs and all(im.stat().st_size > 1024 for im in imgs):
+                    valid_files.append(f)
+                else:
+                    logging.warning(f"Purging damaged/incomplete slice product: {f.name}")
+                    f.unlink(missing_ok=True)
+                    shutil.rmtree(data_d, ignore_errors=True)
+            else:
+                logging.warning(f"Purging slice missing .data folder: {f.name}")
+                f.unlink(missing_ok=True)
+                shutil.rmtree(data_d, ignore_errors=True)
 
-        if len(input_files) < 2:
-            logging.warning(f"Not enough files in {track}. Needs at least 2.")
+        if len(valid_files) < 2:
+            logging.warning(f"Not enough valid slice files in {track}. Found {len(valid_files)}, needs at least 2.")
             continue
 
         files_with_dates = []
-        for f in input_files:
+        for f in valid_files:
             d_str = extract_date(f.name)
             files_with_dates.append((f, d_str))
 

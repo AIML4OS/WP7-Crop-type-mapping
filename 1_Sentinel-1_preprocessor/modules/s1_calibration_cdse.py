@@ -676,14 +676,21 @@ def run_calibration_stage(track_name, safe_paths, working_dir):
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             output_data_dir = output_dim.with_suffix('.data')
-            if output_dim.exists() and output_data_dir.is_dir():
+            img_files = list(output_data_dir.glob("*.img")) if output_data_dir.is_dir() else []
+            if output_dim.exists() and output_data_dir.is_dir() and len(img_files) > 0 and all(f.stat().st_size > 1024 for f in img_files):
                 processed_dims.append(output_dim)
             else:
-                logging.error(f"Calibration FAILED for {stem}. Output file or data directory not created: {output_dim}")
+                logging.error(f"Calibration FAILED for {stem}. Corrupted or empty product created. Purging.")
+                output_dim.unlink(missing_ok=True)
+                shutil.rmtree(output_data_dir, ignore_errors=True)
 
             xml_file.unlink(missing_ok=True)
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error calibrating {stem}:\n{e.stderr}")
+        except (subprocess.CalledProcessError, Exception) as e:
+            err_msg = getattr(e, 'stderr', str(e))
+            logging.error(f"Error calibrating {stem}:\n{err_msg}")
+            output_dim.unlink(missing_ok=True)
+            shutil.rmtree(output_dim.with_suffix('.data'), ignore_errors=True)
+            xml_file.unlink(missing_ok=True)
 
     return processed_dims
 
@@ -720,10 +727,17 @@ def run_slice_assembly_stage(track_name, calibrated_dims, working_dir, roi_wkt=N
         sanitized_track = track_name.replace('/', '_')
         out_dim = slice_folder / f"{date_str}_{sanitized_track}_IW_GRDH_{sensor}.dim"
 
-        # CHECK IF FINAL SLICE EXISTS - SKIP IF SO
-        if out_dim.exists() and out_dim.with_suffix('.data').is_dir():
-            logging.info(f"[{track_name}] Slice {date_str} exists, skipping.")
-            continue
+        # CHECK IF FINAL SLICE EXISTS AND IS VALID - SKIP IF SO
+        data_dir = out_dim.with_suffix('.data')
+        if out_dim.exists() and data_dir.is_dir():
+            img_files = list(data_dir.glob("*.img"))
+            if len(img_files) > 0 and all(f.stat().st_size > 1024 for f in img_files):
+                logging.info(f"[{track_name}] Slice {date_str} exists and is valid, skipping.")
+                continue
+            else:
+                logging.warning(f"[{track_name}] Found damaged or incomplete slice for {date_str}. Purging and recomputing.")
+                out_dim.unlink(missing_ok=True)
+                shutil.rmtree(data_dir, ignore_errors=True)
 
         xml_file = track_dir / f"stage2_slice_{date_str}.xml"
         if not roi_wkt:
@@ -783,9 +797,20 @@ def run_slice_assembly_stage(track_name, calibrated_dims, working_dir, roi_wkt=N
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             xml_file.unlink(missing_ok=True)
-            logging.info(f"Successfully created {out_dim.name}")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error processing {date_str}:\n{e.stderr}")
+            out_data_dir = out_dim.with_suffix('.data')
+            img_files = list(out_data_dir.glob("*.img")) if out_data_dir.is_dir() else []
+            if out_dim.exists() and out_data_dir.is_dir() and len(img_files) > 0 and all(f.stat().st_size > 1024 for f in img_files):
+                logging.info(f"Successfully created {out_dim.name}")
+            else:
+                logging.error(f"SliceAssembly FAILED or produced empty files for {date_str}. Purging corrupted output.")
+                out_dim.unlink(missing_ok=True)
+                shutil.rmtree(out_data_dir, ignore_errors=True)
+        except (subprocess.CalledProcessError, Exception) as e:
+            err_msg = getattr(e, 'stderr', str(e))
+            logging.error(f"Error processing {date_str} (SNAP SliceAssembly failed):\n{err_msg}")
+            out_dim.unlink(missing_ok=True)
+            shutil.rmtree(out_dim.with_suffix('.data'), ignore_errors=True)
+            xml_file.unlink(missing_ok=True)
 
     calibrated_dir = track_dir / "calibrated"
     if calibrated_dir.exists():
