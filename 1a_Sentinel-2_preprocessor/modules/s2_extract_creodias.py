@@ -58,15 +58,36 @@ except Exception:
 S2_BANDS_20M = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B8A', 'B11', 'B12', 'SCL']
 
 COUNTRY_ORBITS = {
-    'NL': [88, 161, 15, 37, 110, 139],
+    'NL': [88, 161],
     'PL': [22, 73, 124, 175, 29, 95, 102, 146, 168],
     'IE': [30, 74, 103, 132, 147],
     'FR': [8, 30, 37, 59, 81, 88, 103, 110, 132, 139, 153, 161],
     'AT': [22, 29, 73, 95, 102, 124, 146, 168],
-    'PT': [161, 81, 153, 8, 88, 110],
+    'PT': [45, 147],
     'DE': [22, 29, 73, 95, 102, 124, 146, 168, 175],
     'ES': [8, 81, 88, 153, 161],
     'IT': [44, 117, 146, 168]
+}
+
+COUNTRY_MGRS_TILES = {
+    'NL': ['31UDR', '31UER', '31UES', '31UET', '31UFR', '31UFS', '31UFT', '31UGR', '31UGS', '31UGT'],
+    'PT': [
+        '29SMC', '29SMD', '29SNC', '29SND', '29SPC', '29SPD', '29SQC', '29SQD',
+        '29SMB', '29SNB', '29SPB', '29SQB', '29SMA', '29SNA', '29SPA', '29SQA',
+        '29TNE', '29TNF', '29TPE', '29TPF', '29TQE', '29TQF'
+    ],
+    'PL': [
+        '33UUT', '33UUS', '33UVR', '33UVS', '33UVT', '33UWU', '33UWV', '33UWR', '33UWS', '33UWT',
+        '34UCU', '34UCV', '34UCA', '34UCB', '34UCC', '34UCD', '34UCE', '34UCF',
+        '34UDU', '34UDV', '34UDA', '34UDB', '34UDC', '34UDD', '34UDE', '34UDF',
+        '34UEU', '34UEV', '34UEA', '34UEB', '34UEC', '34UED', '34UEE', '34UEF',
+        '34UFU', '34UFV', '34UFA', '34UFB', '34UFC', '34UFD', '34UFE', '34UFF',
+        '34UGU', '34UGV', '34UGA', '34UGB', '34UGC', '34UGD', '34UGE', '34UGF',
+        '35ULA', '35ULB', '35ULC', '35ULD', '35ULE', '35ULF',
+        '33UXT', '33UXU', '33UXV', '34VDC', '34VDD', '34VDE', '34VDF'
+    ],
+    'IE': ['29UNU', '29UNV', '29UPU', '29UPV', '29UQU', '29UQV', '29UNT', '29UPT', '29UQT', '29UNS', '29UPS', '29UQS'],
+    'AT': ['32UPU', '32UPV', '32UQU', '32UQV', '33UUP', '33UUQ', '33UVP', '33UVQ', '33UWP', '33UWQ', '33UXP', '33UXQ'],
 }
 
 logging.basicConfig(
@@ -290,9 +311,10 @@ def scan_creodias_for_dates(
     repo_path: Path,
     start_date: datetime.date,
     end_date: datetime.date,
+    target_tiles: Optional[List[str]] = None,
     max_cloud_cover: float = 80.0
 ) -> List[Dict]:
-    logging.info(f"Scanning CREODIAS repository ({repo_path}) for dates {start_date} to {end_date}...")
+    logging.info(f"Scanning CREODIAS repository ({repo_path}) for dates {start_date} to {end_date} (Target MGRS tiles: {len(target_tiles) if target_tiles else 'ALL'})...")
     matched = []
     if not repo_path.exists():
         logging.error(f"CREODIAS S2 path not found: {repo_path}")
@@ -304,18 +326,34 @@ def scan_creodias_for_dates(
         day_dir = repo_path / str(curr_date.year) / f"{curr_date.month:02d}" / f"{curr_date.day:02d}"
         if day_dir.exists() and day_dir not in checked:
             checked.add(day_dir)
-            for safe_entry in day_dir.glob("S2*_MSIL2A_*.SAFE"):
-                tile_name, acq_date = extract_tile_and_date_from_safe_name(safe_entry.name)
-                if start_date <= acq_date <= end_date:
-                    cloud_pct = parse_metadata_cloud_cover(safe_entry)
-                    if cloud_pct <= max_cloud_cover:
-                        matched.append({
-                            'title': safe_entry.name,
-                            'safe_path': safe_entry,
-                            'tile': tile_name,
-                            'date': acq_date,
-                            'cloud_cover': cloud_pct
-                        })
+            if target_tiles:
+                for tile in target_tiles:
+                    clean_tile = tile.upper().replace('T', '')
+                    for safe_entry in day_dir.glob(f"*_T{clean_tile}_*.SAFE"):
+                        tile_name, acq_date = extract_tile_and_date_from_safe_name(safe_entry.name)
+                        if start_date <= acq_date <= end_date:
+                            cloud_pct = parse_metadata_cloud_cover(safe_entry)
+                            if cloud_pct <= max_cloud_cover:
+                                matched.append({
+                                    'title': safe_entry.name,
+                                    'safe_path': safe_entry,
+                                    'tile': tile_name,
+                                    'date': acq_date,
+                                    'cloud_cover': cloud_pct
+                                })
+            else:
+                for safe_entry in day_dir.glob("S2*_MSIL2A_*.SAFE"):
+                    tile_name, acq_date = extract_tile_and_date_from_safe_name(safe_entry.name)
+                    if start_date <= acq_date <= end_date:
+                        cloud_pct = parse_metadata_cloud_cover(safe_entry)
+                        if cloud_pct <= max_cloud_cover:
+                            matched.append({
+                                'title': safe_entry.name,
+                                'safe_path': safe_entry,
+                                'tile': tile_name,
+                                'date': acq_date,
+                                'cloud_cover': cloud_pct
+                            })
         curr_date += datetime.timedelta(days=1)
 
     logging.info(f"Found {len(matched)} matching S2 SAFE scenes in CREODIAS repo.")
@@ -324,45 +362,53 @@ def scan_creodias_for_dates(
 
 def get_s1_orbit_extent_geometry(country_code: str, orbit_num: int) -> Optional[ogr.Geometry]:
     track_dir = BASE_DIR / country_code.upper() / f"orbit_{orbit_num}"
-    proc_dir = track_dir / "processed_raster"
+    candidate_dirs = [
+        track_dir / "1_input_stacks",
+        track_dir,
+        track_dir / "processed_raster",
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / f"orbit_{orbit_num}" / "1_input_stacks",
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / f"orbit_{orbit_num}" / "processed_raster",
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / f"orbit_{orbit_num}"
+    ]
 
-    if proc_dir.exists():
-        s1_tifs = list(proc_dir.glob("*_VH_VV*.tif"))
-        if s1_tifs:
-            ds = gdal.Open(str(s1_tifs[0]))
-            if ds:
-                gt = ds.GetGeoTransform()
-                w = ds.RasterXSize
-                h = ds.RasterYSize
-                proj_wkt = ds.GetProjection()
+    for proc_dir in candidate_dirs:
+        if proc_dir.exists():
+            s1_tifs = list(proc_dir.glob("*_VH_VV*.tif")) + list(proc_dir.glob("*Sigma0*.tif")) + list(proc_dir.glob("S1_*_stack*.tif"))
+            if s1_tifs:
+                ds = gdal.Open(str(s1_tifs[0]))
+                if ds:
+                    gt = ds.GetGeoTransform()
+                    w = ds.RasterXSize
+                    h = ds.RasterYSize
+                    proj_wkt = ds.GetProjection()
 
-                min_x = gt[0]
-                max_x = gt[0] + w * gt[1]
-                max_y = gt[3]
-                min_y = gt[3] + h * gt[5]
+                    min_x = gt[0]
+                    max_x = gt[0] + w * gt[1]
+                    max_y = gt[3]
+                    min_y = gt[3] + h * gt[5]
 
-                ring = ogr.Geometry(ogr.wkbLinearRing)
-                ring.AddPoint(min_x, min_y)
-                ring.AddPoint(max_x, min_y)
-                ring.AddPoint(max_x, max_y)
-                ring.AddPoint(min_x, max_y)
-                ring.AddPoint(min_x, min_y)
+                    ring = ogr.Geometry(ogr.wkbLinearRing)
+                    ring.AddPoint(min_x, min_y)
+                    ring.AddPoint(max_x, min_y)
+                    ring.AddPoint(max_x, max_y)
+                    ring.AddPoint(min_x, max_y)
+                    ring.AddPoint(min_x, min_y)
 
-                poly = ogr.Geometry(ogr.wkbPolygon)
-                poly.AddGeometry(ring)
+                    poly = ogr.Geometry(ogr.wkbPolygon)
+                    poly.AddGeometry(ring)
 
-                src_srs = osr.SpatialReference()
-                src_srs.ImportFromWkt(proj_wkt)
-                dst_srs = osr.SpatialReference()
-                dst_srs.ImportFromEPSG(4326)
+                    src_srs = osr.SpatialReference()
+                    src_srs.ImportFromWkt(proj_wkt)
+                    dst_srs = osr.SpatialReference()
+                    dst_srs.ImportFromEPSG(4326)
 
-                src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-                dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                    src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                    dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
-                transform = osr.CoordinateTransformation(src_srs, dst_srs)
-                poly.Transform(transform)
-                ds = None
-                return poly
+                    transform = osr.CoordinateTransformation(src_srs, dst_srs)
+                    poly.Transform(transform)
+                    ds = None
+                    return poly
 
     return get_country_geometry(country_code)
 
@@ -386,7 +432,8 @@ def process_orbit_creodias_s2(
     dest_track_s2.mkdir(parents=True, exist_ok=True)
 
     if all_scenes is None:
-        all_scenes = scan_creodias_for_dates(S2_REPO_PATH, start_date, end_date, max_cloud_cover)
+        target_tiles = COUNTRY_MGRS_TILES.get(country_code, None)
+        all_scenes = scan_creodias_for_dates(S2_REPO_PATH, start_date, end_date, target_tiles=target_tiles, max_cloud_cover=max_cloud_cover)
 
     if not all_scenes:
         logging.warning("No S2 products available to convert.")
@@ -443,7 +490,8 @@ def process_country_creodias_s2(
         selected_orbits = discover_s1_orbits(country_code)
 
     logging.info(f"=== PROCESSING SENTINEL-2 FOR COUNTRY: {country_code} | TARGET ORBITS: {selected_orbits} ===")
-    all_scenes = scan_creodias_for_dates(S2_REPO_PATH, start_date, end_date, max_cloud_cover)
+    target_tiles = COUNTRY_MGRS_TILES.get(country_code, None)
+    all_scenes = scan_creodias_for_dates(S2_REPO_PATH, start_date, end_date, target_tiles=target_tiles, max_cloud_cover=max_cloud_cover)
 
     for o_num in selected_orbits:
         process_orbit_creodias_s2(country_code, o_num, start_date, end_date, all_scenes, max_cloud_cover, max_workers)

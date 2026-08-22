@@ -32,12 +32,12 @@ DEFAULT_DOYS = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 
 S2_SPECTRAL_BANDS = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B8A', 'B11', 'B12']
 
 COUNTRY_ORBITS = {
-    'NL': [15, 37, 88, 110, 139, 161],
+    'NL': [88, 161],
     'PL': [22, 29, 73, 95, 102, 124, 146, 168, 175],
     'IE': [30, 74, 103, 132, 147],
     'FR': [8, 30, 37, 59, 81, 88, 103, 110, 132, 139, 153, 161],
     'AT': [22, 29, 73, 95, 102, 124, 146, 168],
-    'PT': [81, 153, 161, 8, 88, 110],
+    'PT': [45, 147],
     'DE': [22, 29, 73, 95, 102, 124, 146, 168, 175],
     'ES': [8, 81, 88, 153, 161],
     'IT': [44, 117, 146, 168]
@@ -63,13 +63,15 @@ def get_country_shapefile(country_code: str) -> Optional[Path]:
 def get_s1_raster_reference(track_dir: Path) -> Optional[Dict]:
     candidate_dirs = [
         track_dir / "1_input_stacks",
+        track_dir,
         track_dir / "processed_raster",
         Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track_dir.relative_to(BASE_DIR) / "1_input_stacks" if BASE_DIR in track_dir.parents else None,
-        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track_dir.relative_to(BASE_DIR) / "processed_raster" if BASE_DIR in track_dir.parents else None
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track_dir.relative_to(BASE_DIR) / "processed_raster" if BASE_DIR in track_dir.parents else None,
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track_dir.relative_to(BASE_DIR) if BASE_DIR in track_dir.parents else None
     ]
     for proc_dir in candidate_dirs:
         if proc_dir and proc_dir.exists():
-            s1_tifs = list(proc_dir.glob("*_VH_VV*.tif")) + list(proc_dir.glob("*Sigma0*.tif"))
+            s1_tifs = list(proc_dir.glob("*_VH_VV*.tif")) + list(proc_dir.glob("*Sigma0*.tif")) + list(proc_dir.glob("S1_*_stack*.tif"))
             if s1_tifs:
                 ds = gdal.Open(str(s1_tifs[0]))
                 if ds:
@@ -89,7 +91,7 @@ def get_s1_raster_reference(track_dir: Path) -> Optional[Dict]:
                         'gt': gt,
                         'res_x': res_x,
                         'res_y': res_y,
-                        'bounds': (min_x, min_y, max_x, min_y),
+                        'bounds': (min_x, min_y, max_x, max_y),
                         'width': w,
                         'height': h,
                         'ref_file': s1_tifs[0]
