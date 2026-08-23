@@ -171,7 +171,8 @@ def mosaic_stack_clip_single_track(
     target_epsg: int = 3857,
     doys: List[int] = DEFAULT_DOYS,
     max_workers: int = 8,
-    overwrite: bool = False
+    overwrite: bool = False,
+    build_overviews: bool = True
 ):
     norm_track = track.replace('\\', '/')
     sanitized_track = norm_track.replace('/', '_')
