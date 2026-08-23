@@ -173,7 +173,8 @@ class Sentinel2Pipeline:
             ts_mod.run_time_series_for_track(
                 track=track_name,
                 doys=self.doys,
-                max_workers=self.threads
+                max_workers=self.threads,
+                overwrite=self.overwrite
             )
 
     def stage_3_mosaic_stack(self):

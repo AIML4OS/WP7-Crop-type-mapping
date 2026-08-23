@@ -71,7 +71,8 @@ def generate_s2_time_series_for_tile(
     tile_name: str,
     tile_tif_dir: Path,
     result_synthetic_dir: Path,
-    doys: List[int]
+    doys: List[int],
+    overwrite: bool = False
 ) -> bool:
     result_synthetic_dir.mkdir(parents=True, exist_ok=True)
     clean_tile = tile_name.upper().replace('T', '')
@@ -93,63 +94,111 @@ def generate_s2_time_series_for_tile(
     years = [a['date'].year for a in acquisitions]
     year = max(years) if years else datetime.date.today().year
 
+    # Open first band to retrieve raster dimensions and projection
+    ds0 = gdal.Open(str(acquisitions[0]['b02_path']))
+    if ds0 is None:
+        return False
+    raster_w = ds0.RasterXSize
+    raster_h = ds0.RasterYSize
+    geo_trans = ds0.GetGeoTransform()
+    proj_wkt = ds0.GetProjection()
+    ds0 = None
+
     for target_doy in doys:
         day_folder = result_synthetic_dir / f"day{target_doy}_{year}"
         day_folder.mkdir(parents=True, exist_ok=True)
 
-        d1_acq = None
-        d2_acq = None
-        for acq in acquisitions:
-            if acq['doy'] <= target_doy:
-                d1_acq = acq
-            if acq['doy'] >= target_doy and d2_acq is None:
-                d2_acq = acq
+        before_cands = [a for a in acquisitions if a['doy'] <= target_doy]
+        before_cands.sort(key=lambda x: x['doy'], reverse=True)
 
-        if d1_acq is None: d1_acq = acquisitions[0]
-        if d2_acq is None: d2_acq = acquisitions[-1]
+        after_cands = [a for a in acquisitions if a['doy'] >= target_doy]
+        after_cands.sort(key=lambda x: x['doy'])
 
-        d1 = d1_acq['doy']
-        d2 = d2_acq['doy']
-        weight = 0.0 if d1 == d2 else float(np.clip((target_doy - d1) / float(d2 - d1), 0.0, 1.0))
+        if not before_cands: before_cands = list(after_cands)
+        if not after_cands: after_cands = list(before_cands)
 
         for band in S2_SPECTRAL_BANDS:
             out_band_file = day_folder / f"{band}.tif"
-            if out_band_file.exists() and out_band_file.stat().st_size > 1024:
+            if not overwrite and out_band_file.exists() and out_band_file.stat().st_size > 1024:
                 continue
 
-            path1_str = str(d1_acq['b02_path']).replace('B02', band)
-            path2_str = str(d2_acq['b02_path']).replace('B02', band)
+            # Build seamless composite before target_doy
+            arr_before = np.zeros((raster_h, raster_w), dtype=np.float32)
+            doy_before = np.zeros((raster_h, raster_w), dtype=np.float32)
+            for acq in before_cands[:6]:
+                p = Path(str(acq['b02_path']).replace('B02', band))
+                if p.exists():
+                    ds = gdal.Open(str(p))
+                    if ds:
+                        arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                        ds = None
+                        mask_fill = (arr_before == 0) & (arr_i > 0)
+                        arr_before[mask_fill] = arr_i[mask_fill]
+                        doy_before[mask_fill] = acq['doy']
+                        if np.all(arr_before > 0):
+                            break
 
-            p1 = Path(path1_str) if Path(path1_str).exists() else d1_acq['b02_path']
-            p2 = Path(path2_str) if Path(path2_str).exists() else d2_acq['b02_path']
+            # Build seamless composite after target_doy
+            arr_after = np.zeros((raster_h, raster_w), dtype=np.float32)
+            doy_after = np.zeros((raster_h, raster_w), dtype=np.float32)
+            for acq in after_cands[:6]:
+                p = Path(str(acq['b02_path']).replace('B02', band))
+                if p.exists():
+                    ds = gdal.Open(str(p))
+                    if ds:
+                        arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                        ds = None
+                        mask_fill = (arr_after == 0) & (arr_i > 0)
+                        arr_after[mask_fill] = arr_i[mask_fill]
+                        doy_after[mask_fill] = acq['doy']
+                        if np.all(arr_after > 0):
+                            break
 
-            ds1 = gdal.Open(str(p1))
-            ds2 = gdal.Open(str(p2))
-            if ds1 is None or ds2 is None:
-                continue
+            # Seamless pixel-wise interpolation
+            interp_arr = np.zeros((raster_h, raster_w), dtype=np.float32)
+            both_mask = (arr_before > 0) & (arr_after > 0)
+            only_b = (arr_before > 0) & (arr_after == 0)
+            only_a = (arr_before == 0) & (arr_after > 0)
 
-            arr1 = ds1.GetRasterBand(1).ReadAsArray().astype(np.float32)
-            arr2 = ds2.GetRasterBand(1).ReadAsArray().astype(np.float32)
+            denom = np.maximum(doy_after - doy_before, 1.0)
+            weight = np.clip((target_doy - doy_before) / denom, 0.0, 1.0)
+            interp_arr[both_mask] = (1.0 - weight[both_mask]) * arr_before[both_mask] + weight[both_mask] * arr_after[both_mask]
+            interp_arr[only_b] = arr_before[only_b]
+            interp_arr[only_a] = arr_after[only_a]
 
-            interp_arr = np.clip((1.0 - weight) * arr1 + weight * arr2, 0, 65535).astype(np.uint16)
+            # Fallback for any unpopulated pixels: check all remaining acquisitions
+            zero_mask = (interp_arr == 0)
+            if np.any(zero_mask):
+                for acq in acquisitions:
+                    p = Path(str(acq['b02_path']).replace('B02', band))
+                    if p.exists():
+                        ds = gdal.Open(str(p))
+                        if ds:
+                            arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                            ds = None
+                            fill_m = zero_mask & (arr_i > 0)
+                            interp_arr[fill_m] = arr_i[fill_m]
+                            zero_mask = (interp_arr == 0)
+                            if not np.any(zero_mask):
+                                break
+
+            final_arr = np.clip(interp_arr, 0, 65535).astype(np.uint16)
 
             driver = gdal.GetDriverByName('GTiff')
             out_ds = driver.Create(
-                str(out_band_file), ds1.RasterXSize, ds1.RasterYSize, 1, gdal.GDT_UInt16,
+                str(out_band_file), raster_w, raster_h, 1, gdal.GDT_UInt16,
                 options=['COMPRESS=LZW', 'TILED=YES']
             )
-            out_ds.SetGeoTransform(ds1.GetGeoTransform())
-            out_ds.SetProjection(ds1.GetProjection())
-            out_ds.GetRasterBand(1).WriteArray(interp_arr)
+            out_ds.SetGeoTransform(geo_trans)
+            out_ds.SetProjection(proj_wkt)
+            out_ds.GetRasterBand(1).WriteArray(final_arr)
             out_ds.GetRasterBand(1).SetNoDataValue(0)
             out_ds = None
-            ds1 = None
-            ds2 = None
 
     return True
 
 
-def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 8):
+def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 8, overwrite: bool = False):
     import threading
     s2_base = BASE_DIR / track / "S2"
     if not s2_base.exists():
@@ -163,12 +212,12 @@ def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 8)
     done_tiles = 0
     lock = threading.Lock()
 
-    logging.info(f"Generating synthetic time-series for track {track} ({total_tiles} tiles, Workers: {max_workers})...")
+    logging.info(f"Generating seamless synthetic time-series for track {track} ({total_tiles} tiles, Workers: {max_workers})...")
 
     def _worker_tile(t_dir):
         nonlocal done_tiles
         clean_tile_name = t_dir.name.replace('_tif', '')
-        res = generate_s2_time_series_for_tile(clean_tile_name, t_dir, s2_base / clean_tile_name / "_synthetic_s2", doys)
+        res = generate_s2_time_series_for_tile(clean_tile_name, t_dir, s2_base / clean_tile_name / "_synthetic_s2", doys, overwrite=overwrite)
         with lock:
             done_tiles += 1
             pct = (done_tiles / total_tiles) * 100.0
