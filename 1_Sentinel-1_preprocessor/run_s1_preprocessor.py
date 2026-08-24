@@ -116,7 +116,8 @@ class Sentinel1Pipeline:
         end_date: str = "2025-09-15",
         exclude_winter: bool = False,
         source: str = "auto",
-        threads: int = 4
+        threads: int = 4,
+        overwrite: bool = False
     ):
         self.country = country.upper()
         self.orbit = orbit
@@ -124,6 +125,7 @@ class Sentinel1Pipeline:
         self.end_date = end_date
         self.exclude_winter = exclude_winter
         self.threads = threads
+        self.overwrite = overwrite
         self.source = detect_s1_source() if source == "auto" else source.lower()
 
         if self.orbit:
@@ -190,7 +192,7 @@ class Sentinel1Pipeline:
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
             track_name = f"{self.country}/orbit_{orb}"
-            coreg_mod.process_track(track_name)
+            coreg_mod.process_track(track_name, overwrite=self.overwrite)
 
     def stage_3_stack_clip(self):
         """Stage 3: Multi-temporal Stacking & Area Clipping (BigTIFF)."""
@@ -354,6 +356,7 @@ Examples:
     parser.add_argument('-e', '--end_date', default='2025-09-15', help="Acquisition end date (YYYY-MM-DD, default: 2025-09-15)")
     parser.add_argument('--exclude_winter', action='store_true', help="Exclude winter dormancy period (December 1 to February 14) from processing (default: False)")
     parser.add_argument('--threads', type=int, default=4, help="Worker threads for parallel processing (default: 4)")
+    parser.add_argument('--overwrite', action='store_true', help="Force re-processing of intermediate/final products")
 
     args = parser.parse_args()
 
@@ -383,7 +386,8 @@ Examples:
         end_date=args.end_date,
         exclude_winter=args.exclude_winter,
         source=args.source,
-        threads=args.threads
+        threads=args.threads,
+        overwrite=args.overwrite
     )
 
     if args.stage is None:
