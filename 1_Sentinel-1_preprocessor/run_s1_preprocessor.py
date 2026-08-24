@@ -141,6 +141,16 @@ class Sentinel1Pipeline:
 
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
+            track_dir = BASE_DIR / self.country / f"orbit_{orb}"
+            wrapped_dir = track_dir / "wrapped"
+            final_proc_dir = track_dir / "S1_final_preprocessing"
+            has_wrapped = wrapped_dir.exists() and any(f.suffix == '.dim' for f in wrapped_dir.glob('*.dim'))
+            has_final = final_proc_dir.exists() and any(f.suffix == '.dim' for f in final_proc_dir.glob('*.dim'))
+
+            if (has_wrapped or has_final) and not self.overwrite:
+                logging.info(f"[{self.country}/orbit_{orb}] Wrapped stack or final processed products already exist. Skipping Stage 1 Calibration.")
+                continue
+
             if self.source == "cog":
                 calib_cog_mod = importlib.import_module("s1_calibration_cog")
                 calib_cog_mod.process_orbit_cog(
