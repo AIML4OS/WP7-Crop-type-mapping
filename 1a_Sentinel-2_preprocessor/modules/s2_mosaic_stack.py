@@ -334,6 +334,14 @@ def mosaic_stack_clip_single_track(
         except Exception as e:
             logging.warning(f"Could not remove temp mosaic dir: {e}")
 
+    # Clean intermediate synthetic DOYs across all MGRS tiles
+    if out_final_tif.exists() and out_final_tif.stat().st_size > 100 * 1024 * 1024:
+        s2_root = track_dir / 'S2'
+        if s2_root.exists():
+            for syn in s2_root.glob('**/_synthetic_s2'):
+                shutil.rmtree(str(syn), ignore_errors=True)
+            logging.info(f"Auto-cleanup: removed intermediate synthetic DOY tiles to free disk space (~50 GB)!")
+
     logging.info(f"SUCCESS: Sentinel-2 Multi-Temporal Stack saved to {out_final_tif} ({len(band_descriptions)} bands)!")
 
 

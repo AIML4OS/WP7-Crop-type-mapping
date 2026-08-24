@@ -372,6 +372,12 @@ def run_full_processing(selected_tracks, overwrite=False):
                 logging.error("Wrapping failed. Stopping.")
                 continue
 
+        # Auto-clean slice_assembly once wrapped_file is ready
+        slice_dir = track_dir / 'slice_assembly'
+        if wrapped_file.exists() and wrapped_file.with_suffix('.data').is_dir() and slice_dir.exists():
+            logging.info(f"Auto-cleanup: removing slice_assembly for {track} to free disk space (~250 GB)...")
+            shutil.rmtree(str(slice_dir), ignore_errors=True)
+
         # Dynamic Band Discovery from wrapped DIM file to prevent index mismatch/swapped polarizations
         vh_bands = get_bands_from_dim(wrapped_file, 'VH')
         vv_bands = get_bands_from_dim(wrapped_file, 'VV')
@@ -383,14 +389,38 @@ def run_full_processing(selected_tracks, overwrite=False):
         vh_band_str = ','.join(vh_bands)
         vv_band_str = ','.join(vv_bands)
 
-
         # --- STAGE 2: VH ---
-        if not process_polarization(wrapped_file, output_vh, track_dir, vh_band_str, 'VH'):
-            logging.error("VH Processing failed.")
+        vh_data_dir = output_vh.with_suffix('.data')
+        vh_valid = (
+            output_vh.exists() and vh_data_dir.is_dir() and
+            len(list(vh_data_dir.glob('*.img'))) >= len(vh_bands) and
+            all(im.stat().st_size > 1024 for im in vh_data_dir.glob('*.img'))
+        )
+        if vh_valid and not overwrite:
+            logging.info(f"VH product already exists and is complete ({len(vh_bands)} bands). Skipping Stage 2 VH.")
+        else:
+            if not process_polarization(wrapped_file, output_vh, track_dir, vh_band_str, 'VH'):
+                logging.error("VH Processing failed.")
 
         # --- STAGE 3: VV ---
-        if not process_polarization(wrapped_file, output_vv, track_dir, vv_band_str, 'VV'):
-            logging.error("VV Processing failed.")
+        vv_data_dir = output_vv.with_suffix('.data')
+        vv_valid = (
+            output_vv.exists() and vv_data_dir.is_dir() and
+            len(list(vv_data_dir.glob('*.img'))) >= len(vv_bands) and
+            all(im.stat().st_size > 1024 for im in vv_data_dir.glob('*.img'))
+        )
+        if vv_valid and not overwrite:
+            logging.info(f"VV product already exists and is complete ({len(vv_bands)} bands). Skipping Stage 3 VV.")
+        else:
+            if not process_polarization(wrapped_file, output_vv, track_dir, vv_band_str, 'VV'):
+                logging.error("VV Processing failed.")
+
+        # Auto-clean wrapped directory once BOTH VH and VV are complete and verified
+        vh_done = output_vh.exists() and vh_data_dir.is_dir() and len(list(vh_data_dir.glob('*.img'))) >= len(vh_bands)
+        vv_done = output_vv.exists() and vv_data_dir.is_dir() and len(list(vv_data_dir.glob('*.img'))) >= len(vv_bands)
+        if vh_done and vv_done and wrapped_folder.exists():
+            logging.info(f"Auto-cleanup: removing wrapped folder for {track} to free disk space (~150-250 GB)...")
+            shutil.rmtree(str(wrapped_folder), ignore_errors=True)
 
         logging.info(f"Finished {track}")
 

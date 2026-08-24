@@ -1,5 +1,6 @@
 import os
 import argparse
+import shutil
 from pathlib import Path
 import re
 import sys
@@ -225,6 +226,12 @@ def stack_and_clip(track: str):
             print(f"    Clipping complete. Output size: {size_mb:.2f} MB")
             if size_mb < 100:
                 print("    WARNING: Output file is suspiciously small. Check projection overlap!")
+            else:
+                # Auto-cleanup raw S1_final_preprocessing folder once compressed BigTIFF is verified
+                s1_final_dir = track_dir / 'S1_final_preprocessing'
+                if s1_final_dir.exists():
+                    print(f"    Auto-cleanup: removing S1_final_preprocessing for {track} to free disk space (~300-450 GB)...")
+                    shutil.rmtree(str(s1_final_dir), ignore_errors=True)
         else:
             print("\n    Error: GDAL Warp failed.")
 
