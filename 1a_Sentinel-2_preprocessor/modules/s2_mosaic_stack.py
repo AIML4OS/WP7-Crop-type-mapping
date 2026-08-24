@@ -139,7 +139,7 @@ def mosaic_single_band_doy(
         'multithread': True,
         'warpOptions': ["NUM_THREADS=ALL_CPUS"],
         'resampleAlg': gdal.GRA_Bilinear,
-        'creationOptions': ["COMPRESS=LZW", "TILED=YES", "BIGTIFF=YES"],
+        'creationOptions': ["COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=6", "TILED=YES", "BIGTIFF=YES"],
         'xRes': res_x,
         'yRes': res_y
     }
@@ -326,21 +326,13 @@ def mosaic_stack_clip_single_track(
         try: out_vrt.unlink()
         except: pass
 
-    # Clean temporary single-band DOY mosaics to free disk space
-    if out_final_dir.exists():
-        try:
-            shutil.rmtree(str(out_final_dir), ignore_errors=True)
-            logging.info(f"Cleaned temporary mosaic buffer: {out_final_dir.name}")
-        except Exception as e:
-            logging.warning(f"Could not remove temp mosaic dir: {e}")
-
-    # Clean intermediate synthetic DOYs across all MGRS tiles
+    # Always keep final DOY mosaics intact for inspection and instant re-stacking.
+    # Auto-cleanup raw MGRS tile folders, *_tif, and _synthetic_s2 to free ~600 GB of disk space.
     if out_final_tif.exists() and out_final_tif.stat().st_size > 100 * 1024 * 1024:
         s2_root = track_dir / 'S2'
         if s2_root.exists():
-            for syn in s2_root.glob('**/_synthetic_s2'):
-                shutil.rmtree(str(syn), ignore_errors=True)
-            logging.info(f"Auto-cleanup: removed intermediate synthetic DOY tiles to free disk space (~50 GB)!")
+            logging.info(f"Auto-cleanup: removing raw S2 granules and tile tifs for {track} to free disk space (~600 GB)...")
+            shutil.rmtree(str(s2_root), ignore_errors=True)
 
     logging.info(f"SUCCESS: Sentinel-2 Multi-Temporal Stack saved to {out_final_tif} ({len(band_descriptions)} bands)!")
 
