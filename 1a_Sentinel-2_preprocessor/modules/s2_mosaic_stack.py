@@ -289,7 +289,7 @@ def mosaic_stack_clip_single_track(
     gdal.BuildVRT(str(out_vrt), valid_layers, options=vrt_opts)
 
     trans_opts = gdal.TranslateOptions(
-        creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'],
+        creationOptions=['COMPRESS=DEFLATE', 'PREDICTOR=2', 'ZLEVEL=6', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'],
         callback=gdal.TermProgress_nocb
     )
     if out_final_tmp.exists():
@@ -306,7 +306,8 @@ def mosaic_stack_clip_single_track(
 
         if build_overviews:
             logging.info(f"Building compressed pyramid overviews (2, 4, 8, 16, 32, 64) for {out_final_tif.name}...")
-            gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
+            gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
+            gdal.SetConfigOption('PREDICTOR_OVERVIEW', '2')
             gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
             ds_final.BuildOverviews('AVERAGE', [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb)
 
@@ -324,6 +325,14 @@ def mosaic_stack_clip_single_track(
     if out_vrt.exists():
         try: out_vrt.unlink()
         except: pass
+
+    # Clean temporary single-band DOY mosaics to free disk space
+    if out_final_dir.exists():
+        try:
+            shutil.rmtree(str(out_final_dir), ignore_errors=True)
+            logging.info(f"Cleaned temporary mosaic buffer: {out_final_dir.name}")
+        except Exception as e:
+            logging.warning(f"Could not remove temp mosaic dir: {e}")
 
     logging.info(f"SUCCESS: Sentinel-2 Multi-Temporal Stack saved to {out_final_tif} ({len(band_descriptions)} bands)!")
 
