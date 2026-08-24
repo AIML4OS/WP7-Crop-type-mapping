@@ -307,45 +307,59 @@ def run_full_processing(selected_tracks, overwrite=False):
         logging.info(f"\n=== Processing Track: {track} ===")
         track_dir = work_dir / track
         slice_folder = track_dir / 'slice_assembly'
+        wrapped_folder = track_dir / 'wrapped'
+        existing_wrapped = list(wrapped_folder.glob('wrapped_*.dim')) if wrapped_folder.exists() else []
+        valid_existing_wrapped = [w for w in existing_wrapped if w.with_suffix('.data').is_dir()]
 
-        if not slice_folder.exists():
-            logging.warning(f"No slice_assembly folder for {track}. Skipping.")
-            continue
+        if valid_existing_wrapped and not overwrite:
+            wrapped_file = valid_existing_wrapped[0]
+            m = re.search(r'wrapped_(\d{8})_(\d{8})', wrapped_file.name)
+            if m:
+                first_date = m.group(1)
+                last_date = m.group(2)
+            else:
+                first_date = "20241015"
+                last_date = "20250915"
+            run_wrap = False
+            logging.info(f"Existing wrapped stack found: {wrapped_file.name}. Skipping Stage 1.")
+        else:
+            if not slice_folder.exists():
+                logging.warning(f"No slice_assembly folder or valid wrapped file for {track}. Skipping.")
+                continue
 
-        input_files = sorted(slice_folder.glob('*.dim'))
-        valid_files = []
-        for f in input_files:
-            data_d = f.with_suffix('.data')
-            if f.exists() and data_d.is_dir():
-                imgs = list(data_d.glob('*.img'))
-                if imgs and all(im.stat().st_size > 1024 for im in imgs):
-                    valid_files.append(f)
+            input_files = sorted(slice_folder.glob('*.dim'))
+            valid_files = []
+            for f in input_files:
+                data_d = f.with_suffix('.data')
+                if f.exists() and data_d.is_dir():
+                    imgs = list(data_d.glob('*.img'))
+                    if imgs and all(im.stat().st_size > 1024 for im in imgs):
+                        valid_files.append(f)
+                    else:
+                        logging.warning(f"Purging damaged/incomplete slice product: {f.name}")
+                        f.unlink(missing_ok=True)
+                        shutil.rmtree(data_d, ignore_errors=True)
                 else:
-                    logging.warning(f"Purging damaged/incomplete slice product: {f.name}")
+                    logging.warning(f"Purging slice missing .data folder: {f.name}")
                     f.unlink(missing_ok=True)
                     shutil.rmtree(data_d, ignore_errors=True)
-            else:
-                logging.warning(f"Purging slice missing .data folder: {f.name}")
-                f.unlink(missing_ok=True)
-                shutil.rmtree(data_d, ignore_errors=True)
 
-        if len(valid_files) < 2:
-            logging.warning(f"Not enough valid slice files in {track}. Found {len(valid_files)}, needs at least 2.")
-            continue
+            if len(valid_files) < 2:
+                logging.warning(f"Not enough valid slice files in {track}. Found {len(valid_files)}, needs at least 2.")
+                continue
 
-        files_with_dates = []
-        for f in valid_files:
-            d_str = extract_date(f.name)
-            files_with_dates.append((f, d_str))
+            files_with_dates = []
+            for f in valid_files:
+                d_str = extract_date(f.name)
+                files_with_dates.append((f, d_str))
 
-        files_with_dates.sort(key=lambda x: x[1])
+            files_with_dates.sort(key=lambda x: x[1])
+            first_date = files_with_dates[0][1]
+            last_date = files_with_dates[-1][1]
 
-        first_date = files_with_dates[0][1]
-        last_date = files_with_dates[-1][1]
-
-        wrapped_folder = track_dir / 'wrapped'
-        wrapped_folder.mkdir(exist_ok=True)
-        wrapped_file = wrapped_folder / f"wrapped_{first_date}_{last_date}.dim"
+            wrapped_folder.mkdir(exist_ok=True)
+            wrapped_file = wrapped_folder / f"wrapped_{first_date}_{last_date}.dim"
+            run_wrap = True
 
         out_folder = track_dir / 'S1_final_preprocessing'
         out_folder.mkdir(exist_ok=True)
@@ -353,9 +367,8 @@ def run_full_processing(selected_tracks, overwrite=False):
         output_vv = out_folder / f"{last_date}_{first_date}_VV.dim"
 
         # --- STAGE 1: WRAPPING ---
-        run_wrap = True
-        if wrapped_file.exists() and wrapped_file.with_suffix('.data').is_dir():
-            if overwrite:
+        if run_wrap:
+            if wrapped_file.exists() and wrapped_file.with_suffix('.data').is_dir() and overwrite:
                 logging.info("Overwrite active: Deleting old wrapped file.")
                 try:
                     if wrapped_file.exists(): wrapped_file.unlink()
@@ -363,9 +376,6 @@ def run_full_processing(selected_tracks, overwrite=False):
                     if data_dir.exists(): shutil.rmtree(data_dir)
                 except Exception as e:
                     logging.error(f"Failed to delete old file: {e}")
-            else:
-                logging.info("Wrapped file exists. Skipping Stage 1.")
-                run_wrap = False
 
         if run_wrap:
             if not process_wrap(files_with_dates, wrapped_file, track_dir):
