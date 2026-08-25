@@ -94,7 +94,7 @@ COUNTRY_ORBITS = {
     'MT': [124],  # DESCENDING (100.0%) - 1 orbits
     'NL': [37, 110],  # DESCENDING (100.0%) - 2 orbits
     'NO': [8, 22, 37, 51, 66, 67, 124],  # DESCENDING (100.0%) - 7 orbits
-    'PL': [29, 73, 102, 175],  # ASCENDING (99.99%) - 4 orbits
+    'PL': [29, 73, 102, 131, 175],  # ASCENDING (100.0%) - 5 orbits
     'PT': [52, 125],  # DESCENDING (100.0%) - 2 orbits
     'RO': [29, 58, 102, 131],  # ASCENDING (100.0%) - 4 orbits
     'RS': [102, 175],  # ASCENDING (100.0%) - 2 orbits
