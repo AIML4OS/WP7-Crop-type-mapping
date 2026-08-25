@@ -101,9 +101,10 @@ def reproject_shapefile(src_shp, dst_shp, target_epsg=3857, force_src_epsg=None)
 
 
 def stack_and_clip(track: str):
+    track_dir = BASE_DIR / track
     candidate_finals = [
-        BASE_DIR / track / '_temp_processing' / 's1_sar' / '3_coregistered',
-        BASE_DIR / track / 'S1_final_preprocessing',
+        track_dir / '_temp_processing' / 's1_sar' / '3_coregistered',
+        track_dir / 'S1_final_preprocessing',
         Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track / 'S1_final_preprocessing'
     ]
     final_dir = candidate_finals[0]
