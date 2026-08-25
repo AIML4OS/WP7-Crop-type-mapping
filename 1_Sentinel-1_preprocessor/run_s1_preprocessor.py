@@ -70,10 +70,16 @@ COUNTRY_ORBITS = {
     'IE': [30, 74, 103, 132, 147],
     'FR': [8, 30, 37, 59, 81, 88, 103, 110, 132, 139, 153, 161],
     'AT': [22, 29, 73, 95, 102, 124, 146, 168],
-    'PT': [45, 147],
+    'PT': [45, 147, 52],
     'DE': [22, 29, 73, 95, 102, 124, 146, 168, 175],
-    'ES': [8, 81, 88, 153, 161, 45, 147],
-    'IT': [44, 117, 146, 168]
+    'ES': [8, 45, 52, 81, 88, 147, 153, 161],
+    'IT': [15, 44, 87, 117, 146, 168],
+    'BE': [8, 88, 110, 161],
+    'DK': [8, 29, 110, 132],
+    'SE': [8, 22, 29, 37, 59, 81, 102, 110, 124, 132, 153, 175],
+    'RO': [7, 29, 51, 80, 102, 124, 153, 175],
+    'CZ': [22, 95, 124, 168],
+    'HU': [22, 51, 95, 124, 168]
 }
 
 
@@ -98,9 +104,11 @@ def discover_country_orbits(country_code: str) -> List[int]:
             for d in c_dir.glob("orbit_*"):
                 m = re.search(r'orbit_(\d+)', d.name)
                 if m:
-                    # Only consider directory as discovered if it contains actual slice data
-                    slice_dir = d / "slice_assembly"
-                    if slice_dir.exists() and any(slice_dir.iterdir()):
+                    has_slice = (d / "slice_assembly").exists() and any((d / "slice_assembly").iterdir())
+                    has_wrapped = (d / "wrapped").exists() and any((d / "wrapped").glob("*.dim"))
+                    has_final = (d / "S1_final_preprocessing").exists() and any((d / "S1_final_preprocessing").glob("*.dim"))
+                    has_stack = (d / "1_input_stacks").exists() and any((d / "1_input_stacks").glob("*.tif"))
+                    if has_slice or has_wrapped or has_final or has_stack:
                         found.add(int(m.group(1)))
     if found:
         return sorted(list(found))
