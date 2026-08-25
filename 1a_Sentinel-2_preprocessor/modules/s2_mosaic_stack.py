@@ -192,8 +192,19 @@ def mosaic_stack_clip_single_track(
     if not s2_base.exists():
         return
 
-    out_final_dir = track_dir / "_temp_processing" / "s2_optical" / "3_doy_mosaics"
+    out_final_dir = track_dir / "s2_doy_mosaics"
     out_proc_dir = track_dir / "1_input_stacks"
+
+    # Backward compatibility: migrate legacy deep directory if present
+    old_doy_dir = track_dir / "_temp_processing" / "s2_optical" / "3_doy_mosaics" / "mosaic"
+    if old_doy_dir.exists() and not out_final_dir.exists():
+        logging.info(f"Moving existing DOY mosaics from {old_doy_dir} to clean path {out_final_dir}...")
+        try:
+            shutil.move(str(old_doy_dir), str(out_final_dir))
+            shutil.rmtree(str(track_dir / "_temp_processing"), ignore_errors=True)
+        except Exception as e:
+            logging.warning(f"Could not migrate legacy directory: {e}")
+
     out_final_dir.mkdir(parents=True, exist_ok=True)
     out_proc_dir.mkdir(parents=True, exist_ok=True)
 
@@ -233,7 +244,7 @@ def mosaic_stack_clip_single_track(
 
     for doy in doys:
         day_str = f"day{doy}_{year}"
-        out_doy_dir = out_final_dir / "mosaic" / day_str
+        out_doy_dir = out_final_dir / day_str
         out_doy_dir.mkdir(parents=True, exist_ok=True)
 
         for band in S2_SPECTRAL_BANDS:
