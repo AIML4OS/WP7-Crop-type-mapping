@@ -71,7 +71,7 @@ COUNTRY_ORBITS = {
     'DK': [139, 168],  # DESCENDING (100.0%) - 2 orbits
     'EE': [51, 80],  # DESCENDING (100.0%) - 2 orbits
     'EL': [7, 36, 80, 109],  # DESCENDING (99.91%) - 4 orbits
-    'ES': [1, 30, 74, 103, 132, 147],  # ASCENDING (99.97%) - 6 orbits
+    'ES': [1, 30, 59, 74, 103, 132, 147],  # ASCENDING (100.0%) - 7 orbits (Mainland + Balearics)
     'FI': [7, 95, 124, 153],  # DESCENDING (100.0%) - 4 orbits
     'FR': [30, 59, 88, 103, 132, 161],  # ASCENDING (100.0%) - 6 orbits
     'GR': [7, 36, 80, 109],  # DESCENDING (99.91%) - 4 orbits
