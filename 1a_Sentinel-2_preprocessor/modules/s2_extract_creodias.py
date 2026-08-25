@@ -62,41 +62,41 @@ S2_BANDS_20M = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B8A', 'B11', 'B12', '
 COUNTRY_ORBITS = {
     'AL': [80, 153],  # DESCENDING (100.0%) - 2 orbits
     'AT': [22, 95, 124, 168],  # DESCENDING (100.0%) - 4 orbits
-    'BE': [8, 37, 110],  # DESCENDING (100.0%) - 3 orbits
+    'BE': [37, 110],  # DESCENDING (100.0%) - 2 orbits
     'BG': [7, 36, 80, 109],  # DESCENDING (100.0%) - 4 orbits
     'CH': [15, 88],  # ASCENDING (100.0%) - 2 orbits
     'CY': [94, 167],  # DESCENDING (100.0%) - 2 orbits
     'CZ': [22, 95, 124],  # DESCENDING (100.0%) - 3 orbits
     'DE': [66, 95, 139, 168],  # DESCENDING (100.0%) - 4 orbits
-    'DK': [95, 139, 168],  # DESCENDING (100.0%) - 3 orbits
+    'DK': [139, 168],  # DESCENDING (100.0%) - 2 orbits
     'EE': [51, 80],  # DESCENDING (100.0%) - 2 orbits
-    'EL': [7, 36, 80, 109, 138, 153],  # DESCENDING (100.0%) - 6 orbits
-    'ES': [1, 30, 59, 60, 74, 89, 103, 132, 147, 162],  # ASCENDING (100.0%) - 10 orbits
-    'FI': [7, 22, 124, 153],  # DESCENDING (100.0%) - 4 orbits
-    'FR': [15, 18, 30, 47, 59, 71, 86, 88, 91, 103, 120, 132, 161, 164],  # ASCENDING (100.0%) - 14 orbits
-    'GR': [7, 36, 80, 109, 138, 153],  # DESCENDING (100.0%) - 6 orbits
+    'EL': [7, 36, 80, 109],  # DESCENDING (99.91%) - 4 orbits
+    'ES': [1, 30, 74, 103, 132, 147],  # ASCENDING (99.97%) - 6 orbits
+    'FI': [7, 95, 124, 153],  # DESCENDING (100.0%) - 4 orbits
+    'FR': [30, 59, 88, 103, 132, 161],  # ASCENDING (100.0%) - 6 orbits
+    'GR': [7, 36, 80, 109],  # DESCENDING (99.91%) - 4 orbits
     'HR': [22, 51, 124],  # DESCENDING (100.0%) - 3 orbits
     'HU': [51, 124, 153],  # DESCENDING (100.0%) - 3 orbits
     'IE': [1, 74],  # ASCENDING (100.0%) - 2 orbits
     'IS': [53, 82, 111],  # DESCENDING (100.0%) - 3 orbits
     'IT': [15, 44, 88, 117, 146],  # ASCENDING (100.0%) - 5 orbits
     'LI': [66],  # DESCENDING (100.0%) - 1 orbits
-    'LT': [58, 102, 131],  # ASCENDING (100.0%) - 3 orbits
+    'LT': [58, 131],  # ASCENDING (99.95%) - 2 orbits
     'LU': [37],  # DESCENDING (100.0%) - 1 orbits
     'LV': [7, 51, 80],  # DESCENDING (100.0%) - 3 orbits
     'ME': [153],  # DESCENDING (100.0%) - 1 orbits
     'MK': [80],  # DESCENDING (100.0%) - 1 orbits
     'MT': [124],  # DESCENDING (100.0%) - 1 orbits
     'NL': [37, 110],  # DESCENDING (100.0%) - 2 orbits
-    'NO': [8, 22, 37, 51, 66, 67, 110, 124, 139],  # DESCENDING (100.0%) - 9 orbits
-    'PL': [29, 73, 102, 131, 175],  # ASCENDING (100.0%) - 5 orbits
+    'NO': [8, 22, 37, 51, 66, 67, 124],  # DESCENDING (100.0%) - 7 orbits
+    'PL': [29, 73, 102, 175],  # ASCENDING (99.99%) - 4 orbits
     'PT': [52, 125],  # DESCENDING (100.0%) - 2 orbits
     'RO': [29, 58, 102, 131],  # ASCENDING (100.0%) - 4 orbits
     'RS': [102, 175],  # ASCENDING (100.0%) - 2 orbits
     'SE': [22, 66, 168],  # DESCENDING (100.0%) - 3 orbits
     'SI': [22, 124],  # DESCENDING (100.0%) - 2 orbits
     'SK': [51, 124, 153],  # DESCENDING (100.0%) - 3 orbits
-    'TR': [21, 36, 50, 65, 94, 109, 123, 138, 152, 167],  # DESCENDING (100.0%) - 10 orbits
+    'TR': [21, 36, 50, 65, 94, 123, 138, 152, 167],  # DESCENDING (99.96%) - 9 orbits
     'UK': [23, 52, 81, 154],  # DESCENDING (100.0%) - 4 orbits
 }
 
