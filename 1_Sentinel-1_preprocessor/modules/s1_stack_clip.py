@@ -220,7 +220,11 @@ def stack_and_clip(track: str):
 
         if ds_out:
             print("\n    Building internal overviews (pyramids) for instant QGIS loading...")
-            ds_out.BuildOverviews('NEAREST', [2, 4, 8, 16, 32, 64])
+            gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
+            gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
+            ds_out.BuildOverviews('NEAREST', [2, 4, 8, 16, 32, 64], callback=make_progress("Building pyramids"))
+            print()
+            ds_out.FlushCache()
             ds_out = None
             size_mb = out_file.stat().st_size / (1024 * 1024)
             print(f"    Clipping complete. Output size: {size_mb:.2f} MB")
