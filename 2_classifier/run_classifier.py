@@ -256,11 +256,11 @@ def interactive_setup_wizard():
     print("""
 ============================================================
  Select Classifier Model:
-  [1] Multimodal Fusion (Deep MLP + XGBoost + Presto) [SOTA]
-  [2] Single-Radar Presto ANN (S1 SAR only)
-  [3] Orfeo ToolBox Machine Learning (Random Forest / SVM)
-  [4] Pure PyTorch Deep MLP
-  [5] Pure XGBoost GBDT
+  [1] Multimodal Fusion (Deep MLP + XGBoost + Presto) [S1 + S2] [SOTA]
+  [2] Single-Radar Presto ANN (Sentinel-1 SAR only) [S1 only]
+  [3] Orfeo ToolBox Machine Learning (Random Forest / SVM) [S1 + S2]
+  [4] Pure PyTorch Deep MLP [S1 + S2]
+  [5] Pure XGBoost GBDT [S1 + S2]
 ============================================================""")
     cls_choice = input(" Enter choice [1-5] (default: 1): ").strip()
     cls_models = {'1': 'mlpxgb_presto', '2': 'presto_s1', '3': 'otb', '4': 'mlp', '5': 'xgb'}
@@ -318,13 +318,22 @@ def interactive_menu(pipeline, country: str, track: str, classifier_model: str =
     seg_modes = ['slic', 'sam', 'lpis']
     cls_models = ['mlpxgb_presto', 'presto_s1', 'otb', 'mlp', 'xgb']
 
+    cls_labels = {
+        'mlpxgb_presto': 'MLPXGB_PRESTO [S1 + S2 SOTA]',
+        'presto_s1': 'PRESTO_S1 [S1 SAR only]',
+        'otb': 'OTB [S1 + S2]',
+        'mlp': 'PYTORCH_MLP [S1 + S2]',
+        'xgb': 'XGBOOST [S1 + S2]'
+    }
+
     while True:
+        cls_name = cls_labels.get(classifier_model, classifier_model.upper())
         menu_text = f"""
 ============================================================
  Multimodal Crop Classifier (AIML CropMapper Cloud)
  Track            : {track}
  Segmentation     : [{pipeline.seg_mode.upper()}]
- Classifier Model : [{classifier_model.upper()}]
+ Classifier Model : [{cls_name}]
 ============================================================
  [0] Stage 0: Generate multimodal data footprint (S1 & S2)
  [1] Stage 1: Object-based segmentation ({pipeline.seg_mode.upper()})
@@ -407,7 +416,9 @@ Examples:
     parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
     parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
     parser.add_argument('--stage', default=None, help="Stage to execute: 'A' (all 0-7), '0'..'7', '8' or 'merge'")
-    parser.add_argument('--classifier', default='mlpxgb_presto', choices=['mlpxgb_presto', 'presto_s1', 'otb', 'mlp', 'xgb'], help="Classifier model: 'mlpxgb_presto' (default), 'presto_s1', 'otb', 'mlp', 'xgb'")
+    parser.add_argument('--classifier', default='mlpxgb_presto',
+                        choices=['mlpxgb_presto', 'presto_s1', 'otb', 'mlp', 'xgb'],
+                        help="Classifier model: 'mlpxgb_presto' [S1+S2 SOTA] (default), 'presto_s1' [S1 only], 'otb' [S1+S2], 'mlp' [S1+S2], 'xgb' [S1+S2]")
     parser.add_argument('--seg_mode', default='slic', choices=['slic', 'sam', 'lpis'], help="Segmentation mode: 'slic' (superpixels), 'sam' (Meta AI), 'lpis' (cadastre) (default: slic)")
     parser.add_argument('--mlp_weight', type=float, default=0.65, help="Weight of MLP in fusion ensemble (0.0 to 1.0, default: 0.65)")
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 GeoTIFF raster")
