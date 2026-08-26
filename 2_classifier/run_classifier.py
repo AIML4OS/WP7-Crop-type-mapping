@@ -272,10 +272,19 @@ def interactive_setup_wizard():
  Select Execution Mode:
   [A] Run all stages automatically (Stage 0 -> 7)
   [I] Enter interactive stage-by-stage menu
-  [0-7] Run specific single stage
-  [8] Phase 4: Multi-orbit national merge
+
+ Or select a specific stage directly:
+  [0] Stage 0: Generate multimodal data footprint (S1 & S2)
+  [1] Stage 1: Object-based segmentation (SLIC / SAM / LPIS)
+  [2] Stage 2: Stratified train/validation sample split
+  [3] Stage 3: Multimodal feature extraction (S1 + S2 + Presto)
+  [4] Stage 4: Train unified fusion ensemble (Deep MLP + XGB)
+  [5] Stage 5: Object-based inference with Bayesian priors
+  [6] Stage 6: Apply agricultural area masks
+  [7] Stage 7: Calculate accuracy metrics & export Excel report
+  [8] Phase 4: Multi-orbit national mosaic & seamless merge
 ============================================================""")
-    stage_choice = input(" Enter choice [A/I/0-8] (default: I): ").strip().upper()
+    stage_choice = input(" Enter choice [A/I/0-8] (default: A): ").strip().upper()
     if stage_choice == '' or stage_choice == 'I':
         stage_choice = None
 
