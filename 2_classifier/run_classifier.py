@@ -187,19 +187,6 @@ def run_pipeline(
         elif choice == '5': pipeline.stage_5_classify_vector(True)
         elif choice == '6': pipeline.stage_6_mask_classification(True)
         elif choice == '7': pipeline.stage_7_calculate_metrics()
-        elif choice in ['8', 'MERGE']:
-            merge_mod = importlib.import_module("multi_orbit_merger")
-            merge_mod.run_merge_for_country(country, seg_mode=seg_mode)
-
-
-def run_merge_for_country(country: str, seg_mode: str = 'slic'):
-    """Runs multi-orbit national mosaic and merging."""
-    logging.info(f"\n============================================================")
-    logging.info(f" [Phase 4] Multi-Orbit National Mosaic & Merging for {country.upper()}")
-    logging.info(f" Segmentation mode: {seg_mode.upper()}")
-    logging.info(f"============================================================")
-    merge_mod = importlib.import_module("multi_orbit_merger")
-    merge_mod.run_merge_for_country(country.upper(), seg_mode=seg_mode)
 
 
 def interactive_setup_wizard():
@@ -282,28 +269,24 @@ def interactive_setup_wizard():
   [5] Stage 5: Object-based inference with Bayesian priors
   [6] Stage 6: Apply agricultural area masks
   [7] Stage 7: Calculate accuracy metrics & export Excel report
-  [8] Phase 4: Multi-orbit national mosaic & seamless merge
 ============================================================""")
-    stage_choice = input(" Enter choice [A/I/0-8] (default: A): ").strip().upper()
+    stage_choice = input(" Enter choice [A/I/0-7] (default: A): ").strip().upper()
     if stage_choice == '' or stage_choice == 'I':
         stage_choice = None
 
     if selected_country and not selected_track:
-        if stage_choice and stage_choice in ['8', 'MERGE']:
-            run_merge_for_country(selected_country, seg_mode)
-        else:
-            country_dir = BASE_DIR / selected_country
-            if country_dir.exists():
-                orbits = [d.name for d in country_dir.glob("orbit_*") if d.is_dir()]
-                for orb_name in orbits:
-                    track_path = f"{selected_country}/{orb_name}"
-                    run_pipeline(
-                        track=track_path,
-                        seg_mode=seg_mode,
-                        classifier_model=classifier_model,
-                        stage=stage_choice,
-                        lpis_vector=lpis_vector
-                    )
+        country_dir = BASE_DIR / selected_country
+        if country_dir.exists():
+            orbits = [d.name for d in country_dir.glob("orbit_*") if d.is_dir()]
+            for orb_name in orbits:
+                track_path = f"{selected_country}/{orb_name}"
+                run_pipeline(
+                    track=track_path,
+                    seg_mode=seg_mode,
+                    classifier_model=classifier_model,
+                    stage=stage_choice,
+                    lpis_vector=lpis_vector
+                )
     else:
         run_pipeline(
             track=selected_track,
@@ -346,7 +329,6 @@ def interactive_menu(pipeline, country: str, track: str, classifier_model: str =
  -----------------------------------------------------------
  [M] Change segmentation mode (Current: {pipeline.seg_mode.upper()})
  [C] Change classifier model (Current: {classifier_model.upper()})
- [8] Phase 4: Multi-orbit national mosaic & seamless merge
  [A] Run all classification stages automatically (0 -> 7)
  [Q] Quit
 ============================================================
@@ -369,7 +351,6 @@ def interactive_menu(pipeline, country: str, track: str, classifier_model: str =
                 idx = (cls_models.index(classifier_model) + 1) % len(cls_models)
                 classifier_model = cls_models[idx]
                 print(f"\n    Classifier model switched to: {classifier_model.upper()}")
-            elif choice == '8': run_merge_for_country(country, pipeline.seg_mode)
             elif choice == 'A':
                 pipeline.stage_0_generate_footprint(False)
                 pipeline.stage_1_segmentation(False)
@@ -409,13 +390,13 @@ Examples:
   # Orfeo ToolBox Machine Learning:
   python run_classifier.py --track NL/orbit_88 --classifier otb --seg_mode slic --stage A
 
-  # Multi-orbit National Merging:
-  python run_classifier.py --country NL --seg_mode slic --stage merge
+  # Multi-orbit National Merging (Phase 4):
+  python run_merge.py --country NL --seg_mode slic
 """
     )
     parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
     parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
-    parser.add_argument('--stage', default=None, help="Stage to execute: 'A' (all 0-7), '0'..'7', '8' or 'merge'")
+    parser.add_argument('--stage', default=None, help="Stage to execute: 'A' (all 0-7), or single stage '0'..'7'")
     parser.add_argument('--classifier', default='mlpxgb_presto',
                         choices=['mlpxgb_presto', 'presto_s1', 'otb', 'mlp', 'xgb'],
                         help="Classifier model: 'mlpxgb_presto' [S1+S2 SOTA] (default), 'presto_s1' [S1 only], 'otb' [S1+S2], 'mlp' [S1+S2], 'xgb' [S1+S2]")
@@ -430,15 +411,6 @@ Examples:
     # If run with zero arguments, open the interactive setup wizard!
     if not args.track and not args.country and not args.stage:
         interactive_setup_wizard()
-        return
-
-    if args.stage and args.stage.upper() in ['8', 'MERGE']:
-        country = args.country
-        if not country and args.track:
-            country = args.track.replace('\\', '/').split('/')[0].upper()
-        if not country:
-            parser.error("--country or --track is required for merging.")
-        run_merge_for_country(country, args.seg_mode)
         return
 
     if not args.track:
