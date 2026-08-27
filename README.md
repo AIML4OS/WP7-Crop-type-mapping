@@ -443,139 +443,213 @@ Place your point ground truth dataset at:
 
 ---
 
-## Detailed step-by-step execution guide
+## Detailed step-by-step execution guide (A-to-Z manual)
 
-### Phase 1: Sentinel-1 SAR preprocessing
+This section provides an exhaustive, beginner-friendly, end-to-end operational guide for running each phase of the pipeline.
 
+```
+========================================================================================================
+                                      END-TO-END PIPELINE ARCHITECTURE
+========================================================================================================
+ [PHASE 1: Sentinel-1 SAR]       [PHASE 2: Sentinel-2 Optical]       [INPUTS: samples.shp + NUTS2]
+           |                                  |                                       |
+           v                                  v                                       v
+  S1 Dual-Pol Stack (VH/VV)        S2 126-Band Timeseries            Ground Truth & Administrative Mask
+  (Float32, 10m, EPSG:3857)        (Int16, 14 DOYs, 9 bands)         (EPSG:3857, crop_id attributes)
+           \                                  /                                       /
+            \                                /                                       /
+             +------------------------------+---------------------------------------+
+                                            |
+                                            v
+                      [PHASE 3: Multimodal Machine Learning Classifier]
+                      - Stage 0: Multimodal Data Footprint & S1 Mean Composite
+                      - Stage 1: OBIA Segmentation (SLIC / SAM / LPIS)
+                      - Stage 2: Stratified Sample Partitioning (70% Train / 30% Test)
+                      - Stage 3: Feature Extraction (S1 Stats + S2 + Presto 128d Embeddings)
+                      - Stage 4: Model Training (PyTorch Deep MLP + XGBoost Ensemble)
+                      - Stage 5: High-Speed Vectorized Tile Inference (Bayesian Priors)
+                      - Stage 6: Cropland & Data Footprint Masking
+                      - Stage 7: Validation Accuracy Assessment & Excel Report (.xlsx)
+                                            |
+                                            v
+                         [PHASE 4: Nationwide Multi-Orbit Merger]
+                         - Multi-orbit confidence-weighted blending in overlaps
+                         - Morphological sieve post-processing
+                         - Seamless national crop map & statistical aggregation
+========================================================================================================
+```
+
+---
+
+### Phase 1: Sentinel-1 SAR preprocessing (`run_s1_preprocessor.py`)
+
+#### What happens behind the scenes:
+1. **Stage 1 (Radiometric Calibration & Slice Assembly)**:
+   - Queries Copernicus CDSE API (or local CreoDIAS COG storage) for all Sentinel-1 GRDH acquisitions covering the target track and dates.
+   - Automatically downloads precise orbit files (POEORB) for 5 cm satellite positioning accuracy.
+   - Performs thermal noise removal (TNR) and border noise removal (BNR).
+   - Calibrates raw digital numbers to physical radar backscatter ($\sigma^0$).
+   - Stitches along-track daily slices into continuous orbit swaths (`_temp_processing/1_calibrated/`).
+2. **Stage 2 (Multi-Temporal Coregistration)**:
+   - Launches ESA SNAP Graph Processing Tool (GPT).
+   - Selects an optimal mid-season master scene and aligns all multi-temporal slave dates with sub-pixel cross-correlation, assembling a coregistered multi-temporal stack (`_temp_processing/2_wrapped_stack/`).
+3. **Stage 3 (Terrain Correction, Stacking & NUTS2 Clipping)**:
+   - Orthorectifies radar geometry using the Copernicus 30 m DEM (Range Doppler terrain correction).
+   - Converts backscatter to decibels ($\text{dB} = 10 \log_{10}(\sigma^0)$).
+   - Resamples and clips to the country NUTS2 administrative boundary in `EPSG:3857` at an exact $10.0\text{ m}$ pixel resolution.
+   - Writes the final multi-temporal dual-polarization BigTIFF (`1_input_stacks/`) and generates 6 multi-scale pyramid overview layers (`.ovr`).
+
+#### How to execute:
 ```powershell
-# Run full automated pipeline for an entire country across all orbits:
+# Recommended: Full automated run for Portugal (processing all national orbits sequentially):
 python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --stage A
 
-# Run full automated pipeline for a single orbit track:
+# Process a single orbit track:
 python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 -s 2024-10-15 -e 2025-09-15 --stage A
 
 # Force downloading directly from Copernicus Data Space (CDSE API):
 python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --stage A
 
-# Exclude winter freeze period (December 1 to February 14):
+# Exclude winter freeze period (December 1 to February 14) - recommended for Central/Northern Europe:
 python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PL --exclude_winter --stage A
 
-# Interactive menu mode (prompts for country, orbits, dates, and stages):
+# Interactive wizard mode (guides you step-by-step):
 python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py
 ```
 
+#### Expected output artifact:
+* `workingDirs/{COUNTRY}/orbit_{ORBIT}/1_input_stacks/{COUNTRY}_orbit_{ORBIT}_{DATE_RANGE}_VH_VV.tif`  
+  *(Multi-temporal dual-pol Float32 BigTIFF, 10 m, EPSG:3857, with embedded `.ovr` pyramids).*
+
 ---
 
-### Phase 2: Sentinel-2 optical preprocessing
+### Phase 2: Sentinel-2 optical preprocessing (`run_s2_preprocessor.py`)
 
+#### What happens behind the scenes:
+1. **Stage 1 (Granule Retrieval & SCL Cloud Masking)**:
+   - Queries Copernicus CDSE API (or CreoDIAS local archive) for Sentinel-2 L2A BOA surface reflectance tiles intersecting the country territory.
+   - Extracts 9 spectral bands (`B02`, `B03`, `B04`, `B05`, `B06`, `B07`, `B8A`, `B11`, `B12`) and the Scene Classification Layer (`SCL`).
+   - Strictly masks out clouds (high/medium prob), thin cirrus, cloud shadows, snow, and defective pixels, saving clean GeoTIFFs to `_temp_processing/{TILE}_tif/`.
+2. **Stage 2 (14-DOY Synthetic Time-Series Interpolation)**:
+   - Evaluates the temporal distribution of cloud-free observations across the 14 standardized agricultural reference dates:
+     $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
+   - Computes pure Python/NumPy multi-core linear interpolation between nearest forward and backward clear observations for all 9 bands, saving synthetic composite tiles to `_temp_processing/{TILE}/_synthetic_s2/day{DOY}_{YEAR}/`.
+3. **Stage 3 (SAR Grid Matching & 126-Band BigTIFF Stacking)**:
+   - Reads the Sentinel-1 SAR stack bounding box and spatial resolution as the master geometric reference.
+   - Performs sub-pixel resampling ($\Delta X = 0.000\text{ m}, \Delta Y = 0.000\text{ m}$) ensuring 100% pixel-for-pixel alignment between optical reflectances and radar backscatter.
+   - Compiles all 14 DOYs $\times$ 9 spectral bands into a unified 126-band BigTIFF (`Int16`, DEFLATE compressed) and builds 6 pyramid overview layers.
+
+#### How to execute:
 ```powershell
-# Run full automated pipeline for an entire country across all orbits:
-python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
+# Recommended: Full automated run for Portugal using official CDSE API (4 parallel workers):
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --source cdse -s 2025-02-15 -e 2025-09-15 --stage A --threads 4
 
-# Run full automated pipeline for a single orbit track:
-python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track PT/orbit_52 -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
+# Process a single orbit track:
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track PT/orbit_52 --source cdse -s 2025-02-15 -e 2025-09-15 --stage A --threads 4
 
-# Force downloading directly from Copernicus Data Space (CDSE API):
-python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
-
-# Interactive menu mode (prompts for country, orbits, dates, and stages):
+# Interactive wizard mode (guides you step-by-step):
 python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py
 ```
 
+#### Expected output artifact:
+* `workingDirs/{COUNTRY}/orbit_{ORBIT}/1_input_stacks/{COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif`  
+  *(126-band Int16 optical BigTIFF, 10 m, EPSG:3857, matched 1:1 with SAR grid).*
+
 ---
 
-### Phase 3: Multimodal crop classification (stages 0 to 7)
+### Phase 3: Multimodal machine learning classifier (`run_classifier.py`)
 
+#### What happens in each classification stage (Stages 0 to 7):
+
+| Stage | Name | Action & scientific description | Generated output file |
+| :---: | :--- | :--- | :--- |
+| **0** | **Data Footprint & SAR Composite** | Generates multi-temporal mean amplitude SAR composite ($\bar{\sigma}^0$) to suppress speckle. Computes binary spatial intersection of valid S1, S2, and NUTS2 boundaries. | `0_segmentation/*_s1_composite.tif`<br>`0_segmentation/*_data_footprint.tif` |
+| **1** | **OBIA Segmentation** | Delineates homogeneous agricultural parcels using SLIC superpixels (with 64px halo buffer), Meta AI SAM foundation vision transformers, or official LPIS vector cadastre. | `0_segmentation/*_segmentation_{MODE}.tif` |
+| **2** | **Stratified Sample Split** | Spatially intersects `samples.shp` with segment parcels. Partitions points into **70% training (`learn.shp`)** and **30% independent validation (`control.shp`)** with balanced class stratification. | `1_samples_and_features/learn_{MODE}.shp`<br>`1_samples_and_features/control_{MODE}.shp` |
+| **3** | **Feature Extraction** | Extracts temporal backscatter statistics (mean, min, max, std of VH, VV, VH/VV), 14-DOY optical reflectances (`B02`–`B12`), dynamic NDVI, and **128d S1 + 128d S2 NASA Harvest Presto token embeddings**. | `1_samples_and_features/*_features_{MODE}.csv`<br>`1_samples_and_features/features_scaler.pkl` |
+| **4** | **Model Training** | Fits class-weighted PyTorch Deep MLP (`BatchNorm1d`, `Dropout`, Cosine Annealing) and XGBoost GBDT (250 trees, histogram split). Combines models via soft-voting ensemble blend ($0.65\text{ MLP} + 0.35\text{ XGB}$). | `2_models/*_model_{MODE}.pkl`<br>`2_models/presto_encoder.pt` |
+| **5** | **Vectorized Tile Inference** | Reads input rasters in $2048 \times 2048$ blocks. Uses fast `np.bincount` zonal aggregation, batched Presto embedding forward passes, Bayesian prior calibration, and $O(1)$ LUT raster reconstruction. | `3_maps/*_classified_{MODE}.tif`<br>`3_maps/*_confidence_{MODE}.tif` |
+| **6** | **Cropland Masking** | Applies high-resolution agricultural mask (`AgriMasks/{COUNTRY}/`) and data footprint, suppressing non-agricultural surfaces (forests, urban, water bodies). | `3_maps/*_classified_masked_{MODE}.tif`<br>`3_maps/*_confidence_masked_{MODE}.tif` |
+| **7** | **Accuracy Assessment** | Evaluates predictions against the independent 30% control dataset. Computes full confusion matrix, Overall Accuracy (OA), Cohen's Kappa ($\kappa$), User's Accuracy (Precision), Producer's Accuracy (Recall), and F1-scores. | `4_reports/report_*_metrics_{MODE}.xlsx` |
+
+#### How to execute:
 ```powershell
-# Mode 1: Multimodal Deep MLP + XGBoost + Presto with SLIC Superpixels (Recommended SOTA):
-python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode slic --stage A
-
-# Run classification for an entire country across all orbits:
+# Recommended SOTA: Multimodal Deep MLP + XGBoost + Presto with SLIC Superpixels:
 python 2_classifier/run_classifier.py --country PT --classifier mlpxgb_presto --seg_mode slic --stage A
 
-# Mode 2: Official Cadastral LPIS Parcel Segmentation:
-python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
+# Run single orbit track:
+python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode slic --stage A
 
-# Mode 3: Vision Foundation Model Segmentation (Meta AI SAM):
+# Run with official cadastral LPIS parcel vectors:
+python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector auxiliary_files/raster_files/AgriMasks/PT/parcels.gpkg --stage A
+
+# Run with Meta AI SAM vision foundation model segmentation:
 python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode sam --stage A
 
-# Mode 4: Single-radar S1-only Presto ANN Classifier:
+# Run single-radar S1-only Presto ANN classifier:
 python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier presto_s1 --seg_mode slic --stage A
 
-# Mode 5: Orfeo ToolBox Machine Learning (Random Forest / SVM):
-python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier otb --seg_mode slic --stage A
-
-# Interactive setup wizard (prompts for track, classifier model, segmentation, and stage):
+# Interactive setup wizard (guides you step-by-step):
 python 2_classifier/run_classifier.py
 ```
 
 ---
 
-### Phase 4: Multi-orbit nationwide merge
+### Phase 4: Nationwide multi-orbit merge (`run_merge.py`)
 
+#### What happens behind the scenes:
+1. Discovers all processed single-orbit classification maps and confidence rasters for the target country.
+2. Identifies overlapping swath zones between adjacent satellite orbits.
+3. In overlapping pixels, applies **confidence-weighted blending**:
+   $$\text{Pixel}_{\text{final}} = \begin{cases} \text{Crop}_{\text{Orbit 1}} & \text{if } \text{Confidence}_{\text{Orbit 1}} \ge \text{Confidence}_{\text{Orbit 2}} \\ \text{Crop}_{\text{Orbit 2}} & \text{otherwise} \end{cases}$$
+4. Applies morphological sieve filtering (removing isolated pixel noise $< 10\text{ pixels}$) and enforces the nationwide agricultural mask.
+5. Aggregates confusion matrices from all orbits into a consolidated national statistical performance report.
+
+#### How to execute:
 ```powershell
-# Merge SLIC classifications into a seamless national map:
+# Merge SLIC superpixel classification maps across all orbits for Portugal:
 python 2_classifier/run_merge.py --country PT --seg_mode slic
 
-# Merge LPIS classifications into a seamless national map:
-python 2_classifier/run_merge.py --country PT --seg_mode lpis
+# Merge LPIS cadastral classification maps across all orbits for the Netherlands:
+python 2_classifier/run_merge.py --country NL --seg_mode lpis
 ```
 
----
-
-## High-performance vectorized inference architecture
-
-In version 2.5, Stage 5 (`stage_5_classify_vector`) has been re-architected with **vectorized block-level I/O and O(1) lookup table (LUT) raster reconstruction**:
-
-| Metric / feature | Legacy approach | Vectorized v2.5 architecture | Improvement |
-| :--- | :---: | :---: | :---: |
-| **Disk I/O requests per orbit** | $> 50,000,000$ random reads | **$\sim 85,000$ sequential block reads** | 🟢 **99.83% I/O reduction** |
-| **Zonal statistics aggregation** | Python per-object looping | Vectorized `np.bincount` in NumPy/C | 🟢 **$> 1000\times$ faster** |
-| **Tile raster reconstruction** | Iterative dictionary mask assignment | Direct array indexing `lut_pred[sub_seg]` | 🟢 **$2\text{ ms}$ per tile** |
-| **Average time per tile ($2048 \times 2048$ px)** | $2.5\text{ to }4.0\text{ minutes}$ | **$4\text{ to }7\text{ seconds}$** | 🚀 **$\sim 35\times$ speedup** |
-| **Total Stage 5 runtime (full country orbit)** | **$24\text{ to }48\text{ hours}$** | **$30\text{ to }50\text{ minutes}$** | ⚡ **$\sim 40\times\text{ to }60\times\text{ faster}$** |
+#### Expected output artifacts:
+* `workingDirs/{COUNTRY}/national_products/{COUNTRY}_national_crop_map_{SEG_MODE}.tif`
+* `workingDirs/{COUNTRY}/national_products/{COUNTRY}_national_confidence_{SEG_MODE}.tif`
+* `workingDirs/{COUNTRY}/national_products/{COUNTRY}_national_accuracy_report_{SEG_MODE}.xlsx`
 
 ---
 
-## National orbit coverage and geographic territory definitions
+### Phase 5: How to visualize and validate maps in QGIS & ArcGIS Pro
 
-To optimize processing time and eliminate redundant data downloads, optimal descending and ascending orbit track combinations are configured for each European territory, with polar/Arctic and remote oceanic islands excluded from agricultural classification:
+#### 1. Loading and styling the Crop Map in QGIS:
+1. Open **QGIS** and click **Layer $\rightarrow$ Add Layer $\rightarrow$ Add Raster Layer...**
+2. Select `workingDirs/{COUNTRY}/national_products/{COUNTRY}_national_crop_map_slic.tif` (or per-orbit `*_classified_masked_slic.tif`).
+3. Right-click the loaded layer in the Layers panel $\rightarrow$ **Properties** $\rightarrow$ select **Symbology** tab.
+4. Set **Render type** to **Paletted / Unique values**.
+5. Click **Classify** at the bottom:
+   - Each numerical `crop_id` (e.g. `11` = Winter Wheat, `12` = Maize, `1430` = Rapeseed) will receive a unique vibrant color.
+6. Click **OK** to render the interactive crop classification map.
 
-| Country | Code | Processing orbits | Geographic coverage & exclusions |
-| :--- | :---: | :--- | :--- |
-| **Netherlands** | `NL` | `[88, 161]` (2 descending) | 100% mainland Netherlands & Wadden Islands |
-| **Portugal** | `PT` | `[52, 125]` (2 descending) | 100% continental Portugal (Lisbon to Bragança) |
-| **Poland** | `PL` | `[22, 51, 95, 124, 168]` (5 descending) | 100% Polish national territory |
-| **Spain** | `ES` | `[1, 30, 59, 74, 103, 132, 147]` (7 ascending) | 100% mainland Spain + Balearic Islands (Mallorca, Menorca, Ibiza) |
-| **France** | `FR` | `[8, 37, 81, 110, 154]` (5 descending) | 100% metropolitan France + Corsica |
-| **Italy** | `IT` | `[22, 44, 95, 117, 168]` (5 descending) | 100% mainland Italy + Sicily + Sardinia |
-| **Germany** | `DE` | `[37, 66, 110, 139, 168]` (5 descending) | 100% German federal territory |
-| **Norway** | `NO` | `[8, 37, 66, 124, 153, 168]` (6 descending) | 100% mainland Norway (Kristiansand to Nordkapp; Svalbard excluded) |
-| **Denmark** | `DK` | `[8, 37, 110, 139]` (4 descending) | 100% mainland Denmark, Zealand, Funen (Faroe Islands excluded) |
-| **United Kingdom** | `UK` | `[81, 154, 103, 132]` (4 ascending/descending) | 100% Great Britain & Northern Ireland (Shetland excluded) |
+#### 2. Inspecting Classification Confidence:
+1. Add `*_confidence_masked_slic.tif` as a raster layer in QGIS.
+2. In **Properties $\rightarrow$ Symbology**, set **Render type** to **Singleband pseudocolor**.
+3. Choose a color ramp (e.g. `Viridis` or `RdYlGn`), with minimum value `0.0` (red / low confidence) to maximum value `1.0` (green / high confidence).
+4. Overlay with transparency over the classified map to inspect model certainty across field interiors and boundaries.
 
----
-
-## How to inspect and use output products
-
-All outputs are saved in the sequential directory structure under `workingDirs/`:
-
-1. **Per-orbit classification map (`workingDirs/{COUNTRY}/orbit_{ORBIT}/2_classification/3_maps/`)**:
-   - `*_classified_masked_*.tif`: Single-band raster where each pixel value corresponds to a numeric `crop_id`.
-   - `*_confidence_masked_*.tif`: Single-band floating-point raster ($0.0$ to $1.0$) indicating classification confidence.
-   - Open in **QGIS** or **ArcGIS Pro**:
-     - Right-click layer $\rightarrow$ **Properties** $\rightarrow$ **Symbology** $\rightarrow$ select **Paletted / Unique values**.
-     - Click **Classify** to display distinct colors for each crop class.
-2. **Per-orbit accuracy report (`workingDirs/{COUNTRY}/orbit_{ORBIT}/2_classification/4_reports/`)**:
-   - `report_*_metrics_*.xlsx`: Excel spreadsheet containing:
-     - **Overall Accuracy (OA)**: Percentage of correctly classified validation samples.
-     - **Cohen's Kappa ($\kappa$)**: Statistical metric accounting for chance agreement.
-     - **Full confusion matrix**: Rows represent ground truth; columns represent model predictions.
-     - **Per-crop metrics**: Precision (User's Accuracy), Recall (Producer's Accuracy), and F1-score for each crop class.
-3. **Nationwide merged products (`workingDirs/{COUNTRY}/national_products/`)**:
-   - `{COUNTRY}_national_crop_map_{SEG_MODE}.tif`: Seamless national crop type GeoTIFF.
-   - `{COUNTRY}_national_confidence_{SEG_MODE}.tif`: Seamless national confidence GeoTIFF.
-   - `{COUNTRY}_national_accuracy_report_{SEG_MODE}.xlsx`: Comprehensive national statistical report.
+#### 3. Analyzing the Excel Accuracy Report:
+1. Open `report_{COUNTRY}_{ORBIT}_metrics_slic.xlsx` in Microsoft Excel or LibreOffice Calc.
+2. Inspect the **Summary Sheet**:
+   - **Overall Accuracy (OA)**: Percentage of correct crop identifications (target $> 85\text{--}90\%$).
+   - **Cohen's Kappa ($\kappa$)**: Chance-corrected statistical agreement metric.
+3. Inspect the **Confusion Matrix Sheet**:
+   - Rows represent ground truth; columns represent model predictions.
+   - Off-diagonal values reveal specific confusion pairs (e.g., Winter Wheat vs Winter Barley).
+4. Inspect **Per-Class Metrics**:
+   - **User's Accuracy (Precision)**: Reliability of predicted crop pixels.
+   - **Producer's Accuracy (Recall)**: Completeness of ground truth detection.
+   - **F1-Score**: Harmonic mean of Precision and Recall.
 
 ---
 
