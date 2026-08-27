@@ -267,6 +267,14 @@ def parse_metadata_cloud_cover(safe_dir: Path) -> float:
     return 0.0
 
 
+# Optimize GDAL for network SMB reading and suppress heavy directory crawling
+gdal.SetConfigOption('GDAL_DISABLE_READDIR_ON_OPEN', 'EMPTY_DIR')
+gdal.SetConfigOption('CPL_VSIL_CURL_ALLOWED_EXTENSIONS', '.jp2,.tif,.xml')
+gdal.SetConfigOption('GDAL_CACHEMAX', '2048')
+
+_GLOBAL_SCAN_CACHE: Dict[Tuple, List[Dict]] = {}
+
+
 def extract_tile_and_date_from_safe_name(safe_name: str) -> tuple:
     tile_match = re.search(r'_T([0-9]{2}[A-Z]{3})_', safe_name)
     tile = tile_match.group(1) if tile_match else "UNKNOWN"
@@ -304,17 +312,32 @@ def find_b02_path_in_safe(safe_dir: Path) -> Optional[Path]:
 def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
     try:
         output_dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Fast local check: if all 10 bands already exist locally, skip touching the network drive completely
+        all_bands_exist = True
+        for band in S2_BANDS_20M:
+            dst_tif = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tif"
+            if not (dst_tif.exists() and dst_tif.stat().st_size > 1024):
+                all_bands_exist = False
+                break
+        if all_bands_exist:
+            return True
+
         b02_file = find_b02_path_in_safe(safe_dir)
         if not b02_file or not b02_file.exists():
             return False
 
         b02_dest_tif = output_dest_dir / f"{safe_dir.stem}_B02_20m.tif"
-        if b02_dest_tif.exists() and b02_dest_tif.stat().st_size > 1024:
+        if b02_dest_tif.exists() and b02_dest_tif.stat().st_size > 1024 and all_bands_exist:
             return True
 
         success = True
         b02_str = str(b02_file)
         for band in S2_BANDS_20M:
+            band_dst_tif = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tif"
+            if band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024:
+                continue
+
             band_src = Path(b02_str.replace('_B02_20m', f'_{band}_20m'))
             if not band_src.exists():
                 band_src = Path(b02_str.replace('B02', band))
@@ -329,10 +352,6 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
                         continue
                 except Exception:
                     continue
-
-            band_dst_tif = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tif"
-            if band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024:
-                continue
 
             band_dst_tmp = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tmp.tif"
             try:
@@ -367,6 +386,17 @@ def scan_creodias_for_dates(
     target_tiles: Optional[List[str]] = None,
     max_cloud_cover: float = 80.0
 ) -> List[Dict]:
+    cache_key = (str(repo_path), str(start_date), str(end_date), max_cloud_cover)
+    if cache_key in _GLOBAL_SCAN_CACHE:
+        cached_all = _GLOBAL_SCAN_CACHE[cache_key]
+        if target_tiles:
+            target_tags = set(t.upper().replace('T', '') for t in target_tiles)
+            filtered = [sc for sc in cached_all if sc['tile'].upper().replace('T', '') in target_tags]
+            logging.info(f"Loaded {len(filtered)} matching S2 SAFE scenes from memory cache (filtered for {len(target_tiles)} MGRS tiles).")
+            return filtered
+        logging.info(f"Loaded {len(cached_all)} matching S2 SAFE scenes from memory cache.")
+        return list(cached_all)
+
     logging.info(f"Scanning CREODIAS repository ({repo_path}) for dates {start_date} to {end_date} (Target MGRS tiles: {len(target_tiles) if target_tiles else 'ALL'})...")
     matched = []
     if not repo_path.exists():
@@ -402,19 +432,18 @@ def scan_creodias_for_dates(
                         for entry in it:
                             name = entry.name
                             if name.startswith("S2") and name.endswith(".SAFE"):
-                                if target_tile_tags is None or any(tag in name for tag in target_tile_tags):
-                                    tile_name, acq_date = extract_tile_and_date_from_safe_name(name)
-                                    if start_date <= acq_date <= end_date:
-                                        safe_path = Path(entry.path)
-                                        cloud_pct = parse_metadata_cloud_cover(safe_path)
-                                        if cloud_pct <= max_cloud_cover:
-                                            matched.append({
-                                                'title': name,
-                                                'safe_path': safe_path,
-                                                'tile': tile_name,
-                                                'date': acq_date,
-                                                'cloud_cover': cloud_pct
-                                            })
+                                tile_name, acq_date = extract_tile_and_date_from_safe_name(name)
+                                if start_date <= acq_date <= end_date:
+                                    safe_path = Path(entry.path)
+                                    cloud_pct = parse_metadata_cloud_cover(safe_path)
+                                    if cloud_pct <= max_cloud_cover:
+                                        matched.append({
+                                            'title': name,
+                                            'safe_path': safe_path,
+                                            'tile': tile_name,
+                                            'date': acq_date,
+                                            'cloud_cover': cloud_pct
+                                        })
                     break
                 except OSError as e:
                     if attempt == 2:
@@ -422,7 +451,12 @@ def scan_creodias_for_dates(
                     time.sleep(0.5)
         curr_date += datetime.timedelta(days=1)
 
-    logging.info(f"Found {len(matched)} matching S2 SAFE scenes in CREODIAS repo.")
+    _GLOBAL_SCAN_CACHE[cache_key] = list(matched)
+    logging.info(f"Found {len(matched)} matching S2 SAFE scenes in CREODIAS repo (cached in RAM for subsequent tracks).")
+    
+    if target_tiles:
+        target_tags = set(t.upper().replace('T', '') for t in target_tiles)
+        return [sc for sc in matched if sc['tile'].upper().replace('T', '') in target_tags]
     return matched
 
 
