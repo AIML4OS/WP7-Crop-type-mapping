@@ -1585,6 +1585,8 @@ class ProcessingPipelineS1S2:
                 b_ll = torch.from_numpy(latlons).to(device)
 
                 # Sentinel-1 Block Read & Vectorized Zonal Means
+                embs_s1 = None
+                s1_means = None
                 if ds_s1:
                     s1_tile = np.nan_to_num(ds_s1.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
                     if s1_tile.ndim == 2:
@@ -1599,12 +1601,12 @@ class ProcessingPipelineS1S2:
                         s1_profiles[:, d, 0] = (s1_means[:, num_dates_s1 + d] + 25.0) / 25.0
                         s1_profiles[:, d, 1] = (s1_means[:, d] + 25.0) / 25.0
 
-                    feat_blocks.append(s1_means)
                     b_s1 = torch.from_numpy(s1_profiles).to(device)
                     embs_s1 = extractor.get_s1_embeddings(b_s1, b_ll, month_tensor_s1)
-                    feat_blocks.append(embs_s1)
 
                 # Sentinel-2 Block Read & Vectorized Zonal Means
+                embs_s2 = None
+                s2_means = None
                 if ds_s2:
                     s2_tile = np.nan_to_num(ds_s2.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
                     if s2_tile.ndim == 2:
@@ -1619,9 +1621,18 @@ class ProcessingPipelineS1S2:
                         for band_idx in range(9):
                             s2_profiles[:, d, band_idx] = s2_means[:, d * 9 + band_idx] / 10000.0
 
-                    feat_blocks.append(s2_means)
                     b_s2 = torch.from_numpy(s2_profiles).to(device)
                     embs_s2 = extractor.get_s2_embeddings(b_s2, b_ll, month_tensor_s2)
+
+                # Exact column order matching Stage 3: [s1_means, s2_means, embs_s1, embs_s2]
+                feat_blocks = []
+                if s1_means is not None:
+                    feat_blocks.append(s1_means)
+                if s2_means is not None:
+                    feat_blocks.append(s2_means)
+                if embs_s1 is not None:
+                    feat_blocks.append(embs_s1)
+                if embs_s2 is not None:
                     feat_blocks.append(embs_s2)
 
                 X_tile = np.hstack(feat_blocks)
