@@ -1594,205 +1594,143 @@ class ProcessingPipeline:
         write_lock = threading.Lock()
         gpu_lock = threading.Lock()
 
-        # Load entire segmentation database
+        ds_stack = gdal.Open(str(self.ras))
+        ds_foot = gdal.Open(str(self.footprint_mask))
         seg_ds = gdal.Open(str(self.seg_tif))
-        seg_band = seg_ds.GetRasterBand(1)
-        seg_array = seg_band.ReadAsArray()
-        seg_ds = None
-        
-        print("    Computing full segmentation bounding boxes...")
-        from scipy.ndimage import find_objects
-        slices = find_objects(seg_array)
 
-        # Extract months from band descriptions
-        ds_desc = gdal.Open(str(self.ras))
-        months_list = []
-        for b in range(1, num_dates + 1):
-            desc = ds_desc.GetRasterBand(b).GetDescription()
-            months_list.append(parse_month_from_description(desc))
-        month_tensor = torch.tensor(months_list).long().to(device)
-        ds_desc = None
+        tile_size = 2048
+        total_tiles = math.ceil(cols / tile_size) * math.ceil(rows / tile_size)
+        tile_cnt = 0
+        total_segments_classified = 0
+        t_infer_start = time.time()
 
-        def process_tile(x, y):
-            xsize = min(tile_size, cols - x)
-            ysize = min(tile_size, rows - y)
+        print(f"    Starting vectorized tile-based inference ({total_tiles} tiles of {tile_size}x{tile_size} px)...")
 
-            ds_stack = gdal.Open(str(self.ras))
-            ds_foot = gdal.Open(str(self.footprint_mask))
+        for y in range(0, rows, tile_size):
+            for x in range(0, cols, tile_size):
+                tile_cnt += 1
+                xsize = min(tile_size, cols - x)
+                ysize = min(tile_size, rows - y)
 
-            try:
-                sub_seg = seg_array[y:y+ysize, x:x+xsize]
+                sub_seg = seg_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
                 foot_arr = ds_foot.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
-                
+
                 unique_ids = np.unique(sub_seg)
                 unique_ids = unique_ids[unique_ids > 0]
-                
                 if len(unique_ids) == 0:
-                    return
+                    if tile_cnt % 25 == 0 or tile_cnt == total_tiles:
+                        elapsed = time.time() - t_infer_start
+                        rate = tile_cnt / elapsed if elapsed > 0 else 0
+                        eta_sec = (total_tiles - tile_cnt) / rate if rate > 0 else 0
+                        eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60):02d}s"
+                        sys.stdout.write(
+                            f"\r    [INFERENCE] Tile {tile_cnt}/{total_tiles} ({(tile_cnt/total_tiles*100):.1f}%) | "
+                            f"Objects: {total_segments_classified:,} | Time: {int(elapsed//60)}m {int(elapsed%60):02d}s | ETA: {eta_str}  "
+                        )
+                        sys.stdout.flush()
+                    continue
 
-                features = []
-                valid_raw_means = []
-                valid_ids = []
-                batch_x = []
-                batch_latlons = []
-                batch_ids = []
-                batch_raw_means = []
-                batch_size = 128
-                
-                for sid in unique_ids:
-                    if sid - 1 >= len(slices) or slices[sid - 1] is None:
-                        continue
-                    sl = slices[sid - 1]
-                    y_min, y_max = sl[0].start, sl[0].stop
-                    x_min, x_max = sl[1].start, sl[1].stop
-                    w = x_max - x_min
-                    h = y_max - y_min
-                    
-                    try:
-                        sub_seg_mask = seg_array[y_min:y_max, x_min:x_max] == sid
-                        
-                        if not np.any(sub_seg_mask):
-                            continue
+                flat_labels = sub_seg.ravel()
+                counts = np.bincount(flat_labels)
+                valid_counts = np.maximum(counts[unique_ids], 1)
 
-                        bands_data = []
-                        for b in range(1, nbands + 1):
-                            band = ds_stack.GetRasterBand(b)
-                            arr = band.ReadAsArray(int(x_min), int(y_min), int(w), int(h))
-                            arr = np.nan_to_num(arr)
-                            bands_data.append(arr)
-                        bands_arr = np.stack(bands_data, axis=0)
-                        
-                        # 1. Raw SAR Means
-                        raw_means = [np.mean(bands_arr[b][sub_seg_mask]) for b in range(nbands)]
+                # Centroids calculation
+                from scipy import ndimage
+                centers = ndimage.center_of_mass(np.ones_like(sub_seg), labels=sub_seg, index=unique_ids)
+                cy_arr = np.array([c[0] for c in centers], dtype=np.float64) + y
+                cx_arr = np.array([c[1] for c in centers], dtype=np.float64) + x
+                mx_arr = gt[0] + cx_arr * gt[1] + cy_arr * gt[2]
+                my_arr = gt[3] + cx_arr * gt[4] + cy_arr * gt[5]
+                lons, lats = transformer_to_wgs84.transform(mx_arr, my_arr)
+                latlons = np.column_stack([lats, lons]).astype(np.float32)
 
-                        # 2. Presto profile
-                        temp_profile = np.zeros((num_dates, 17), dtype=np.float32)
-                        for d in range(num_dates):
-                            vh_vals = bands_arr[d][sub_seg_mask]
-                            vv_vals = bands_arr[num_dates + d][sub_seg_mask]
-                            
-                            mean_vh = np.mean(vh_vals) if len(vh_vals) > 0 else -15.0
-                            mean_vv = np.mean(vv_vals) if len(vv_vals) > 0 else -10.0
-                            
-                            temp_profile[d, 0] = (mean_vv + 25.0) / 25.0
-                            temp_profile[d, 1] = (mean_vh + 25.0) / 25.0
-                            
-                        cy = y_min + h / 2.0
-                        cx = x_min + w / 2.0
-                        mx = gt[0] + cx * gt[1] + cy * gt[2]
-                        my = gt[3] + cx * gt[4] + cy * gt[5]
-                        lon, lat = transformer_to_wgs84.transform(mx, my)
-                        
-                        batch_x.append(torch.from_numpy(temp_profile))
-                        batch_latlons.append(torch.tensor([lat, lon], dtype=torch.float32))
-                        batch_ids.append(sid)
-                        batch_raw_means.append(raw_means)
-                    except:
-                        continue
-                        
-                    if len(batch_x) == batch_size:
-                        input_x = torch.stack(batch_x, dim=0).to(device)
-                        input_latlons = torch.stack(batch_latlons, dim=0).to(device)
-                        input_dw = torch.ones(input_x.shape[0], num_dates).long().to(device) * 9
-                        input_mask = torch.zeros_like(input_x, device=device).float()
-                        input_mask[:, :, 2:] = 1.0
-                        
-                        with gpu_lock:
-                            with torch.no_grad():
-                                out = model.encoder(
-                                    x=input_x,
-                                    dynamic_world=input_dw,
-                                    latlons=input_latlons,
-                                    mask=input_mask,
-                                    month=month_tensor.unsqueeze(0).expand(input_x.shape[0], -1),
-                                    eval_task=True
-                                )
-                                pooled = out.cpu().numpy()
-                        for idx, p_f in enumerate(pooled):
-                            features.append(p_f)
-                            valid_ids.append(batch_ids[idx])
-                            valid_raw_means.append(batch_raw_means[idx])
-                        batch_x = []
-                        batch_latlons = []
-                        batch_ids = []
-                        batch_raw_means = []
-                        
-                if batch_x:
-                    input_x = torch.stack(batch_x, dim=0).to(device)
-                    input_latlons = torch.stack(batch_latlons, dim=0).to(device)
-                    input_dw = torch.ones(input_x.shape[0], num_dates).long().to(device) * 9
-                    input_mask = torch.zeros_like(input_x, device=device).float()
-                    input_mask[:, :, 2:] = 1.0
-                    
-                    with gpu_lock:
-                        with torch.no_grad():
-                            out = model.encoder(
-                                x=input_x,
-                                dynamic_world=input_dw,
-                                latlons=input_latlons,
-                                mask=input_mask,
-                                month=month_tensor.unsqueeze(0).expand(input_x.shape[0], -1),
-                                eval_task=True
-                            )
-                            pooled = out.cpu().numpy()
-                    for idx, p_f in enumerate(pooled):
-                        features.append(p_f)
-                        valid_ids.append(batch_ids[idx])
-                        valid_raw_means.append(batch_raw_means[idx])
-                        
-                if not valid_ids:
-                    return
+                # Block Read S1
+                s1_tile = np.nan_to_num(ds_stack.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
+                if s1_tile.ndim == 2:
+                    s1_tile = s1_tile[np.newaxis, ...]
 
-                features_arr = np.stack(features, axis=0) # [n_valid, 128]
-                raw_means_arr = np.stack(valid_raw_means, axis=0) # [n_valid, nbands]
-                combined_features = np.concatenate([raw_means_arr, features_arr], axis=1) # [n_valid, nbands + 128]
+                raw_means = np.zeros((len(unique_ids), nbands), dtype=np.float32)
+                for b in range(nbands):
+                    sums = np.bincount(flat_labels, weights=s1_tile[b].ravel())
+                    raw_means[:, b] = sums[unique_ids] / valid_counts
+
+                # Presto profiles
+                temp_profiles = np.zeros((len(unique_ids), num_dates, 17), dtype=np.float32)
+                for d in range(num_dates):
+                    vh_means = raw_means[:, d]
+                    vv_means = raw_means[:, num_dates + d]
+                    temp_profiles[:, d, 0] = (vv_means + 25.0) / 25.0
+                    temp_profiles[:, d, 1] = (vh_means + 25.0) / 25.0
+
+                # Presto embeddings in batches
+                features_list = []
+                batch_size = 256
+                for b_start in range(0, len(unique_ids), batch_size):
+                    b_end = min(len(unique_ids), b_start + batch_size)
+                    b_x = torch.from_numpy(temp_profiles[b_start:b_end]).to(device)
+                    b_ll = torch.from_numpy(latlons[b_start:b_end]).to(device)
+                    b_dw = torch.ones(b_x.shape[0], num_dates).long().to(device) * 9
+                    b_mask = torch.zeros_like(b_x, device=device).float()
+                    b_mask[:, :, 2:] = 1.0
+
+                    with torch.no_grad():
+                        out = model.encoder(
+                            x=b_x,
+                            dynamic_world=b_dw,
+                            latlons=b_ll,
+                            mask=b_mask,
+                            month=month_tensor.unsqueeze(0).expand(b_x.shape[0], -1),
+                            eval_task=True
+                        )
+                        features_list.append(out.cpu().numpy())
+
+                features_arr = np.vstack(features_list)
+                combined_features = np.concatenate([raw_means, features_arr], axis=1)
 
                 X_scaled = scaler.transform(combined_features)
                 raw_probs = clf.predict_proba(X_scaled)
-                
+
                 corrected_probs = raw_probs * priors_arr
                 corrected_probs = corrected_probs / np.sum(corrected_probs, axis=1, keepdims=True)
-                
+
                 preds = clf.classes_[np.argmax(corrected_probs, axis=1)]
                 max_probs = np.max(corrected_probs, axis=1)
 
-                id_to_pred = {sid: int(pred) for sid, pred in zip(valid_ids, preds)}
-                id_to_prob = {sid: float(prob) for sid, prob in zip(valid_ids, max_probs)}
+                # O(1) Fast Vectorized LUT Remapping
+                max_sid = int(np.max(unique_ids))
+                lut_pred = np.zeros(max_sid + 1, dtype=np.int32)
+                lut_conf = np.zeros(max_sid + 1, dtype=np.float32)
+                lut_pred[unique_ids] = preds
+                lut_conf[unique_ids] = max_probs
 
-                pred_arr = np.zeros_like(sub_seg, dtype=np.int32)
-                prob_arr = np.zeros_like(sub_seg, dtype=np.float32)
-
-                for sid in unique_ids:
-                    if sid in id_to_pred:
-                        mask = (sub_seg == sid)
-                        pred_arr[mask] = id_to_pred[sid]
-                        prob_arr[mask] = id_to_prob[sid]
+                pred_arr = lut_pred[sub_seg]
+                prob_arr = lut_conf[sub_seg]
 
                 pred_arr[foot_arr == 0] = 0
                 prob_arr[foot_arr == 0] = 0
 
-                with write_lock:
-                    ds_cls.GetRasterBand(1).WriteArray(pred_arr, x, y)
-                    ds_conf.GetRasterBand(1).WriteArray(prob_arr, x, y)
+                ds_cls.GetRasterBand(1).WriteArray(pred_arr, x, y)
+                ds_conf.GetRasterBand(1).WriteArray(prob_arr, x, y)
 
-            except Exception as e:
-                pass
-            finally:
-                ds_stack = None
-                ds_foot = None
+                total_segments_classified += len(unique_ids)
 
-        tiles = []
-        for y in range(0, rows, tile_size):
-            for x in range(0, cols, tile_size):
-                tiles.append((x, y))
+                elapsed = time.time() - t_infer_start
+                rate = tile_cnt / elapsed if elapsed > 0 else 0
+                eta_sec = (total_tiles - tile_cnt) / rate if rate > 0 else 0
+                eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60):02d}s"
+                sys.stdout.write(
+                    f"\r    [INFERENCE] Tile {tile_cnt}/{total_tiles} ({(tile_cnt/total_tiles*100):.1f}%) | "
+                    f"Objects: {total_segments_classified:,} | Time: {int(elapsed//60)}m {int(elapsed%60):02d}s | ETA: {eta_str}  "
+                )
+                sys.stdout.flush()
 
-        print(f"    Processing {len(tiles)} tiles sequentially (using all CPU cores via PyTorch internal threads)...")
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            executor.map(lambda t: process_tile(*t), tiles)
-
-        ds_cls.GetRasterBand(1).FlushCache()
-        ds_conf.GetRasterBand(1).FlushCache()
+        ds_cls.FlushCache()
+        ds_conf.FlushCache()
         ds_cls = None
+        ds_conf = None
+        total_time_min = (time.time() - t_infer_start) / 60.0
+        print(f"\n    [INFERENCE COMPLETE] Successfully classified {total_segments_classified:,} objects across {total_tiles} tiles in {total_time_min:.1f} minutes.")
+        print(f"    Raw classification saved: {self.class_tif}\n")
         ds_conf = None
         print("    Classification and Confidence map generated successfully!\n")
 

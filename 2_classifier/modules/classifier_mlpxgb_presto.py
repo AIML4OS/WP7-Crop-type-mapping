@@ -1473,7 +1473,7 @@ class ProcessingPipelineS1S2:
             print(f"[Stage {stage}] Classification raster exists, skipping.")
             return
 
-        print(f"[Stage {stage}/{self.total_stages}] Running Tile-based Object Inference with Bayesian Priors...")
+        print(f"[Stage {stage}/{self.total_stages}] Running Vectorized Tile-based Object Inference with Bayesian Priors...")
         main_mod = sys.modules.get('__main__')
         if main_mod:
             setattr(main_mod, 'EnsembleClassifier', EnsembleClassifier)
@@ -1512,7 +1512,6 @@ class ProcessingPipelineS1S2:
         priors_arr = correction / np.sum(correction)
 
         seg_ds = gdal.Open(str(self.seg_tif))
-        seg_arr = seg_ds.GetRasterBand(1).ReadAsArray()
         foot_ds = gdal.Open(str(self.footprint_mask))
 
         device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
@@ -1530,9 +1529,7 @@ class ProcessingPipelineS1S2:
         month_tensor_s1 = torch.tensor(months_s1, dtype=torch.long, device=device)
         month_tensor_s2 = torch.tensor(months_s2, dtype=torch.long, device=device)
 
-        from scipy.ndimage import find_objects
-        slices = find_objects(seg_arr)
-
+        from scipy import ndimage
         srs_ras = osr.SpatialReference()
         srs_ras.ImportFromWkt(proj)
         ras_epsg = srs_ras.GetAttrValue("AUTHORITY", 1) or "3857"
@@ -1545,7 +1542,7 @@ class ProcessingPipelineS1S2:
         total_segments_classified = 0
         t_infer_start = time.time()
 
-        print(f"    Starting tile-based inference ({total_tiles} tiles of {tile_size}x{tile_size} px)...")
+        print(f"    Starting vectorized tile-based inference ({total_tiles} tiles of {tile_size}x{tile_size} px)...")
 
         for y in range(0, rows, tile_size):
             for x in range(0, cols, tile_size):
@@ -1553,7 +1550,7 @@ class ProcessingPipelineS1S2:
                 xsize = min(tile_size, cols - x)
                 ysize = min(tile_size, rows - y)
 
-                sub_seg = seg_arr[y:y+ysize, x:x+xsize]
+                sub_seg = seg_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
                 foot_arr = foot_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
 
                 u_sids = np.unique(sub_seg)
@@ -1571,73 +1568,59 @@ class ProcessingPipelineS1S2:
                         sys.stdout.flush()
                     continue
 
-                s1_means_list = []
-                s2_means_list = []
-                s1_profiles_list = []
-                s2_profiles_list = []
-                latlons_list = []
-                valid_ids = []
-
-                for sid in u_sids:
-                    if sid - 1 >= len(slices) or slices[sid - 1] is None:
-                        continue
-                    sl = slices[sid - 1]
-                    ymin, ymax = sl[0].start, sl[0].stop
-                    xmin, xmax = sl[1].start, sl[1].stop
-                    w, h = xmax - xmin, ymax - ymin
-
-                    sub_mask = (seg_arr[ymin:ymax, xmin:xmax] == sid)
-                    if not np.any(sub_mask):
-                        continue
-
-                    cx, cy = xmin + w / 2.0, ymin + h / 2.0
-                    mx, my = gt[0] + cx * gt[1] + cy * gt[2], gt[3] + cx * gt[4] + cy * gt[5]
-                    lon, lat = transformer_to_wgs84.transform(mx, my)
-
-                    # S1
-                    if ds_s1:
-                        s1_arr = np.stack([np.nan_to_num(ds_s1.GetRasterBand(b).ReadAsArray(xmin, ymin, w, h)) for b in range(1, nbands_s1 + 1)], axis=0)
-                        s1_means = [float(np.mean(s1_arr[b][sub_mask])) for b in range(nbands_s1)]
-                        s1_means_list.append(s1_means)
-
-                        s1_profile = np.zeros((num_dates_s1, 2), dtype=np.float32)
-                        for d in range(num_dates_s1):
-                            s1_profile[d, 0] = (s1_means[num_dates_s1 + d] + 25.0) / 25.0
-                            s1_profile[d, 1] = (s1_means[d] + 25.0) / 25.0
-                        s1_profiles_list.append(s1_profile)
-
-                    # S2
-                    if ds_s2:
-                        s2_arr = np.stack([np.nan_to_num(ds_s2.GetRasterBand(b).ReadAsArray(xmin, ymin, w, h)) for b in range(1, nbands_s2 + 1)], axis=0)
-                        s2_means = [float(np.mean(s2_arr[b][sub_mask])) for b in range(nbands_s2)]
-                        s2_means_list.append(s2_means)
-
-                        s2_profile = np.zeros((num_dates_s2, 9), dtype=np.float32)
-                        for d in range(num_dates_s2):
-                            for band_idx in range(9):
-                                s2_profile[d, band_idx] = s2_means[d * 9 + band_idx] / 10000.0
-                        s2_profiles_list.append(s2_profile)
-
-                    latlons_list.append([lat, lon])
-                    valid_ids.append(sid)
-
-                if not valid_ids:
-                    continue
+                flat_labels = sub_seg.ravel()
+                counts = np.bincount(flat_labels)
+                valid_counts = np.maximum(counts[u_sids], 1)
 
                 feat_blocks = []
-                b_ll = torch.tensor(latlons_list, dtype=torch.float32, device=device)
 
-                if ds_s1 and s1_profiles_list:
-                    s1_means_arr = np.array(s1_means_list, dtype=np.float32)
-                    feat_blocks.append(s1_means_arr)
-                    b_s1 = torch.from_numpy(np.stack(s1_profiles_list, axis=0)).to(device)
+                # Centroids calculation
+                centers = ndimage.center_of_mass(np.ones_like(sub_seg), labels=sub_seg, index=u_sids)
+                cy_arr = np.array([c[0] for c in centers], dtype=np.float64) + y
+                cx_arr = np.array([c[1] for c in centers], dtype=np.float64) + x
+                mx_arr = gt[0] + cx_arr * gt[1] + cy_arr * gt[2]
+                my_arr = gt[3] + cx_arr * gt[4] + cy_arr * gt[5]
+                lons, lats = transformer_to_wgs84.transform(mx_arr, my_arr)
+                latlons = np.column_stack([lats, lons]).astype(np.float32)
+                b_ll = torch.from_numpy(latlons).to(device)
+
+                # Sentinel-1 Block Read & Vectorized Zonal Means
+                if ds_s1:
+                    s1_tile = np.nan_to_num(ds_s1.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
+                    if s1_tile.ndim == 2:
+                        s1_tile = s1_tile[np.newaxis, ...]
+                    s1_means = np.zeros((len(u_sids), nbands_s1), dtype=np.float32)
+                    for b in range(nbands_s1):
+                        sums = np.bincount(flat_labels, weights=s1_tile[b].ravel())
+                        s1_means[:, b] = sums[u_sids] / valid_counts
+
+                    s1_profiles = np.zeros((len(u_sids), num_dates_s1, 2), dtype=np.float32)
+                    for d in range(num_dates_s1):
+                        s1_profiles[:, d, 0] = (s1_means[:, num_dates_s1 + d] + 25.0) / 25.0
+                        s1_profiles[:, d, 1] = (s1_means[:, d] + 25.0) / 25.0
+
+                    feat_blocks.append(s1_means)
+                    b_s1 = torch.from_numpy(s1_profiles).to(device)
                     embs_s1 = extractor.get_s1_embeddings(b_s1, b_ll, month_tensor_s1)
                     feat_blocks.append(embs_s1)
 
-                if ds_s2 and s2_profiles_list:
-                    s2_means_arr = np.array(s2_means_list, dtype=np.float32)
-                    feat_blocks.append(s2_means_arr)
-                    b_s2 = torch.from_numpy(np.stack(s2_profiles_list, axis=0)).to(device)
+                # Sentinel-2 Block Read & Vectorized Zonal Means
+                if ds_s2:
+                    s2_tile = np.nan_to_num(ds_s2.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
+                    if s2_tile.ndim == 2:
+                        s2_tile = s2_tile[np.newaxis, ...]
+                    s2_means = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
+                    for b in range(nbands_s2):
+                        sums = np.bincount(flat_labels, weights=s2_tile[b].ravel())
+                        s2_means[:, b] = sums[u_sids] / valid_counts
+
+                    s2_profiles = np.zeros((len(u_sids), num_dates_s2, 9), dtype=np.float32)
+                    for d in range(num_dates_s2):
+                        for band_idx in range(9):
+                            s2_profiles[:, d, band_idx] = s2_means[:, d * 9 + band_idx] / 10000.0
+
+                    feat_blocks.append(s2_means)
+                    b_s2 = torch.from_numpy(s2_profiles).to(device)
                     embs_s2 = extractor.get_s2_embeddings(b_s2, b_ll, month_tensor_s2)
                     feat_blocks.append(embs_s2)
 
@@ -1651,17 +1634,15 @@ class ProcessingPipelineS1S2:
                 preds = clf.classes_[np.argmax(corr_probs, axis=1)]
                 confs = np.max(corr_probs, axis=1)
 
-                id_to_pred = dict(zip(valid_ids, preds))
-                id_to_conf = dict(zip(valid_ids, confs))
+                # O(1) Fast Vectorized LUT Remapping
+                max_sid = int(np.max(u_sids))
+                lut_pred = np.zeros(max_sid + 1, dtype=np.int32)
+                lut_conf = np.zeros(max_sid + 1, dtype=np.float32)
+                lut_pred[u_sids] = preds
+                lut_conf[u_sids] = confs
 
-                pred_arr = np.zeros_like(sub_seg, dtype=np.int32)
-                prob_arr = np.zeros_like(sub_seg, dtype=np.float32)
-
-                for sid in u_sids:
-                    if sid in id_to_pred:
-                        mask = (sub_seg == sid)
-                        pred_arr[mask] = id_to_pred[sid]
-                        prob_arr[mask] = id_to_conf[sid]
+                pred_arr = lut_pred[sub_seg]
+                prob_arr = lut_conf[sub_seg]
 
                 pred_arr[foot_arr == 0] = 0
                 prob_arr[foot_arr == 0] = 0
@@ -1669,7 +1650,7 @@ class ProcessingPipelineS1S2:
                 ds_cls.GetRasterBand(1).WriteArray(pred_arr, x, y)
                 ds_conf.GetRasterBand(1).WriteArray(prob_arr, x, y)
 
-                total_segments_classified += len(valid_ids)
+                total_segments_classified += len(u_sids)
 
                 elapsed = time.time() - t_infer_start
                 rate = tile_cnt / elapsed if elapsed > 0 else 0
