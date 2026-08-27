@@ -327,10 +327,6 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
         if not b02_file or not b02_file.exists():
             return False
 
-        b02_dest_tif = output_dest_dir / f"{safe_dir.stem}_B02_20m.tif"
-        if b02_dest_tif.exists() and b02_dest_tif.stat().st_size > 1024 and all_bands_exist:
-            return True
-
         success = True
         b02_str = str(b02_file)
         for band in S2_BANDS_20M:
@@ -353,26 +349,28 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
                 except Exception:
                     continue
 
-            band_dst_tmp = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tmp.tif"
             try:
                 ds = gdal.Open(str(band_src))
                 if ds is None:
                     continue
                 options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
-                gdal.Translate(str(band_dst_tmp), ds, options=options)
+                out_ds = gdal.Translate(str(band_dst_tif), ds, options=options)
+                out_ds = None  # Explicitly close and flush to disk to avoid Windows handle locks
                 ds = None
-                if band_dst_tmp.exists() and band_dst_tmp.stat().st_size > 1024:
-                    if band_dst_tif.exists():
-                        band_dst_tif.unlink()
-                    band_dst_tmp.rename(band_dst_tif)
-                else:
+                if not (band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024):
                     success = False
             except Exception as e:
                 logging.debug(f"Failed converting band {band_src.name}: {e}")
-                if band_dst_tmp.exists():
-                    try: band_dst_tmp.unlink()
+                if band_dst_tif.exists():
+                    try: band_dst_tif.unlink()
                     except: pass
                 success = False
+
+        if not any(output_dest_dir.glob("*.tif")):
+            try:
+                output_dest_dir.rmdir()
+            except Exception:
+                pass
         return success
     except Exception as e:
         logging.warning(f"Error converting scene {safe_dir.name}: {e}")
