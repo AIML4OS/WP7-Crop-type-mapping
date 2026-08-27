@@ -1,70 +1,125 @@
 # Sentinel-2 optical preprocessor toolbox
 
-This toolbox generates cloud-free, regular 10-day synthetic multispectral optical time-series composites matching 1:1 with the Sentinel-1 SAR pixel grid from Copernicus **Sentinel-2 Level-2A (Bottom-Of-Atmosphere / Surface Reflectance)** products.
+This toolbox provides an automated processing pipeline for **Sentinel-2 multispectral optical** Level-2A (Surface Reflectance / Bottom-Of-Atmosphere) imagery. It constructs cloud-free, regular 10-day synthetic optical time-series composites matching 1:1 with the Sentinel-1 SAR spatial grid.
 
 ---
 
-## Architecture overview
+## Scientific methodology & optical remote sensing
+
+### 1. Spectral bands & agricultural bio-physical indicators
+The pipeline utilizes 9 spectral bands at 10 m and 20 m spatial resolutions (resampled to 10 m):
+* **Visible bands (`B02` Blue, `B03` Green, `B04` Red)**: Sensitive to photosynthetic pigment absorption (chlorophyll $a$ and $b$).
+* **RedEdge bands (`B05` 705 nm, `B06` 740 nm, `B07` 783 nm)**: The sharp reflectance transition region between red absorption and NIR scattering; highly sensitive to canopy nitrogen, leaf area index (LAI), and early senescence.
+* **Narrow NIR (`B8A` 865 nm)**: Measures internal leaf cellular structure scattering, avoiding atmospheric water vapor contamination present in broad `B08`.
+* **Shortwave Infrared (`B11` 1610 nm, `B12` 2190 nm)**: Strongly absorbed by liquid water in plant cells; detects crop water stress, soil background moisture, and dry matter accumulation.
+* **Normalized Difference Vegetation Index (NDVI)**:
+  $$\text{NDVI} = \frac{\text{B8A} - \text{B04}}{\text{B8A} + \text{B04}}$$
+
+### 2. Standardized agricultural DOY time-series
+Satellite observations across years and orbits have variable revisit dates due to cloud cover. The pipeline solves this by interpolating all observations into **14 standardized 10-day agricultural reference dates (Day of Year - DOY)**:
+$$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
+* DOY 80 (March 21): Early spring emergence / winter crop green-up.
+* DOY 105–175 (April–June): Peak vegetative growth and canopy closure.
+* DOY 189–231 (July–August): Flowering, grain filling, and harvest of summer crops.
+* DOY 252–287 (September–October): Late harvest and autumn emergence.
+
+---
+
+## Processing flowchart & optical pipeline architecture
 
 ```
-[Copernicus CDSE API / CreoDIAS L2A Archive]
-                     |
-                     v
-    +----------------------------------+
-    |  Stage 1: Retrieval & Masking    |  --> S2 L2A tile download/extraction, Scene Classification
-    |  (SCL Cloud & Shadow Filtering)  |      Layer (SCL) filtering for clouds, shadows, and snow
-    +----------------+-----------------+
-                     |
-                     v
-    +----------------------------------+
-    |  Stage 2: Synthetic DOY          |  --> Multi-temporal interpolation across 14 standardized DOYs:
-    |  Time-Series Interpolation       |      [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]
-    +----------------+-----------------+
-                     |
-                     v
-    +----------------------------------+
-    |  Stage 3: SAR Grid Alignment     |  --> Sub-pixel resampling to Sentinel-1 raster bounding box,
-    |  & 126-Band BigTIFF Stacking     |      126-band BigTIFF creation, and 6 pyramid overviews
-    +----------------------------------+
++----------------------------------------------------------------------------------------------------+
+|                         SENTINEL-2 OPTICAL PREPROCESSING PIPELINE FLOWCHART                        |
++----------------------------------------------------------------------------------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Input Data Ingestion]                                   |
+                     | - Copernicus CDSE OData API (Automated L2A download)     |
+                     | - CreoDIAS Local Archive (Fast L2A SAFE extraction)      |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 1: Granule Extraction & SCL Cloud Masking]        |
+                     | 1. Extract 9 spectral bands (B02-B12) at 10m/20m         |
+                     | 2. Query Scene Classification Layer (SCL)                |
+                     | 3. Mask invalid pixels: Clouds (8,9), Cirrus (10),       |
+                     |    Cloud Shadows (3), Snow (11), Saturated/NoData (0,1)  |
+                     | 4. Export clean masked reflectance GeoTIFFs              |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 2: 14-DOY Synthetic Time-Series Interpolation]    |
+                     | 1. Parallel multi-core time-series interpolation         |
+                     | 2. Linear temporal spline across valid clear DOYs        |
+                     | 3. Interpolate 9 bands + dynamic NDVI for 14 DOYs        |
+                     | 4. Total: 14 dates * 9 spectral bands = 126 layers       |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 3: SAR Grid Alignment & BigTIFF Stacking]         |
+                     | 1. Spatial alignment to Sentinel-1 SAR reference grid    |
+                     |    (Exact sub-pixel match: dX = 0.000m, dY = 0.000m)     |
+                     | 2. Clip to country footprint in EPSG:3857 at 10.0m res   |
+                     | 3. Export 126-band BigTIFF with DEFLATE compression      |
+                     | 4. Build 6 multi-scale pyramid overview levels           |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Output Product: 1_input_stacks/]                        |
+                     | {COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif                |
+                     | (126-band multi-temporal optical BigTIFF, EPSG:3857, 10m)|
+                     +----------------------------------------------------------+
 ```
 
 ---
 
-## File structure
+## Processing stages in detail
 
-* **`run_s2_preprocessor.py`**: Unified master CLI runner and interactive terminal wizard.
+### Stage 1: Granule extraction & SCL cloud masking (`s2_download_cdse.py`, `s2_extract_creodias.py`)
+* Extracts Sentinel-2 L2A BOA surface reflectance granules.
+* Evaluates the Scene Classification Layer (SCL) and applies strict pixel-level masking:
+  * **Retained classes (valid)**: `4` (Vegetation), `5` (Bare soil), `6` (Water), `7` (Unclassified).
+  * **Masked classes (invalid)**: `0` (No data), `1` (Saturated / defective), `2` (Dark features), `3` (Cloud shadows), `8` (Cloud medium probability), `9` (Cloud high probability), `10` (Thin cirrus), `11` (Snow / ice).
+
+### Stage 2: 14-DOY synthetic time-series interpolation (`s2_time_series.py`)
+* Implements multi-core parallel temporal interpolation in pure Python/NumPy.
+* For each pixel, reconstructs missing cloud-covered observations using forward/backward temporal linear interpolation between nearest cloud-free dates across the agricultural calendar.
+
+### Stage 3: SAR grid matching & BigTIFF stacking (`s2_mosaic_stack.py`)
+* **Sub-pixel geometric co-registration**: Warps optical mosaics to the exact spatial extent, bounding box, and pixel grid of the Sentinel-1 SAR stack ($\Delta X = 0.000\text{ m}, \Delta Y = 0.000\text{ m}$ at 10.0 m resolution), guaranteeing zero spatial shift during machine learning feature fusion.
+* **BigTIFF & pyramid generation**: Compiles all 126 layers into a single compressed BigTIFF (`COMPRESS=DEFLATE`, `TILED=YES`) and builds external pyramid overviews (`[2, 4, 8, 16, 32, 64]`) for smooth visualization.
+
+---
+
+## File and directory structure
+
+* **`run_s2_preprocessor.py`**: Master CLI runner and interactive terminal wizard.
 * **`config_s2.json`**: Active configuration containing CDSE credentials, spectral bands, DOYs, and working directories.
 * **`config_s2.example.json`**: Template configuration file.
-* **`modules/`**: Local processing modules:
+* **`modules/`**:
   * `s2_download_cdse.py`: Automated retrieval and SCL cloud masking from CDSE API.
-  * `s2_extract_creodias.py`: Direct extraction from local CreoDIAS archive (`Y:/Sentinel-2/MSI/L2A`).
-  * `s2_time_series.py`: Pure Python multi-temporal interpolation across 14 standardized DOYs.
-  * `s2_mosaic_stack.py`: Mosaicking, sub-pixel grid alignment to Sentinel-1, 126-band BigTIFF creation, and pyramid overview generation.
+  * `s2_extract_creodias.py`: Direct extraction from local CreoDIAS archive.
+  * `s2_time_series.py`: 14-DOY synthetic time-series interpolation.
+  * `s2_mosaic_stack.py`: SAR grid alignment, 126-band BigTIFF creation, and pyramid overview generation.
   * `s2_pipeline.py`: Object-oriented pipeline orchestrator.
-
----
-
-## Standardized agricultural DOYs & spectral bands
-
-* **14 reference dates**:
-  $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
-  *(from late March to mid-October)*
-* **9 spectral bands per DOY**:
-  `B02` (Blue), `B03` (Green), `B04` (Red), `B05` (RedEdge 1), `B06` (RedEdge 2), `B07` (RedEdge 3), `B8A` (Narrow NIR), `B11` (SWIR 1), `B12` (SWIR 2).
-* **Total layers**: $14\text{ dates} \times 9\text{ bands} = 126\text{ spectral bands}$ per orbit.
 
 ---
 
 ## Execution commands
 
-### 1. Interactive wizard (recommended for beginners)
+### 1. Interactive wizard mode (zero-argument launch)
 ```powershell
 python run_s2_preprocessor.py
 ```
 
-### 2. Automated country-wide processing
+### 2. Country-wide automated execution
 ```powershell
-# Full automated run for Portugal (multi-core, 8 worker threads):
+# Full automated run for Portugal (orbit 52 and orbit 125, 8 parallel threads):
 python run_s2_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
 
 # Full automated run for the Netherlands:
@@ -79,7 +134,7 @@ python run_s2_preprocessor.py --country PL -s 2024-10-15 -e 2025-09-15 --stage A
 # Process single orbit track:
 python run_s2_preprocessor.py --track PT/orbit_52 -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
 
-# Run specific single stage (e.g. Stage 3 only):
+# Run specific single stage (e.g. Stage 3 mosaic and stack only):
 python run_s2_preprocessor.py --track PT/orbit_52 --stage 3 --threads 8
 ```
 
@@ -94,19 +149,18 @@ python run_s2_preprocessor.py --track PT/orbit_52 --stage 3 --threads 8
 | `-s, --start_date` | string | `2024-10-15` | Start date of agricultural season (`YYYY-MM-DD`). |
 | `-e, --end_date` | string | `2025-09-15` | End date of agricultural season (`YYYY-MM-DD`). |
 | `--cloud_cover` | int | `80` | Maximum allowable tile cloud cover percentage (0 to 100). |
-| `--source` | choice | `cdse` | Data source: `cdse` (Copernicus API) or `creodias` (local repository). |
+| `--source` | choice | `cdse` | Data source: `cdse` (Copernicus API) or `creodias` (local archive). |
 | `--threads` | int | `8` | Number of parallel worker threads for multi-temporal interpolation. |
 | `--stage` | string | `None` | Stage to execute: `A` (all stages), `1` (download/extract), `2` (time-series), `3` (mosaic & stack). |
 | `--overwrite` | flag | `False` | Force recomputation of already existing output files. |
 
 ---
 
-## Output products
+## Transient disk space & cleanup guidelines
 
-The final optical multi-temporal BigTIFF stack is saved in:
-`workingDirs/{COUNTRY}/orbit_{ORBIT}/1_input_stacks/{COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif`
+Sentinel-2 preprocessing creates intermediate daily mosaics and tile slices:
+* **`_temp_processing/`** ($\sim 100\text{ to }150\text{ GB}$ per orbit): Extracted tiles and DOY mosaics.
+* **`1_input_stacks/`** ($\sim 120\text{ to }180\text{ GB}$ per orbit): Final 126-band BigTIFF stack.
 
-* Coordinate reference system: `EPSG:3857` (Web Mercator)
-* Pixel resolution: Exactly $10.0\text{ m} \times 10.0\text{ m}$ (matched 1:1 to Sentinel-1)
-* Band count: 126 spectral layers
-* Compression: `DEFLATE` with multi-scale pyramid overviews (`[2, 4, 8, 16, 32, 64]`).
+> [!TIP]
+> Once Stage 3 completes and `*_S2_timeseries.tif` is verified, the entire `_temp_processing/` directory can be deleted to recover $\sim 130\text{ GB}$ of disk space.

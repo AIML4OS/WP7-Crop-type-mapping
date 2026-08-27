@@ -1,38 +1,162 @@
 # Multimodal machine learning classifier & national merger toolbox
 
-This toolbox provides object-based image analysis (OBIA) crop type classification using multimodal fusion of **Sentinel-1 SAR** and **Sentinel-2 optical** time series, **NASA Harvest Presto foundation model embeddings**, deep neural networks, gradient boosted decision trees, and Bayesian statistical prior calibration.
+This toolbox provides an enterprise-grade, object-based image analysis (OBIA) crop type classification suite powered by multimodal fusion of **Sentinel-1 SAR** and **Sentinel-2 optical** time series, **NASA Harvest Presto geospatial foundation model embeddings**, deep neural networks, gradient boosted decision trees, and Bayesian statistical prior calibration.
 
 ---
 
-## Architecture overview
+## Scientific methodology & artificial intelligence architecture
+
+### 1. NASA Harvest Presto geospatial foundation model
+**Presto** is a state-of-the-art transformer foundation model pretrained on global, multi-sensor Earth observation time series:
+* **Transformer encoder architecture**: Operates across irregular multi-temporal sequences using self-attention mechanisms to capture complex crop phenological dynamics and vegetative life cycles.
+* **Multi-sensor tokenization**: Encodes raw Sentinel-1 radar backscatter ($\sigma^0_{VV}, \sigma^0_{VH}$) and Sentinel-2 optical reflectances ($B02$–$B12$) into unified high-dimensional latent space.
+* **Spatial & temporal position encodings**: Integrates continuous geographic coordinates $(\text{latitude}, \text{longitude})$ through sinusoidal positional embeddings and seasonal acquisition month tokens, providing geographic and climatological context.
+* **Latent token extraction**: Generates **128-dimensional multi-temporal token embeddings** from S1 SAR sequences and **128-dimensional embeddings** from S2 optical sequences, providing representations that surpass standard handcrafted index statistics.
+
+### 2. Vision foundation model: Meta AI SAM (Segment Anything)
+* Utilizes deep Vision Transformer (ViT) backbones (`vit_h`, `vit_l`, `vit_b`) adapted for satellite remote sensing.
+* Generates field parcel boundaries from multi-temporal composite rasters with sub-pixel boundary precision, bilateral edge preservation, and distance transform hole-filling.
+
+### 3. Unified PyTorch Deep MLP + XGBoost fusion ensemble
+* **PyTorch Deep MLP**: 3-layer neural network with Batch Normalization (`BatchNorm1d`), Dropout ($p=0.3$), Class-weighted Cross-Entropy loss, and Cosine Annealing learning rate schedule:
+  $$\mathcal{L} = -\sum_{c=1}^C w_c \cdot y_c \cdot \log(p_c)$$
+* **XGBoost GBDT**: Ensemble of 250 gradient boosted decision trees (`max_depth=6`, `subsample=0.8`, `colsample_bytree=0.25`) with histogram-based splitting (`tree_method='hist'`).
+* **Soft-voting probability blend**: Combines predicted class probability distributions from both models:
+  $$\hat{P}(C_i | X) = 0.65 \cdot P_{\text{MLP}}(C_i | X) + 0.35 \cdot P_{\text{XGB}}(C_i | X)$$
+
+### 4. Bayesian prior probability calibration
+Standard machine learning models trained on balanced samples overestimate rare crops and underestimate dominant crops in real landscapes. The pipeline resolves this by applying Bayesian prior probability calibration:
+
+$$P_{\text{calibrated}}(C_i | X) = \frac{P_{\text{model}}(C_i | X) \cdot \left(\frac{P_{\text{true}}(C_i)}{P_{\text{train}}(C_i)}\right)^\gamma}{\sum_{j=1}^K P_{\text{model}}(C_j | X) \cdot \left(\frac{P_{\text{true}}(C_j)}{P_{\text{train}}(C_j)}\right)^\gamma}$$
+
+Where:
+* $P_{\text{model}}(C_i | X)$ is the soft-voting ensemble prediction probability.
+* $P_{\text{true}}(C_i)$ is the true statistical crop area proportion obtained from national agricultural registries (`priors.json`).
+* $P_{\text{train}}(C_i)$ is the training sample proportion.
+* $\gamma = 0.7$ is the calibration damping exponent preventing extreme boundary distortions.
+
+---
+
+## Processing flowchart & classification pipeline architecture
 
 ```
 +----------------------------------------------------------------------------------------------------+
-|                                      MULTIMODAL CLASSIFICATION SUITE                               |
+|                         MULTIMODAL MACHINE LEARNING PIPELINE FLOWCHART                             |
 +----------------------------------------------------------------------------------------------------+
-|  [0] Footprint Gen.     --> Intersection of valid S1 SAR and S2 Optical coverage                   |
-|  [1] Segmentation       --> Object delineation: SLIC superpixels / Meta AI SAM / LPIS parcels      |
-|  [2] Sample Partition   --> Stratified split: 70% Learn (train) / 30% Control (validation)         |
-|  [3] Feature Extraction --> S1 Stats + S2 Reflectances + Presto 128d S1/S2 Token Embeddings        |
-|  [4] Model Training     --> Class-weighted PyTorch Deep MLP + XGBoost GBDT Fusion Ensemble         |
-|  [5] Vectorized Infer.  --> High-performance tile inference with Bayesian Prior Calibration        |
-|  [6] Cropland Masking   --> Agricultural mask application & non-cropland suppression               |
-|  [7] Accuracy Reporting --> Out-of-bag validation metrics, F1-scores, and styled Excel report      |
-+----------------------------------------------------------------------------------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 0: Multimodal Data Footprint Generation]          |
+                     | Intersection of valid S1 SAR and S2 Optical coverage     |
+                     | -> Output: {COUNTRY}_{ORBIT}_data_footprint.tif          |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 1: Object-Based Image Segmentation]               |
+                     | Delineation of agricultural field objects:               |
+                     | - Mode 1: SLIC Superpixels (Fast, 64px buffered tiles)   |
+                     | - Mode 2: Meta AI SAM (Vision Transformer Foundation)    |
+                     | - Mode 3: LPIS Cadastre (Official European Parcel GPKG)  |
+                     | -> Output: {COUNTRY}_{ORBIT}_segmentation_{MODE}.tif     |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 2: Stratified Sample Point Partitioning]          |
+                     | Splits samples.shp into:                                 |
+                     | - 70% Training / Learn dataset (learn_{MODE}.shp)        |
+                     | - 30% Independent Validation (control_{MODE}.shp)        |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 3: Multimodal Feature Extraction]                 |
+                     | 1. S1 temporal backscatter stats (VH, VV, VH/VV)         |
+                     | 2. S2 surface reflectances (B02-B12) & dynamic NDVI      |
+                     | 3. NASA Harvest Presto 128d S1 + 128d S2 Token Embeddings|
+                     | -> Output: {COUNTRY}_{ORBIT}_features_{MODE}.csv         |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 4: Fusion Ensemble Training]                      |
+                     | 1. Class-weighted PyTorch Deep MLP (BatchNorm, Dropout)  |
+                     | 2. XGBoost GBDT (250 trees, max_depth=6, hist-split)     |
+                     | 3. Fit soft-voting ensemble & standard scaler            |
+                     | -> Output: {COUNTRY}_{ORBIT}_model_{MODE}.pkl            |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 5: High-Performance Vectorized Inference]         |
+                     | 1. Tile-level block I/O (Read full 2048x2048 tile once)  |
+                     | 2. Vectorized np.bincount zonal stats across 170 bands   |
+                     | 3. Presto batched embedding forward pass & MLP+XGB infer |
+                     | 4. Bayesian prior calibration adjustment                 |
+                     | 5. O(1) LUT raster reconstruction                        |
+                     | -> Output: classified_{MODE}.tif & confidence_{MODE}.tif |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 6: Cropland & Data Footprint Masking]             |
+                     | Suppresses non-agricultural areas (forests, water, urban)|
+                     | -> Output: classified_masked.tif & confidence_masked.tif |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Stage 7: Out-of-Bag Validation & Excel Reporting]       |
+                     | Evaluates against 30% control dataset:                   |
+                     | - Overall Accuracy (OA) and Cohen's Kappa (kappa)        |
+                     | - Full confusion matrix (ground truth vs predictions)    |
+                     | - Per-crop Precision, Recall, and F1-scores              |
+                     | -> Output: report_{COUNTRY}_{ORBIT}_metrics.xlsx         |
+                     +----------------------------------------------------------+
 ```
 
 ---
 
-## File structure
+## Phase 4: Nationwide multi-orbit merging flowchart (`run_merge.py`)
 
-* **`run_classifier.py`**: Unified master CLI runner and interactive terminal wizard for Stages 0 through 7.
-* **`run_merge.py`**: Multi-orbit nationwide confidence mosaic merger (Phase 4).
-* **`modules/`**: Core classification engines:
-  * `classifier_mlpxgb_presto.py`: Multimodal fusion ensemble combining NASA Harvest Presto transformer embeddings, PyTorch Deep MLP, and XGBoost GBDT (`[S1 + S2] [SOTA]`).
-  * `classifier_presto_s1.py`: Single-radar Presto artificial neural network for SAR-only classification (`[S1 only]`).
-  * `classifier_otb.py`: Orfeo ToolBox machine learning models (Random Forest / Support Vector Machines) (`[S1 + S2]`).
-  * `multi_orbit_merger.py`: Nationwide multi-orbit confidence merger and morphological sieve post-processing.
-  * `presto_model.py`: Embedded NASA Harvest Presto transformer foundation architecture.
+```
++----------------------------------------------------------------------------------------------------+
+|                         PHASE 4: NATIONWIDE MERGE PIPELINE FLOWCHART                               |
++----------------------------------------------------------------------------------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Orbit 1 Track Map]           [Orbit 2 Track Map]        |
+                     | - Classified GeoTIFF          - Classified GeoTIFF       |
+                     | - Confidence GeoTIFF          - Confidence GeoTIFF       |
+                     +---------------------+--------------------+---------------+
+                                           |                    |
+                                           +---------+----------+
+                                                     |
+                                                     v
+                     +----------------------------------------------------------+
+                     | [Multi-Orbit Confidence-Weighted Blending]               |
+                     | In overlapping swath zones:                              |
+                     | Pixel = Orbit_1 if Conf_1 > Conf_2 else Orbit_2          |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [Post-Processing & Masking]                              |
+                     | 1. Morphological sieve filtering (clump size < 10 px)    |
+                     | 2. National agricultural cropland mask application       |
+                     | 3. Aggregated national confusion matrix computation      |
+                     +----------------------------+-----------------------------+
+                                                  |
+                                                  v
+                     +----------------------------------------------------------+
+                     | [National Products: national_products/]                  |
+                     | 1. {COUNTRY}_national_crop_map_{MODE}.tif                |
+                     | 2. {COUNTRY}_national_confidence_{MODE}.tif              |
+                     | 3. {COUNTRY}_national_accuracy_report_{MODE}.xlsx        |
+                     +----------------------------------------------------------+
+```
 
 ---
 
