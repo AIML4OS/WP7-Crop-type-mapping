@@ -433,25 +433,21 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
         if band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024:
             continue
 
-        band_dst_tmp = output_dest_dir / f"{stem_name}_{band}_20m.tmp.tif"
         try:
             ds = gdal.Open(str(band_src))
             if ds is not None:
                 options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
-                gdal.Translate(str(band_dst_tmp), ds, options=options)
+                out_ds = gdal.Translate(str(band_dst_tif), ds, options=options)
+                out_ds = None  # Explicitly close and flush to disk to avoid Windows handle locks
                 ds = None
-                if band_dst_tmp.exists() and band_dst_tmp.stat().st_size > 1024:
-                    if band_dst_tif.exists():
-                        band_dst_tif.unlink()
-                    band_dst_tmp.rename(band_dst_tif)
-                else:
+                if not (band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024):
                     success = False
             else:
                 success = False
         except Exception as e:
             logging.error(f"Failed converting {band_src.name}: {e}")
-            if band_dst_tmp.exists():
-                try: band_dst_tmp.unlink()
+            if band_dst_tif.exists():
+                try: band_dst_tif.unlink()
                 except: pass
             success = False
     return success
