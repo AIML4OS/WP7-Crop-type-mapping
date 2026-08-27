@@ -6,7 +6,7 @@ This toolbox provides an enterprise-grade, object-based image analysis (OBIA) cr
 
 ## Scientific methodology & artificial intelligence architecture
 
-### 1. Multimodal Dual-Tier Feature Fusion Architecture
+### 1. Multimodal dual-tier feature fusion architecture
 
 The classification suite combines handcrafted physical remote sensing features with self-supervised geospatial foundation model latent representations:
 
@@ -46,45 +46,45 @@ The classification suite combines handcrafted physical remote sensing features w
 +----------------------------------------------------------------------------------------------------+
 ```
 
-#### Tier 1: Handcrafted Temporal & Spectral Features
+#### Tier 1: Handcrafted temporal & spectral features
 * **Sentinel-1 SAR temporal moments**: For each polarization ($VV$, $VH$) and cross-ratio ($VH/VV$), the pipeline extracts statistical moments across the agricultural calendar:
   $$\mu = \frac{1}{N}\sum_{t=1}^N \sigma^0_t, \quad \sigma = \sqrt{\frac{1}{N}\sum_{t=1}^N (\sigma^0_t - \mu)^2}, \quad \text{Min}, \quad \text{Max}, \quad \Delta \text{dB} = \text{Max} - \text{Min}$$
   These metrics capture surface roughness, canopy closure speed, and abrupt drops in backscatter caused by harvesting.
 * **Sentinel-2 multi-spectral trajectories**: Standardized 14-DOY reflectances across 9 spectral bands ($14 \times 9 = 126$ features) plus time-series vegetation indices ($\text{NDVI}(t)$, $\text{NDRE1}(t)$, $\text{NDRE2}(t)$, $\text{NDWI}(t)$) tracking chlorophyll absorption, red-edge shift, and canopy moisture.
 
-#### Tier 2: NASA Harvest Presto 256-Dimensional Foundation Embeddings
+#### Tier 2: NASA Harvest Presto 256-dimensional foundation embeddings
 NASA Harvest Presto encodes raw multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into two 128-dimensional latent vectors:
 $$E_{\text{S1}} \in \mathbb{R}^{128} \quad (\text{SAR dynamics}), \qquad E_{\text{S2}} \in \mathbb{R}^{128} \quad (\text{Optical dynamics})$$
 
-#### Unified Concatenated Feature Vector
+#### Unified concatenated feature vector
 The complete feature vector combines domain-specific physical interpretability with deep self-supervised representation learning:
 $$X_{\text{fused}} = \left[ F_{\text{S1\_stats}} \,\|\, F_{\text{S2\_spectral}} \,\|\, E_{\text{Presto\_S1}} \,\|\, E_{\text{Presto\_S2}} \right] \in \mathbb{R}^{D}$$
 
 ---
 
-### 2. Hybrid Multi-Paradigm Machine Learning Ensemble
+### 2. Hybrid multi-paradigm machine learning ensemble
 
 Why combine Deep Neural Networks (PyTorch MLP) with Gradient Boosted Decision Trees (XGBoost)?
 * **Deep Neural Networks (MLP)** excel at modeling smooth, continuous high-dimensional manifolds and projecting dense transformer embeddings.
 * **Gradient Boosted Decision Trees (XGBoost)** excel at modeling discrete tabular decision thresholds, sharp spectral cutoffs, and step-function phenological transitions.
 * **Complementary inductive biases**: Combining both architectures yields significantly lower generalization error and lower prediction variance than either model operating alone.
 
-#### PyTorch Deep MLP Architecture & Regularization
+#### PyTorch Deep MLP architecture & regularization
 * **Network Topology**: Input Layer ($D$ dims) $\rightarrow$ `Dense(512)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(p=0.3)` $\rightarrow$ `Dense(256)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(p=0.3)` $\rightarrow$ `Dense(128)` $\rightarrow$ Output ($K$ classes).
 * **Class-Weighted Cross-Entropy Loss**: Corrects for class imbalance between dominant cereals and minor specialty crops:
   $$\mathcal{L}_{\text{MLP}} = -\frac{1}{N}\sum_{i=1}^N \sum_{c=1}^K w_c \cdot y_{i,c} \cdot \log\left(\frac{\exp(z_{i,c})}{\sum_{j=1}^K \exp(z_{i,j})}\right), \quad \text{where } w_c = \frac{N}{K \cdot N_c}$$
 * **Cosine Annealing Learning Rate Schedule**: Smoothly decays learning rate to escape local minima:
   $$\eta_t = \eta_{\min} + \frac{1}{2}(\eta_{\max} - \eta_{\min})\left(1 + \cos\left(\frac{t}{T_{\max}}\pi\right)\right)$$
 
-#### XGBoost GBDT Engine
+#### XGBoost GBDT engine
 * Trained on 250 trees with histogram-based split binning (`tree_method='hist'`), maximum depth `max_depth=6`, learning rate $\eta = 0.08$, sample subsampling `subsample=0.8`, and column feature subsampling `colsample_bytree=0.25`.
 
-#### Soft-Voting Probability Blend
+#### Soft-voting probability blend
 Combines posterior probability distributions from both models:
 $$\hat{P}(C_k | X) = \alpha \cdot P_{\text{MLP}}(C_k | X) + (1 - \alpha) \cdot P_{\text{XGB}}(C_k | X)$$
 Where $\alpha = 0.65$ (MLP ensemble weight) and $1 - \alpha = 0.35$ (XGBoost ensemble weight).
 
-#### Bayesian Prior Probability Calibration
+#### Bayesian prior probability calibration
 Machine learning models trained on balanced samples overestimate rare crops and underestimate dominant crops. The pipeline applies Bayesian calibration to align raw model probabilities with official agricultural registry crop acreages (`priors.json`):
 
 $$P_{\text{calibrated}}(C_k | X) = \frac{\hat{P}(C_k | X) \cdot \left(\frac{P_{\text{true}}(C_k)}{P_{\text{train}}(C_k)}\right)^\gamma}{\sum_{j=1}^K \hat{P}(C_j | X) \cdot \left(\frac{P_{\text{true}}(C_j)}{P_{\text{train}}(C_j)}\right)^\gamma}$$
@@ -232,9 +232,9 @@ Where:
 
 ---
 
-## Segmentation & Data Footprinting Deep Dive
+## Segmentation & data footprinting deep dive
 
-### 1. Multi-Temporal S1 SAR Mean Amplitude Composite for Segmentation
+### 1. Multi-temporal S1 SAR mean amplitude composite for segmentation
 Directly segmenting single-date SAR imagery is problematic due to **multiplicative speckle noise** ($\text{Rayleigh}$ or $\text{Gamma}$ distributed intensity fluctuations). 
 
 To overcome this, before running image segmentation, Stage 1 generates a **multi-temporal mean amplitude composite** across all valid radar dates in the agricultural calendar ($N \approx 20\text{--}40$ acquisitions):
@@ -244,7 +244,7 @@ $$\bar{\sigma}^0_{\text{temporal}}(x, y) = \frac{1}{N} \sum_{k=1}^N \sigma^0_k(x
 * **Speckle variance suppression**: The temporal multi-look averaging reduces speckle noise variance by a factor of $1/N$, yielding an effective number of looks $\text{ENL} \approx N$.
 * **Stationary parcel edge enhancement**: While vegetative backscatter changes over the season, physical landscape boundaries (field margins, ditches, roads, hedgerows, fences) remain geometrically stationary throughout the year. Temporal averaging highlights these stationary boundaries while smoothing interior field variance, providing an optimal input raster for boundary delineation.
 
-### 2. OBIA Segmentation Algorithms
+### 2. OBIA segmentation algorithms
 
 #### Mode 1: SLIC (Simple Linear Iterative Clustering - Recommended)
 * Operates in a 5D space combining radiometric intensity and 2D geographic coordinates:
@@ -258,12 +258,12 @@ $$\bar{\sigma}^0_{\text{temporal}}(x, y) = \frac{1}{N} \sum_{k=1}^N \sigma^0_k(x
 * Automatically distributes a structured prompt grid across composite rasters.
 * Implements **bilateral edge filtering** and **distance transform hole-filling** to close internal parcel gaps and produce smooth field geometries.
 
-#### Mode 3: LPIS Cadastre (Official European Agricultural Parcels)
+#### Mode 3: LPIS cadastre (official European agricultural parcels)
 * Ingests official vector databases (`.gpkg` or `.shp`) provided by national paying agencies (e.g., BRP in the Netherlands, ISIP in Portugal, ARiMR in Poland).
 * Uses high-speed spatial bounding-box filtering (`pyogrio` with R-Tree spatial indexing) to extract intersecting parcels.
 * Reprojects and rasterizes vectors into a $10.0\text{ m}$ `UInt32` grid in `EPSG:3857`.
 
-### 3. Multimodal Data Footprint Generation (`*_data_footprint.tif`)
+### 3. Multimodal data footprint generation (`*_data_footprint.tif`)
 Because Sentinel-1 SAR orbits are tilted (inclined polar orbits) while Sentinel-2 optical granules follow UTM MGRS tiles, their valid observation swaths do not perfectly overlap. 
 
 In Stage 0, the pipeline generates a **multimodal data footprint mask**:
@@ -344,7 +344,7 @@ python run_merge.py --country PT --seg_mode lpis
 
 ---
 
-## Complete Output Products & Intermediate Artifacts
+## Complete output products & intermediate artifacts
 
 All classification outputs are stored sequentially by stage in `workingDirs/{COUNTRY}/orbit_{ORBIT}/2_classification/`:
 

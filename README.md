@@ -130,7 +130,7 @@ Sentinel-1 operates at C-band Synthetic Aperture Radar frequency ($f = 5.405\tex
 +----------------------------------------------------------------------------------------------------+
 ```
 
-#### 1. Fundamental Radar Equation for Distributed Agricultural Targets
+#### 1. Fundamental radar equation for distributed agricultural targets
 The received radar backscatter power $P_r$ from an agricultural field of ground resolution area $A_{\text{ground}}$ is governed by:
 
 $$P_r = \frac{P_t G^2 \lambda^2 \sigma^0 A_{\text{ground}}}{(4\pi)^3 R^4}$$
@@ -141,12 +141,12 @@ Where:
   $$\sigma^0_i = \frac{|DN_i|^2}{A_i^2}$$
   Where $DN_i$ is digital number amplitude and $A_i$ is the calibration look-up table (LUT) gain.
 
-#### 2. Radiometric Terrain Correction (RTC) & Decibel Transformation
+#### 2. Radiometric terrain correction (RTC) & decibel transformation
 To eliminate topographic illumination distortions on sloped terrain, backscatter is orthorectified using Copernicus 30 m DEM and converted to decibels:
 
 $$\sigma^0_{\text{dB}} = 10 \cdot \log_{10}(\sigma^0)$$
 
-#### 3. Agricultural Polarimetric Indices
+#### 3. Agricultural polarimetric indices
 * **Radar Vegetation Index (RVI)**: Measures canopy volume scattering relative to total backscatter:
   $$\text{RVI} = \frac{4 \cdot \sigma^0_{VH}}{\sigma^0_{VV} + \sigma^0_{VH}}$$
 * **Polarimetric Cross-Ratio (CR)**:
@@ -160,13 +160,13 @@ Captures Bottom-Of-Atmosphere (BOA) surface reflectances across 9 spectral bands
 
 $$\rho_{\text{BOA}}(\lambda) = \frac{\pi \cdot (L_{\text{TOA}}(\lambda) - L_{\text{path}}(\lambda))}{\tau_v(\lambda) \cdot [E_0(\lambda) \cdot \cos \theta_s \cdot \tau_s(\lambda) + E_{\text{down}}(\lambda)]}$$
 
-#### 1. Spectral Band Sensitivities:
+#### 1. Spectral band sensitivities
 * **Visible bands (`B02` Blue 490 nm, `B03` Green 560 nm, `B04` Red 665 nm)**: Sensitive to photosynthetic chlorophyll $a$ and $b$ absorption.
 * **RedEdge bands (`B05` 705 nm, `B06` 740 nm, `B07` 783 nm)**: Capture the steep reflectance transition edge; highly sensitive to canopy nitrogen, leaf chlorophyll concentration, and early senescence.
 * **Narrow NIR (`B8A` 865 nm)**: Measures internal leaf mesophyll cellular scattering, avoiding atmospheric water vapor absorption in broad `B08`.
 * **Shortwave Infrared (`B11` 1610 nm, `B12` 2190 nm)**: Sensitive to foliar water content and dry cellulose matter.
 
-#### 2. Narrow-Band Agricultural Indices:
+#### 2. Narrow-band agricultural indices
 * **Normalized Difference Vegetation Index (NDVI)**:
   $$\text{NDVI} = \frac{\text{B8A} - \text{B04}}{\text{B8A} + \text{B04}}$$
 * **Red-Edge Chlorophyll Index (NDRE1 & NDRE2)**:
@@ -174,7 +174,7 @@ $$\rho_{\text{BOA}}(\lambda) = \frac{\pi \cdot (L_{\text{TOA}}(\lambda) - L_{\te
 * **Normalized Difference Water Index (NDWI / NDII)**:
   $$\text{NDWI} = \frac{\text{B8A} - \text{B11}}{\text{B8A} + \text{B11}}$$
 
-#### 3. Standardized 14-DOY Agricultural Nodes:
+#### 3. Standardized 14-DOY agricultural nodes
 Temporal observations are interpolated into 14 standardized agricultural reference dates (Day of Year):
 $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
 Constructing a unified $14\text{ DOYs} \times 9\text{ bands} = 126\text{-band}$ multi-temporal spectral cube.
@@ -191,9 +191,9 @@ $$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right
 * **Sinusoidal spatio-temporal embeddings**: Encodes continuous geographic coordinates $(\text{latitude}, \text{longitude})$ and seasonal acquisition months, conditioning model attention on geographic and bioclimatic context.
 * **Latent representation extraction**: Outputs **128-dimensional multi-temporal token embeddings** from S1 SAR sequences and **128-dimensional embeddings** from S2 optical sequences, capturing complex non-linear phenological dynamics superior to standard handcrafted summary metrics.
 
-### Object-Based Image Analysis (OBIA) & Segmentation Deep Dive
+### Object-based image analysis (OBIA) & segmentation deep dive
 
-#### 1. Multi-Temporal S1 SAR Summed / Mean Composite Generation
+#### 1. Multi-temporal S1 SAR summed / mean composite generation
 Single-date Synthetic Aperture Radar (SAR) imagery inherently suffers from **multiplicative speckle noise** caused by random constructive and destructive interference of coherent backscatter waves from distributed scatterers within a resolution cell. 
 
 In our pipeline, before performing segmentation, we compute a **multi-temporal mean amplitude composite** across all valid radar acquisitions spanning the entire agricultural season ($N \approx 20\text{--}40$ dates):
@@ -204,7 +204,7 @@ $$\bar{\sigma}^0_{\text{temporal}} = \frac{1}{N} \sum_{k=1}^N \sigma^0_k(x, y)$$
   $$\text{Var}(\bar{I}) = \frac{\sigma^2}{N}$$
 * **Stationary boundary enhancement**: While crops undergo seasonal phenological cycles, permanent agricultural landscape elements (field boundaries, farm tracks, drainage ditches, hedgerows, and parcel borders) maintain stable geometric and dielectric boundaries. Multi-temporal averaging sharpens these boundaries while smoothing out transient field-interior speckle, producing the ideal input for high-precision segmentation.
 
-#### 2. Segmentation Modes in Detail
+#### 2. Segmentation modes in detail
 
 ```
 +----------------------------------------------------------------------------------------------------+
@@ -233,7 +233,7 @@ $$\bar{\sigma}^0_{\text{temporal}} = \frac{1}{N} \sum_{k=1}^N \sigma^0_k(x, y)$$
   - Ingests official national cadastral parcel boundary datasets (`.gpkg` or `.shp`) provided by Member State paying agencies (e.g. BRP in the Netherlands, ISIP in Portugal, ARiMR in Poland).
   - Employs **R-Tree spatial indexing** to assign every registered agricultural polygon a unique 32-bit `segment_id` rasterized at $10.0\text{ m}$ in `EPSG:3857`.
 
-#### 3. Multimodal Data Footprint Generation (`*_footprint.tif`)
+#### 3. Multimodal data footprint generation (`*_footprint.tif`)
 Satellite tracks are captured along inclined orbits (descending $\approx -12^\circ$, ascending $\approx +12^\circ$), creating slanted swath edges and variable spatial bounds between radar (S1) and optical (S2) sensors.
 
 In Stage 0, the pipeline computes a **binary multimodal data footprint raster**:
@@ -243,7 +243,7 @@ $$\text{Footprint}(x, y) = \begin{cases} 1 & \text{if } \text{Valid}(\text{S1}_{
 * **Eliminates edge distortion**: Strictly bounds feature extraction and model inference to pixels where all $170+$ radar and optical bands have valid, uncorrupted physical measurements.
 * **Prevents no-data classification**: Ensures that partial-coverage edges outside the satellite swath are masked out, preventing false classifications along boundary margins.
 
-### Multimodal Feature Fusion Architecture
+### Multimodal feature fusion architecture
 
 ```
 +----------------------------------------------------------------------------------------------------+
@@ -281,45 +281,45 @@ $$\text{Footprint}(x, y) = \begin{cases} 1 & \text{if } \text{Valid}(\text{S1}_{
 +----------------------------------------------------------------------------------------------------+
 ```
 
-#### 1. Tier 1: Handcrafted Temporal & Spectral Features
+#### 1. Tier 1: Handcrafted temporal & spectral features
 * **Sentinel-1 SAR temporal moments**: For each polarization ($VV$, $VH$) and cross-ratio ($VH/VV$), the pipeline extracts statistical moments across the agricultural calendar:
   $$\mu = \frac{1}{N}\sum_{t=1}^N \sigma^0_t, \quad \sigma = \sqrt{\frac{1}{N}\sum_{t=1}^N (\sigma^0_t - \mu)^2}, \quad \text{Min}, \quad \text{Max}, \quad \Delta \text{dB} = \text{Max} - \text{Min}$$
   These metrics capture surface roughness, canopy closure speed, and abrupt drops in backscatter caused by harvesting.
 * **Sentinel-2 multi-spectral trajectories**: Standardized 14-DOY reflectances across 9 spectral bands ($14 \times 9 = 126$ features) plus time-series vegetation indices ($\text{NDVI}(t)$, $\text{NDRE1}(t)$, $\text{NDRE2}(t)$, $\text{NDWI}(t)$) tracking chlorophyll absorption, red-edge shift, and canopy moisture.
 
-#### 2. Tier 2: NASA Harvest Presto 256-Dimensional Foundation Embeddings
+#### 2. Tier 2: NASA Harvest Presto 256-dimensional foundation embeddings
 NASA Harvest Presto encodes raw multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into two 128-dimensional latent vectors:
 $$E_{\text{S1}} \in \mathbb{R}^{128} \quad (\text{SAR dynamics}), \qquad E_{\text{S2}} \in \mathbb{R}^{128} \quad (\text{Optical dynamics})$$
 
-#### 3. Unified Concatenated Feature Vector
+#### 3. Unified concatenated feature vector
 The complete feature vector combines domain-specific physical interpretability with deep self-supervised representation learning:
 $$X_{\text{fused}} = \left[ F_{\text{S1\_stats}} \,\|\, F_{\text{S2\_spectral}} \,\|\, E_{\text{Presto\_S1}} \,\|\, E_{\text{Presto\_S2}} \right] \in \mathbb{R}^{D}$$
 
 ---
 
-### Hybrid Multi-Paradigm Machine Learning Ensemble
+### Hybrid multi-paradigm machine learning ensemble
 
 Why combine Deep Neural Networks (PyTorch MLP) with Gradient Boosted Decision Trees (XGBoost)?
 * **Deep Neural Networks (MLP)** excel at modeling smooth, continuous high-dimensional manifolds and projecting dense transformer embeddings.
 * **Gradient Boosted Decision Trees (XGBoost)** excel at modeling discrete tabular decision thresholds, sharp spectral cutoffs, and step-function phenological transitions.
 * **Complementary inductive biases**: Combining both architectures yields significantly lower generalization error and lower prediction variance than either model operating alone.
 
-#### 1. PyTorch Deep MLP Architecture & Regularization
+#### 1. PyTorch Deep MLP architecture & regularization
 * **Network Topology**: Input Layer ($D$ dims) $\rightarrow$ `Dense(512)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(p=0.3)` $\rightarrow$ `Dense(256)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(p=0.3)` $\rightarrow$ `Dense(128)` $\rightarrow$ Output ($K$ classes).
 * **Class-Weighted Cross-Entropy Loss**: Corrects for class imbalance between dominant cereals and minor specialty crops:
   $$\mathcal{L} = -\frac{1}{N}\sum_{i=1}^N \sum_{c=1}^K w_c \cdot y_{i,c} \cdot \log\left(\frac{\exp(z_{i,c})}{\sum_{j=1}^K \exp(z_{i,j})}\right), \quad \text{where } w_c = \frac{N}{K \cdot N_c}$$
 * **Cosine Annealing Learning Rate Schedule**: Smoothly decays learning rate to escape local minima:
   $$\eta_t = \eta_{\min} + \frac{1}{2}(\eta_{\max} - \eta_{\min})\left(1 + \cos\left(\frac{t}{T_{\max}}\pi\right)\right)$$
 
-#### 2. XGBoost GBDT Engine
+#### 2. XGBoost GBDT engine
 * Trained on 250 trees with histogram-based split binning (`tree_method='hist'`), maximum depth `max_depth=6`, learning rate $\eta = 0.08$, sample subsampling `subsample=0.8`, and column feature subsampling `colsample_bytree=0.25`.
 
-#### 3. Soft-Voting Probability Blend
+#### 3. Soft-voting probability blend
 Combines posterior probability distributions from both models:
 $$\hat{P}(C_k | X) = \alpha \cdot P_{\text{MLP}}(C_k | X) + (1 - \alpha) \cdot P_{\text{XGB}}(C_k | X)$$
 Where $\alpha = 0.65$ (MLP ensemble weight) and $1 - \alpha = 0.35$ (XGBoost ensemble weight).
 
-#### 4. Bayesian Prior Probability Calibration
+#### 4. Bayesian prior probability calibration
 Machine learning models trained on balanced samples overestimate rare crops and underestimate dominant crops. The pipeline applies Bayesian calibration to align raw model probabilities with official agricultural registry crop acreages (`priors.json`):
 
 $$P_{\text{calibrated}}(C_k | X) = \frac{\hat{P}(C_k | X) \cdot \left(\frac{P_{\text{true}}(C_k)}{P_{\text{train}}(C_k)}\right)^\gamma}{\sum_{j=1}^K \hat{P}(C_j | X) \cdot \left(\frac{P_{\text{true}}(C_j)}{P_{\text{train}}(C_j)}\right)^\gamma}$$
@@ -800,16 +800,16 @@ To process nationwide multi-temporal satellite rasters exceeding $100\text{ GB}$
 +----------------------------------------------------------------------------------------------------+
 ```
 
-### 1. Vectorized Block I/O vs Random Access
+### 1. Vectorized block I/O vs random access
 * **Legacy GIS approaches**: Iterate through polygon geometries or sample points one-by-one, issuing millions of micro-seek system calls (`read()` / `fseek()`) to the filesystem, causing severe disk thrashing on network/HDD storage.
 * **v2.5 Architecture**: Divides the raster into regular $2048 \times 2048$ processing blocks. All $170+$ radar and optical bands are read sequentially in a single contiguous memory operation, eliminating $99.83\%$ of filesystem I/O system calls.
 
-### 2. $O(1)$ Array Indexing Lookup Table (LUT) Reconstruction
+### 2. $O(1)$ array indexing lookup table (LUT) reconstruction
 * Rather than performing spatial raster masking for every individual polygon, predictions and confidence values for all segment objects in a tile are stored in a 1D lookup array:
   $$\text{Raster}_{\text{classified}} = \text{LUT}_{\text{pred}}[\text{Segment}_{\text{tile}}]$$
 * **Performance**: Reconstructs a $2048 \times 2048$ classified tile in **$\approx 2\text{ ms}$**, compared to $2.5\text{ to }4\text{ minutes}$ in legacy dictionary iteration.
 
-### 3. OpenMP & BLAS Multi-Threading Isolation
+### 3. OpenMP & BLAS multi-threading isolation
 When running Python `multiprocessing` or `concurrent.futures.ProcessPoolExecutor`, internal scientific libraries (OpenMP, Intel MKL, OpenBLAS) default to spawning $T$ threads per process. On a 16-core CPU running 8 worker processes, this spawns $8 \times 16 = 128$ threads, causing severe CPU cache thrashing and kernel lock contention.
 
 The pipeline strictly isolates worker environments:
@@ -901,7 +901,7 @@ AIML_CropMapper_Cloud/
 └── README.md                            # Complete technical documentation
 ```
 
-### Complete Artifacts & Output File Lineage Catalog
+### Complete artifacts & output file lineage catalog
 
 The table below catalogs every intermediate and final output artifact generated across all pipeline stages:
 
