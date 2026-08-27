@@ -524,10 +524,13 @@ def process_orbit_cdse_s2(
     products = finder.search_by_geometry(orbit_geom, start_date, end_date, cloud_cover)
     logging.info(f"Discovered {len(products)} Sentinel-2 products on CDSE intersecting {track_name}.")
 
-    # Filter out products already converted
+    # Filter out products already converted and constrain strictly to country's official MGRS tiles
+    target_country_tiles = set(COUNTRY_MGRS_TILES.get(country_code.upper(), []))
     prods_to_process = []
     for prod in products:
         tile_upper = prod['tile'].upper()
+        if target_country_tiles and tile_upper not in target_country_tiles:
+            continue
         stem_name = prod['title'][:-5] if prod['title'].endswith('.SAFE') else prod['title']
         dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / stem_name
         check_b02 = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
