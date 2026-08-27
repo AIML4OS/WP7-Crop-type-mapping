@@ -22,6 +22,7 @@ import pathlib
 import re
 import sys
 import threading
+import time
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
