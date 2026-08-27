@@ -382,28 +382,43 @@ def scan_creodias_for_dates(
     while curr_date <= end_date:
         day_idx += 1
         day_dir = repo_path / str(curr_date.year) / f"{curr_date.month:02d}" / f"{curr_date.day:02d}"
-        if day_dir.exists() and day_dir not in checked:
-            checked.add(day_dir)
+        
+        # Robust network retry against Windows SMB I/O timeouts (WinError 1117)
+        day_exists = False
+        for attempt in range(3):
             try:
-                with os.scandir(str(day_dir)) as it:
-                    for entry in it:
-                        name = entry.name
-                        if name.startswith("S2") and name.endswith(".SAFE"):
-                            if target_tile_tags is None or any(tag in name for tag in target_tile_tags):
-                                tile_name, acq_date = extract_tile_and_date_from_safe_name(name)
-                                if start_date <= acq_date <= end_date:
-                                    safe_path = Path(entry.path)
-                                    cloud_pct = parse_metadata_cloud_cover(safe_path)
-                                    if cloud_pct <= max_cloud_cover:
-                                        matched.append({
-                                            'title': name,
-                                            'safe_path': safe_path,
-                                            'tile': tile_name,
-                                            'date': acq_date,
-                                            'cloud_cover': cloud_pct
-                                        })
-            except Exception as e:
-                logging.debug(f"Error scanning {day_dir}: {e}")
+                if os.path.exists(str(day_dir)):
+                    day_exists = True
+                    break
+            except OSError:
+                time.sleep(0.3)
+
+        if day_exists and day_dir not in checked:
+            checked.add(day_dir)
+            for attempt in range(3):
+                try:
+                    with os.scandir(str(day_dir)) as it:
+                        for entry in it:
+                            name = entry.name
+                            if name.startswith("S2") and name.endswith(".SAFE"):
+                                if target_tile_tags is None or any(tag in name for tag in target_tile_tags):
+                                    tile_name, acq_date = extract_tile_and_date_from_safe_name(name)
+                                    if start_date <= acq_date <= end_date:
+                                        safe_path = Path(entry.path)
+                                        cloud_pct = parse_metadata_cloud_cover(safe_path)
+                                        if cloud_pct <= max_cloud_cover:
+                                            matched.append({
+                                                'title': name,
+                                                'safe_path': safe_path,
+                                                'tile': tile_name,
+                                                'date': acq_date,
+                                                'cloud_cover': cloud_pct
+                                            })
+                    break
+                except OSError as e:
+                    if attempt == 2:
+                        logging.warning(f"Network glitch scanning day directory {day_dir}: {e}")
+                    time.sleep(0.5)
         curr_date += datetime.timedelta(days=1)
 
     logging.info(f"Found {len(matched)} matching S2 SAFE scenes in CREODIAS repo.")
