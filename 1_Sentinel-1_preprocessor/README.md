@@ -7,12 +7,24 @@ This toolbox provides an automated, scientific-grade preprocessing pipeline for 
 ## Scientific methodology & radar physics
 
 ### 1. Radar backscatter mechanisms in agriculture
-Sentinel-1 operates at C-band microwave frequency ($5.405\text{ GHz}$, wavelength $\lambda \approx 5.55\text{ cm}$). Unlike optical sensors, microwaves penetrate clouds, haze, and rain, interacting directly with the structural and dielectric properties of the vegetation canopy and soil:
+Sentinel-1 operates at C-band microwave frequency ($f = 5.405\text{ GHz}$, wavelength $\lambda \approx 5.55\text{ cm}$). Unlike optical sensors, microwaves penetrate clouds, haze, and rain, interacting directly with the structural and dielectric properties of the vegetation canopy and soil:
 * **$VV$ polarization (vertical transmit / vertical receive)**: Dominantly sensitive to surface roughness, soil moisture, and vertical canopy elements (e.g. cereal stems in wheat and barley).
 * **$VH$ polarization (vertical transmit / horizontal receive)**: Cross-polarization characterized by high sensitivity to volume scattering within the crop canopy, serving as a direct indicator of biomass accumulation, leaf density, and canopy closure.
 * **$VH/VV$ polarization ratio & cross-ratio**: Normalizes soil moisture variations, highlighting crop phenological transitions, stem elongation, and heading phases.
 
-### 2. Multi-temporal decorrelation & winter freeze filtering
+### 2. Fundamental Radar Equations & Polarimetry
+The received radar backscatter power $P_r$ from a distributed agricultural target is given by:
+
+$$P_r = \frac{P_t G^2 \lambda^2 \sigma^0 A_{\text{ground}}}{(4\pi)^3 R^4}$$
+
+* **Calibration to physical backscatter ($\sigma^0$)**:
+  $$\sigma^0_i = \frac{|DN_i|^2}{A_i^2}$$
+* **Radar Vegetation Index (RVI)**:
+  $$\text{RVI} = \frac{4 \cdot \sigma^0_{VH}}{\sigma^0_{VV} + \sigma^0_{VH}}$$
+* **Polarimetric Cross-Ratio (CR)**:
+  $$\text{CR}_{\text{dB}} = \sigma^0_{VH,\text{dB}} - \sigma^0_{VV,\text{dB}} = 10 \log_{10}\left(\frac{\sigma^0_{VH}}{\sigma^0_{VV}}\right)$$
+
+### 3. Multi-temporal decorrelation & winter freeze filtering
 During freezing temperatures, water transitions to ice, causing a dramatic drop in the dielectric constant ($\varepsilon_{\text{water}} \approx 80 \rightarrow \varepsilon_{\text{ice}} \approx 3.15$). This leads to an artificial backscatter drop of $4\text{ to }8\text{ dB}$. The pipeline includes an optional `--exclude_winter` filter that removes scenes between December 1 and February 14 to avoid training distortions.
 
 ---

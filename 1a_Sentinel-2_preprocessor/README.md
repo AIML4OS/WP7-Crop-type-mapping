@@ -6,16 +6,27 @@ This toolbox provides an automated processing pipeline for **Sentinel-2 multispe
 
 ## Scientific methodology & optical remote sensing
 
-### 1. Spectral bands & agricultural bio-physical indicators
-The pipeline utilizes 9 spectral bands at 10 m and 20 m spatial resolutions (resampled to 10 m):
-* **Visible bands (`B02` Blue, `B03` Green, `B04` Red)**: Sensitive to photosynthetic pigment absorption (chlorophyll $a$ and $b$).
-* **RedEdge bands (`B05` 705 nm, `B06` 740 nm, `B07` 783 nm)**: The sharp reflectance transition region between red absorption and NIR scattering; highly sensitive to canopy nitrogen, leaf area index (LAI), and early senescence.
-* **Narrow NIR (`B8A` 865 nm)**: Measures internal leaf cellular structure scattering, avoiding atmospheric water vapor contamination present in broad `B08`.
-* **Shortwave Infrared (`B11` 1610 nm, `B12` 2190 nm)**: Strongly absorbed by liquid water in plant cells; detects crop water stress, soil background moisture, and dry matter accumulation.
+### 1. Bottom-Of-Atmosphere (BOA) Surface Reflectance
+Sentinel-2 L2A data provides physically corrected surface reflectances $\rho_{\text{BOA}}(\lambda)$ by removing Rayleigh scattering, aerosol optical depth, and ozone/water absorption:
+
+$$\rho_{\text{BOA}}(\lambda) = \frac{\pi \cdot (L_{\text{TOA}}(\lambda) - L_{\text{path}}(\lambda))}{\tau_v(\lambda) \cdot [E_0(\lambda) \cdot \cos \theta_s \cdot \tau_s(\lambda) + E_{\text{down}}(\lambda)]}$$
+
+### 2. Spectral Bands & Agricultural Bio-Physical Indicators
+The pipeline utilizes 9 spectral bands at 10 m and 20 m spatial resolutions (resampled to 10.0 m in `EPSG:3857`):
+* **Visible bands (`B02` Blue 490 nm, `B03` Green 560 nm, `B04` Red 665 nm)**: Sensitive to photosynthetic chlorophyll $a$ and $b$ absorption.
+* **RedEdge bands (`B05` 705 nm, `B06` 740 nm, `B07` 783 nm)**: Capture the steep reflectance transition edge; highly sensitive to canopy nitrogen, leaf chlorophyll concentration, and early senescence.
+* **Narrow NIR (`B8A` 865 nm)**: Measures internal leaf mesophyll cellular scattering, avoiding atmospheric water vapor absorption present in broad `B08`.
+* **Shortwave Infrared (`B11` 1610 nm, `B12` 2190 nm)**: Sensitive to foliar water content and dry matter accumulation.
+
+### 3. Narrow-Band Agricultural Indices
 * **Normalized Difference Vegetation Index (NDVI)**:
   $$\text{NDVI} = \frac{\text{B8A} - \text{B04}}{\text{B8A} + \text{B04}}$$
+* **Red-Edge Chlorophyll Indices (NDRE1 & NDRE2)**:
+  $$\text{NDRE1} = \frac{\text{B06} - \text{B05}}{\text{B06} + \text{B05}}, \quad \text{NDRE2} = \frac{\text{B07} - \text{B05}}{\text{B07} + \text{B05}}$$
+* **Normalized Difference Water Index (NDWI / NDII)**:
+  $$\text{NDWI} = \frac{\text{B8A} - \text{B11}}{\text{B8A} + \text{B11}}$$
 
-### 2. Standardized agricultural DOY time-series
+### 4. Standardized Agricultural DOY Time-Series
 Satellite observations across years and orbits have variable revisit dates due to cloud cover. The pipeline solves this by interpolating all observations into **14 standardized 10-day agricultural reference dates (Day of Year - DOY)**:
 $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
 * DOY 80 (March 21): Early spring emergence / winter crop green-up.
