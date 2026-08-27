@@ -6,34 +6,94 @@ This toolbox provides an enterprise-grade, object-based image analysis (OBIA) cr
 
 ## Scientific methodology & artificial intelligence architecture
 
-### 1. NASA Harvest Presto geospatial foundation model
-**Presto** is a state-of-the-art transformer foundation model pretrained on global, multi-sensor Earth observation time series:
-* **Transformer encoder architecture**: Operates across irregular multi-temporal sequences using self-attention mechanisms to capture complex crop phenological dynamics and vegetative life cycles.
-* **Multi-sensor tokenization**: Encodes raw Sentinel-1 radar backscatter ($\sigma^0_{VV}, \sigma^0_{VH}$) and Sentinel-2 optical reflectances ($B02$–$B12$) into unified high-dimensional latent space.
-* **Spatial & temporal position encodings**: Integrates continuous geographic coordinates $(\text{latitude}, \text{longitude})$ through sinusoidal positional embeddings and seasonal acquisition month tokens, providing geographic and climatological context.
-* **Latent token extraction**: Generates **128-dimensional multi-temporal token embeddings** from S1 SAR sequences and **128-dimensional embeddings** from S2 optical sequences, providing representations that surpass standard handcrafted index statistics.
+### 1. Multimodal Dual-Tier Feature Fusion Architecture
 
-### 2. Vision foundation model: Meta AI SAM (Segment Anything)
-* Utilizes deep Vision Transformer (ViT) backbones (`vit_h`, `vit_l`, `vit_b`) adapted for satellite remote sensing.
-* Generates field parcel boundaries from multi-temporal composite rasters with sub-pixel boundary precision, bilateral edge preservation, and distance transform hole-filling.
+The classification suite combines handcrafted physical remote sensing features with self-supervised geospatial foundation model latent representations:
 
-### 3. Unified PyTorch Deep MLP + XGBoost fusion ensemble
-* **PyTorch Deep MLP**: 3-layer neural network with Batch Normalization (`BatchNorm1d`), Dropout ($p=0.3$), Class-weighted Cross-Entropy loss, and Cosine Annealing learning rate schedule:
-  $$\mathcal{L} = -\sum_{c=1}^C w_c \cdot y_c \cdot \log(p_c)$$
-* **XGBoost GBDT**: Ensemble of 250 gradient boosted decision trees (`max_depth=6`, `subsample=0.8`, `colsample_bytree=0.25`) with histogram-based splitting (`tree_method='hist'`).
-* **Soft-voting probability blend**: Combines predicted class probability distributions from both models:
-  $$\hat{P}(C_i | X) = 0.65 \cdot P_{\text{MLP}}(C_i | X) + 0.35 \cdot P_{\text{XGB}}(C_i | X)$$
+```
++----------------------------------------------------------------------------------------------------+
+|                             MULTIMODAL DUAL-TIER FEATURE FUSION PIPELINE                           |
++----------------------------------------------------------------------------------------------------+
+|  [Tier 1: Physical Handcrafted Remote Sensing Features]                                             |
+|  - S1 Temporal Statistics (VH, VV, VH/VV): Mean, Std, Min, Max, Dynamic Range (Max-Min), Slope     |
+|  - S2 Multi-Spectral Reflectances: 14 DOYs * 9 Bands (B02-B12) = 126 spectral temporal features     |
+|  - S2 Dynamic Indices: Multi-temporal NDVI, NDRE1, NDRE2, and NDWI canopy water trajectories       |
+|                                                  |                                                 |
+|  [Tier 2: NASA Harvest Presto Geospatial Foundation Model Latent Embeddings]                       |
+|  - S1 SAR Transformer Latent Representation: 128-dimensional multi-temporal token embedding        |
+|  - S2 Optical Transformer Latent Representation: 128-dimensional multi-temporal token embedding    |
+|                                                  |                                                 |
+|  [Concatenated High-Dimensional Feature Vector X in R^D]                                           |
+|  X = [ F_S1_stats || F_S2_spectral || E_Presto_S1 (128d) || E_Presto_S2 (128d) ]                  |
++--------------------------------------------------+-------------------------------------------------+
+                                                   |
+                                                   v
++----------------------------------------------------------------------------------------------------+
+|                      HYBRID MULTI-PARADIGM ENSEMBLE CLASSIFICATION SUITE                           |
++----------------------------------------------------------------------------------------------------+
+|  [Branch A: PyTorch Deep MLP]                 |  [Branch B: XGBoost GBDT Engine]                   |
+|  - 3 Dense Layers (512 -> 256 -> 128)         |  - 250 Gradient Boosted Decision Trees             |
+|  - BatchNorm1d & Dropout (p=0.3)              |  - Histogram-based splitting (tree_method='hist')  |
+|  - Class-Weighted Cross-Entropy Loss          |  - Subsample=0.8, Colsample_bytree=0.25            |
+|  - Cosine Annealing Learning Rate Schedule    |  - Max depth = 6, learning rate = 0.08             |
+|  -> Probability Vector P_MLP in [0, 1]^K      |  -> Probability Vector P_XGB in [0, 1]^K           |
++-----------------------------------------------+----------------------------------------------------+
+                                                   |
+                                                   v
++----------------------------------------------------------------------------------------------------+
+|  [Soft-Voting Probability Blend]: P_hat(C_k | X) = 0.65 * P_MLP(C_k | X) + 0.35 * P_XGB(C_k | X)  |
+|  [Bayesian Prior Calibration]: P_calibrated(C_k | X) adjusted by real-world crop acreage priors    |
++----------------------------------------------------------------------------------------------------+
+```
 
-### 4. Bayesian prior probability calibration
-Standard machine learning models trained on balanced samples overestimate rare crops and underestimate dominant crops in real landscapes. The pipeline resolves this by applying Bayesian prior probability calibration:
+#### Tier 1: Handcrafted Temporal & Spectral Features
+* **Sentinel-1 SAR temporal moments**: For each polarization ($VV$, $VH$) and cross-ratio ($VH/VV$), the pipeline extracts statistical moments across the agricultural calendar:
+  $$\mu = \frac{1}{N}\sum_{t=1}^N \sigma^0_t, \quad \sigma = \sqrt{\frac{1}{N}\sum_{t=1}^N (\sigma^0_t - \mu)^2}, \quad \text{Min}, \quad \text{Max}, \quad \Delta \text{dB} = \text{Max} - \text{Min}$$
+  These metrics capture surface roughness, canopy closure speed, and abrupt drops in backscatter caused by harvesting.
+* **Sentinel-2 multi-spectral trajectories**: Standardized 14-DOY reflectances across 9 spectral bands ($14 \times 9 = 126$ features) plus time-series vegetation indices ($\text{NDVI}(t)$, $\text{NDRE1}(t)$, $\text{NDRE2}(t)$, $\text{NDWI}(t)$) tracking chlorophyll absorption, red-edge shift, and canopy moisture.
 
-$$P_{\text{calibrated}}(C_i | X) = \frac{P_{\text{model}}(C_i | X) \cdot \left(\frac{P_{\text{true}}(C_i)}{P_{\text{train}}(C_i)}\right)^\gamma}{\sum_{j=1}^K P_{\text{model}}(C_j | X) \cdot \left(\frac{P_{\text{true}}(C_j)}{P_{\text{train}}(C_j)}\right)^\gamma}$$
+#### Tier 2: NASA Harvest Presto 256-Dimensional Foundation Embeddings
+NASA Harvest Presto encodes raw multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into two 128-dimensional latent vectors:
+$$E_{\text{S1}} \in \mathbb{R}^{128} \quad (\text{SAR dynamics}), \qquad E_{\text{S2}} \in \mathbb{R}^{128} \quad (\text{Optical dynamics})$$
+
+#### Unified Concatenated Feature Vector
+The complete feature vector combines domain-specific physical interpretability with deep self-supervised representation learning:
+$$X_{\text{fused}} = \left[ F_{\text{S1\_stats}} \,\|\, F_{\text{S2\_spectral}} \,\|\, E_{\text{Presto\_S1}} \,\|\, E_{\text{Presto\_S2}} \right] \in \mathbb{R}^{D}$$
+
+---
+
+### 2. Hybrid Multi-Paradigm Machine Learning Ensemble
+
+Why combine Deep Neural Networks (PyTorch MLP) with Gradient Boosted Decision Trees (XGBoost)?
+* **Deep Neural Networks (MLP)** excel at modeling smooth, continuous high-dimensional manifolds and projecting dense transformer embeddings.
+* **Gradient Boosted Decision Trees (XGBoost)** excel at modeling discrete tabular decision thresholds, sharp spectral cutoffs, and step-function phenological transitions.
+* **Complementary inductive biases**: Combining both architectures yields significantly lower generalization error and lower prediction variance than either model operating alone.
+
+#### PyTorch Deep MLP Architecture & Regularization
+* **Network Topology**: Input Layer ($D$ dims) $\rightarrow$ `Dense(512)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(p=0.3)` $\rightarrow$ `Dense(256)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(p=0.3)` $\rightarrow$ `Dense(128)` $\rightarrow$ Output ($K$ classes).
+* **Class-Weighted Cross-Entropy Loss**: Corrects for class imbalance between dominant cereals and minor specialty crops:
+  $$\mathcal{L}_{\text{MLP}} = -\frac{1}{N}\sum_{i=1}^N \sum_{c=1}^K w_c \cdot y_{i,c} \cdot \log\left(\frac{\exp(z_{i,c})}{\sum_{j=1}^K \exp(z_{i,j})}\right), \quad \text{where } w_c = \frac{N}{K \cdot N_c}$$
+* **Cosine Annealing Learning Rate Schedule**: Smoothly decays learning rate to escape local minima:
+  $$\eta_t = \eta_{\min} + \frac{1}{2}(\eta_{\max} - \eta_{\min})\left(1 + \cos\left(\frac{t}{T_{\max}}\pi\right)\right)$$
+
+#### XGBoost GBDT Engine
+* Trained on 250 trees with histogram-based split binning (`tree_method='hist'`), maximum depth `max_depth=6`, learning rate $\eta = 0.08$, sample subsampling `subsample=0.8`, and column feature subsampling `colsample_bytree=0.25`.
+
+#### Soft-Voting Probability Blend
+Combines posterior probability distributions from both models:
+$$\hat{P}(C_k | X) = \alpha \cdot P_{\text{MLP}}(C_k | X) + (1 - \alpha) \cdot P_{\text{XGB}}(C_k | X)$$
+Where $\alpha = 0.65$ (MLP ensemble weight) and $1 - \alpha = 0.35$ (XGBoost ensemble weight).
+
+#### Bayesian Prior Probability Calibration
+Machine learning models trained on balanced samples overestimate rare crops and underestimate dominant crops. The pipeline applies Bayesian calibration to align raw model probabilities with official agricultural registry crop acreages (`priors.json`):
+
+$$P_{\text{calibrated}}(C_k | X) = \frac{\hat{P}(C_k | X) \cdot \left(\frac{P_{\text{true}}(C_k)}{P_{\text{train}}(C_k)}\right)^\gamma}{\sum_{j=1}^K \hat{P}(C_j | X) \cdot \left(\frac{P_{\text{true}}(C_j)}{P_{\text{train}}(C_j)}\right)^\gamma}$$
 
 Where:
-* $P_{\text{model}}(C_i | X)$ is the soft-voting ensemble prediction probability.
-* $P_{\text{true}}(C_i)$ is the true statistical crop area proportion obtained from national agricultural registries (`priors.json`).
-* $P_{\text{train}}(C_i)$ is the training sample proportion.
-* $\gamma = 0.7$ is the calibration damping exponent preventing extreme boundary distortions.
+* $\hat{P}(C_k | X)$ is the soft-voting ensemble probability.
+* $P_{\text{true}}(C_k)$ is the true statistical crop area proportion obtained from paying agency declarations.
+* $P_{\text{train}}(C_k)$ is the training sample proportion.
+* $\gamma = 0.7$ is the calibration damping exponent preventing extreme boundary distortion.
 
 ---
 
