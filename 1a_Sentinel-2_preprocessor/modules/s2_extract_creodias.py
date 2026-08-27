@@ -386,14 +386,10 @@ def scan_creodias_for_dates(
     target_tiles: Optional[List[str]] = None,
     max_cloud_cover: float = 80.0
 ) -> List[Dict]:
-    cache_key = (str(repo_path), str(start_date), str(end_date), max_cloud_cover)
+    tiles_key = tuple(sorted(set(t.upper().replace('T', '') for t in target_tiles))) if target_tiles else None
+    cache_key = (str(repo_path), str(start_date), str(end_date), tiles_key, max_cloud_cover)
     if cache_key in _GLOBAL_SCAN_CACHE:
         cached_all = _GLOBAL_SCAN_CACHE[cache_key]
-        if target_tiles:
-            target_tags = set(t.upper().replace('T', '') for t in target_tiles)
-            filtered = [sc for sc in cached_all if sc['tile'].upper().replace('T', '') in target_tags]
-            logging.info(f"Loaded {len(filtered)} matching S2 SAFE scenes from memory cache (filtered for {len(target_tiles)} MGRS tiles).")
-            return filtered
         logging.info(f"Loaded {len(cached_all)} matching S2 SAFE scenes from memory cache.")
         return list(cached_all)
 
@@ -432,18 +428,20 @@ def scan_creodias_for_dates(
                         for entry in it:
                             name = entry.name
                             if name.startswith("S2") and name.endswith(".SAFE"):
-                                tile_name, acq_date = extract_tile_and_date_from_safe_name(name)
-                                if start_date <= acq_date <= end_date:
-                                    safe_path = Path(entry.path)
-                                    cloud_pct = parse_metadata_cloud_cover(safe_path)
-                                    if cloud_pct <= max_cloud_cover:
-                                        matched.append({
-                                            'title': name,
-                                            'safe_path': safe_path,
-                                            'tile': tile_name,
-                                            'date': acq_date,
-                                            'cloud_cover': cloud_pct
-                                        })
+                                # Fast tile name filter before opening XML over the network
+                                if target_tile_tags is None or any(tag in name for tag in target_tile_tags):
+                                    tile_name, acq_date = extract_tile_and_date_from_safe_name(name)
+                                    if start_date <= acq_date <= end_date:
+                                        safe_path = Path(entry.path)
+                                        cloud_pct = parse_metadata_cloud_cover(safe_path)
+                                        if cloud_pct <= max_cloud_cover:
+                                            matched.append({
+                                                'title': name,
+                                                'safe_path': safe_path,
+                                                'tile': tile_name,
+                                                'date': acq_date,
+                                                'cloud_cover': cloud_pct
+                                            })
                     break
                 except OSError as e:
                     if attempt == 2:
@@ -452,11 +450,7 @@ def scan_creodias_for_dates(
         curr_date += datetime.timedelta(days=1)
 
     _GLOBAL_SCAN_CACHE[cache_key] = list(matched)
-    logging.info(f"Found {len(matched)} matching S2 SAFE scenes in CREODIAS repo (cached in RAM for subsequent tracks).")
-    
-    if target_tiles:
-        target_tags = set(t.upper().replace('T', '') for t in target_tiles)
-        return [sc for sc in matched if sc['tile'].upper().replace('T', '') in target_tags]
+    logging.info(f"Found {len(matched)} matching S2 SAFE scenes in CREODIAS repo.")
     return matched
 
 
