@@ -135,9 +135,57 @@ Utilizes 9 spectral bands at 10 m and 20 m spatial resolutions (resampled to 10 
 * **Spatial & temporal position encodings**: Sinusoidal positional embeddings of geographic coordinates $(\text{latitude}, \text{longitude})$ and acquisition month tokens.
 * **Latent token extraction**: Produces **128-dimensional multi-temporal token embeddings** from S1 SAR sequences and **128-dimensional embeddings** from S2 optical sequences.
 
-### Meta AI SAM vision foundation model for parcel delineation
-* Adapts Meta AI Segment Anything Model (SAM) Vision Transformers (`vit_h`, `vit_l`, `vit_b`) for remote sensing imagery.
-* Generates field parcel boundaries from multi-temporal composite rasters with bilateral edge preservation and distance transform hole-filling.
+### Object-Based Image Analysis (OBIA) & Segmentation Deep Dive
+
+#### 1. Multi-Temporal S1 SAR Summed / Mean Composite Generation
+Single-date Synthetic Aperture Radar (SAR) imagery inherently suffers from **multiplicative speckle noise** caused by random constructive and destructive interference of coherent backscatter waves from distributed scatterers within a resolution cell. 
+
+In our pipeline, before performing segmentation, we compute a **multi-temporal mean amplitude composite** across all valid radar acquisitions spanning the entire agricultural season ($N \approx 20\text{--}40$ dates):
+
+$$\bar{\sigma}^0_{\text{temporal}} = \frac{1}{N} \sum_{k=1}^N \sigma^0_k(x, y)$$
+
+* **Speckle variance reduction**: According to radar statistical theory, temporal multi-look averaging reduces speckle variance by a factor of $1/N$, effectively achieving an Equivalent Number of Looks ($\text{ENL}$) equal to $N$:
+  $$\text{Var}(\bar{I}) = \frac{\sigma^2}{N}$$
+* **Stationary boundary enhancement**: While crops undergo seasonal phenological cycles, permanent agricultural landscape elements (field boundaries, farm tracks, drainage ditches, hedgerows, and parcel borders) maintain stable geometric and dielectric boundaries. Multi-temporal averaging sharpens these boundaries while smoothing out transient field-interior speckle, producing the ideal input for high-precision segmentation.
+
+#### 2. Segmentation Modes in Detail
+
+```
++----------------------------------------------------------------------------------------------------+
+|                                    OBIA SEGMENTATION METHODOLOGIES                                 |
++----------------------------------------------------------------------------------------------------+
+|  [Mode 1: SLIC Superpixels]  --> Simple Linear Iterative Clustering on buffered 2048x2048 tiles     |
+|                                  (64px halo prevents tile seam artifacts; UInt32 segment raster)   |
+|  [Mode 2: Meta AI SAM]       --> Vision Transformer (ViT) foundation model parcel delineation      |
+|                                  (Bilateral edge preservation & distance transform hole-filling)    |
+|  [Mode 3: LPIS Cadastre]     --> Ingestion of official European farmer declaration vectors (GPKG)  |
+|                                  (High-speed R-Tree spatial indexing & 10m rasterization)          |
++----------------------------------------------------------------------------------------------------+
+```
+
+* **Mode 1: SLIC (Simple Linear Iterative Clustering - Recommended for general operational use)**:
+  - Adapts k-means clustering in a 5-dimensional feature-spatial space $(I_1, I_2, \dots, I_k, x, y)$.
+  - **Distance metric**:
+    $$D_s = \sqrt{d_{\text{color}}^2 + \left(\frac{d_{xy}}{S}\right)^2 \cdot m^2}$$
+    Where $S = \sqrt{N_{\text{pixels}} / K}$ is the superpixel grid step, $m$ is the compactness parameter balancing boundary adherence vs regular parcel shape ($m = 10.0$).
+  - **Seamless buffered tiling**: Processes rasters in $2048 \times 2048$ pixel tiles with a **64-pixel overlapping halo buffer**. Segment boundaries are harmonized across tile edges to prevent edge cutoff artifacts.
+* **Mode 2: Meta AI SAM (Segment Anything Model - Deep foundation segmentation)**:
+  - Utilizes Meta AI Vision Transformer backbones (`vit_h`, `vit_l`, `vit_b`) pre-trained on $>1$ billion masks.
+  - Automatically distributes a regular prompt grid across multi-spectral/SAR composites.
+  - Applies **bilateral edge filtering** and **morphological distance transform hole-filling** to close gaps along field boundaries.
+* **Mode 3: LPIS (Land Parcel Identification System - Official cadastral parcels)**:
+  - Ingests official national cadastral parcel boundary datasets (`.gpkg` or `.shp`) provided by Member State paying agencies (e.g. BRP in the Netherlands, ISIP in Portugal, ARiMR in Poland).
+  - Employs **R-Tree spatial indexing** to assign every registered agricultural polygon a unique 32-bit `segment_id` rasterized at $10.0\text{ m}$ in `EPSG:3857`.
+
+#### 3. Multimodal Data Footprint Generation (`*_footprint.tif`)
+Satellite tracks are captured along inclined orbits (descending $\approx -12^\circ$, ascending $\approx +12^\circ$), creating slanted swath edges and variable spatial bounds between radar (S1) and optical (S2) sensors.
+
+In Stage 0, the pipeline computes a **binary multimodal data footprint raster**:
+
+$$\text{Footprint}(x, y) = \begin{cases} 1 & \text{if } \text{Valid}(\text{S1}_{\text{SAR}}(x, y)) \land \text{Valid}(\text{S2}_{\text{optical}}(x, y)) \land \text{Valid}(\text{NUTS2}(x, y)) \\ 0 & \text{otherwise} \end{cases}$$
+
+* **Eliminates edge distortion**: Strictly bounds feature extraction and model inference to pixels where all $170+$ radar and optical bands have valid, uncorrupted physical measurements.
+* **Prevents no-data classification**: Ensures that partial-coverage edges outside the satellite swath are masked out, preventing false classifications along boundary margins.
 
 ### Unified PyTorch Deep MLP + XGBoost fusion ensemble
 * **PyTorch Deep MLP**: 3-layer neural network with Batch Normalization (`BatchNorm1d`), Dropout ($p=0.3$), Class-weighted Cross-Entropy loss, and Cosine Annealing learning rate schedule.
@@ -592,6 +640,35 @@ AIML_CropMapper_Cloud/
 │           └── _temp_processing/        # Isolated transient buffer (slices, tiles, DOY mosaics)
 ├── environment.yml                      # Conda / Mamba environment definition
 └── README.md                            # Complete technical documentation
+```
+
+### Complete Artifacts & Output File Lineage Catalog
+
+The table below catalogs every intermediate and final output artifact generated across all pipeline stages:
+
+| Stage / phase | Directory path | File name pattern | Data type / bands | Purpose & scientific description |
+| :--- | :--- | :--- | :---: | :--- |
+| **S1 Stage 1** | `_temp_processing/1_calibrated/` | `S1*_Sigma0_{POL}.tif` | `Float32`, 1 band | Single-slice radiometric $\sigma^0$ radar backscatter. |
+| **S1 Stage 2** | `_temp_processing/2_wrapped_stack/`| `wrapped_stack.dim / .data` | ENVI/BEAM, $2N$ b. | Multi-temporal coregistered SAR stack across all DOYs. |
+| **S1 Stage 3** | `1_input_stacks/` | `{COUNTRY}_orbit_{ORBIT}_*_VH_VV.tif` | `Float32`, $2N$ b. | **Final SAR BigTIFF**: Terrain corrected, 10m, EPSG:3857 with `.ovr`. |
+| **S2 Stage 1** | `_temp_processing/{TILE}_tif/` | `*_{BAND}_20m.tif` | `UInt16`, 1 band | Masked surface reflectance per scene (`B02`–`B12`, `SCL`). |
+| **S2 Stage 2** | `_temp_processing/{TILE}/_synthetic_s2/` | `day{DOY}_{YEAR}/{BAND}.tif` | `UInt16`, 1 band | 14-DOY synthetic cloud-free interpolated spectral bands. |
+| **S2 Stage 3** | `1_input_stacks/` | `{COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif` | `Int16`, 126 bands | **Final Optical BigTIFF**: 14 dates $\times$ 9 bands, 10m grid matched to S1. |
+| **Classif. 0** | `2_classification/0_segmentation/`| `{COUNTRY}_{ORBIT}_s1_composite.tif` | `Float32`, 1 band | **SAR Multi-temporal Mean Composite**: Speckle-reduced amplitude for OBIA. |
+| **Classif. 0** | `2_classification/0_segmentation/`| `{COUNTRY}_{ORBIT}_data_footprint.tif` | `Byte`, 1 band | **Binary Valid Footprint**: Spatial intersection of valid S1, S2, and NUTS2. |
+| **Classif. 1** | `2_classification/0_segmentation/`| `{COUNTRY}_{ORBIT}_segmentation_{MODE}.tif` | `UInt32`, 1 band | **OBIA Segment Objects**: Integer raster with unique parcel identifiers. |
+| **Classif. 2** | `2_classification/1_samples_and_features/` | `learn_{MODE}.shp / control_{MODE}.shp` | Vector Points | Stratified 70% training and 30% independent validation samples. |
+| **Classif. 3** | `2_classification/1_samples_and_features/` | `{COUNTRY}_{ORBIT}_features_{MODE}.csv` | Tabular CSV | Extracted S1 temporal stats, S2 reflectances, and 128d Presto tokens. |
+| **Classif. 3** | `2_classification/1_samples_and_features/` | `features_scaler.pkl` | Pickle Object | Saved feature standardization scaler for inference. |
+| **Classif. 4** | `2_classification/2_models/` | `{COUNTRY}_{ORBIT}_model_{MODE}.pkl` | Pickle Object | Serialized PyTorch Deep MLP + XGBoost ensemble checkpoint. |
+| **Classif. 5** | `2_classification/3_maps/` | `{COUNTRY}_{ORBIT}_classified_{MODE}.tif` | `UInt16`, 1 band | Raw predicted crop classification raster (`crop_id` values). |
+| **Classif. 5** | `2_classification/3_maps/` | `{COUNTRY}_{ORBIT}_confidence_{MODE}.tif` | `Float32`, 1 band | Softmax ensemble probability confidence map ($0.0$ to $1.0$). |
+| **Classif. 6** | `2_classification/3_maps/` | `*_classified_masked_{MODE}.tif` | `UInt16`, 1 band | **Final Track Crop Map**: Cropland-masked & footprint-bounded raster. |
+| **Classif. 6** | `2_classification/3_maps/` | `*_confidence_masked_{MODE}.tif` | `Float32`, 1 band | **Final Track Confidence Map**: Cropland-masked confidence raster. |
+| **Classif. 7** | `2_classification/4_reports/` | `report_{COUNTRY}_{ORBIT}_metrics_{MODE}.xlsx` | Styled Excel | Detailed validation report: OA, $\kappa$, Confusion Matrix, F1-scores. |
+| **Merge 4** | `national_products/` | `{COUNTRY}_national_crop_map_{MODE}.tif` | `UInt16`, 1 band | **Seamless National Crop Map**: Confidence-blended multi-orbit BigTIFF. |
+| **Merge 4** | `national_products/` | `{COUNTRY}_national_confidence_{MODE}.tif` | `Float32`, 1 band | **Seamless National Confidence Map**: Multi-orbit confidence raster. |
+| **Merge 4** | `national_products/` | `{COUNTRY}_national_accuracy_report_{MODE}.xlsx` | Styled Excel | Aggregated nationwide statistical validation report. |
 ```
 
 ---
