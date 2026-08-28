@@ -319,16 +319,21 @@ python run_classifier.py --track PT/orbit_52 --stage 7
 
 ### 5. Phase 4: Nationwide multi-orbit merge
 ```powershell
-# Merge SLIC classifications into a seamless national map:
-python run_merge.py --country PT --seg_mode slic
+# Merge SLIC classifications into a seamless national map with SOTA ensemble:
+python run_merge.py --country PT --classifier mlpxgb_presto --seg_mode slic
 
-# Merge LPIS classifications into a seamless national map:
-python run_merge.py --country PT --seg_mode lpis
+# Merge LPIS cadastral classifications for the Netherlands:
+python run_merge.py --country NL --classifier mlpxgb_presto --seg_mode lpis
+
+# Merge Meta AI SAM classifications using confidence blending:
+python run_merge.py --country PT --classifier mlpxgb_presto --seg_mode sam --method confidence
 ```
 
 ---
 
 ## Command-line arguments
+
+### Classifier runner (`run_classifier.py`)
 
 | Argument | Type | Default | Description |
 | :--- | :---: | :---: | :--- |
@@ -341,6 +346,15 @@ python run_merge.py --country PT --seg_mode lpis
 | `--s1_raster` | string | `None` | Optional explicit path override to Sentinel-1 BigTIFF raster. |
 | `--s2_raster` | string | `None` | Optional explicit path override to Sentinel-2 BigTIFF raster. |
 | `--lpis_vector` | string | `None` | Optional explicit path to official LPIS parcel vector file (`.shp`, `.gpkg`). |
+
+### Merger runner (`run_merge.py`)
+
+| Argument | Type | Default | Description |
+| :--- | :---: | :---: | :--- |
+| `-c, --country` | string | **Required** | Country code (e.g. `NL`, `PL`, `PT`, `FR`, `ES`, `DE`). |
+| `--classifier` | choice | `auto` | Model suffix to merge: `auto`, `mlpxgb_presto`, `presto_s1`, `otb`. |
+| `--seg_mode` | choice | `slic` | Segmentation mode: `slic` (superpixels), `sam` (Meta AI), `lpis` (cadastre). |
+| `--method` | choice | `confidence` | Blending method across overlapping tracks: `confidence`, `priority`, `majority`. |
 
 ---
 

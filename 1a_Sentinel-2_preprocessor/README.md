@@ -45,9 +45,11 @@ $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273,
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Input Data Ingestion]                                   |
+                     | [Input Data Ingestion: Shared Country S2 Pool]           |
+                     | - Destination: workingDirs/{COUNTRY}/S2/                 |
                      | - Copernicus CDSE OData API (Automated L2A download)     |
                      | - CreoDIAS Local Archive (Fast L2A SAFE extraction)      |
+                     | -> All country MGRS tiles downloaded ONCE per country    |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
@@ -57,7 +59,7 @@ $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273,
                      | 2. Query Scene Classification Layer (SCL)                |
                      | 3. Mask invalid pixels: Clouds (8,9), Cirrus (10),       |
                      |    Cloud Shadows (3), Snow (11), Saturated/NoData (0,1)  |
-                     | 4. Export clean masked reflectance GeoTIFFs              |
+                     | 4. Export clean masked GeoTIFFs to {TILE}_tif/           |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
@@ -66,17 +68,19 @@ $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273,
                      | 1. Parallel multi-core time-series interpolation         |
                      | 2. Linear temporal spline across valid clear DOYs        |
                      | 3. Interpolate 9 bands + dynamic NDVI for 14 DOYs        |
-                     | 4. Total: 14 dates * 9 spectral bands = 126 layers       |
+                     | 4. Saved to workingDirs/{COUNTRY}/S2/{TILE}/_synthetic_s2|
+                     | -> Computed ONCE per country tile (eliminates redundancy)|
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 3: SAR Grid Alignment & BigTIFF Stacking]         |
-                     | 1. Spatial alignment to Sentinel-1 SAR reference grid    |
+                     | [Stage 3: Per-Orbit SAR Grid Alignment & BigTIFF Stacking|
+                     | 1. Discovers synthetic tiles from shared country pool    |
+                     | 2. Spatial alignment to Sentinel-1 SAR reference grid    |
                      |    (Exact sub-pixel match: dX = 0.000m, dY = 0.000m)     |
-                     | 2. Clip to country footprint in EPSG:3857 at 10.0m res   |
-                     | 3. Export 126-band BigTIFF with DEFLATE compression      |
-                     | 4. Build 6 multi-scale pyramid overview levels           |
+                     | 3. Clip to target orbit footprint in EPSG:3857 at 10.0m  |
+                     | 4. Export 126-band BigTIFF with DEFLATE compression      |
+                     | 5. Build 6 multi-scale pyramid overview levels           |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
@@ -91,18 +95,28 @@ $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273,
 
 ## Processing stages in detail
 
+### Country-level shared repository design (`workingDirs/{COUNTRY}/S2/`)
+Sentinel-2 optical observations follow fixed geographic MGRS tiling grids (`29SMA`, `31UDR`, etc.) that cover an entire nation regardless of radar satellite track geometry. 
+
+To eliminate hundreds of gigabytes of duplicate downloads and redundant time-series computations across overlapping Sentinel-1 SAR orbits:
+* **Stage 1 & Stage 2 operate at the country level**: Data is ingested and interpolated into `workingDirs/{COUNTRY}/S2/` **exactly once per nation**.
+* **Stage 3 operates per orbit**: Stacking warps and clips from the shared national pool directly into each orbit track's `1_input_stacks/{COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif`.
+
 ### Stage 1: Granule extraction & SCL cloud masking (`s2_download_cdse.py`, `s2_extract_creodias.py`)
-* Extracts Sentinel-2 L2A BOA surface reflectance granules.
+* Extracts Sentinel-2 L2A BOA surface reflectance granules directly into the shared repository `workingDirs/{COUNTRY}/S2/{TILE}_tif/`.
 * Evaluates the Scene Classification Layer (SCL) and applies strict pixel-level masking:
   * **Retained classes (valid)**: `4` (Vegetation), `5` (Bare soil), `6` (Water), `7` (Unclassified).
   * **Masked classes (invalid)**: `0` (No data), `1` (Saturated / defective), `2` (Dark features), `3` (Cloud shadows), `8` (Cloud medium probability), `9` (Cloud high probability), `10` (Thin cirrus), `11` (Snow / ice).
+* **Incremental skip**: Scans local directories before issuing download requests; already converted granules are skipped instantly.
 
 ### Stage 2: 14-DOY synthetic time-series interpolation (`s2_time_series.py`)
-* Implements multi-core parallel temporal interpolation in pure Python/NumPy.
+* Implements multi-core parallel temporal interpolation in pure Python/NumPy across `workingDirs/{COUNTRY}/S2/{TILE}/_synthetic_s2/`.
 * For each pixel, reconstructs missing cloud-covered observations using forward/backward temporal linear interpolation between nearest cloud-free dates across the agricultural calendar.
+* Automatically skips tiles that already have all 14 DOYs completed.
 
 ### Stage 3: SAR grid matching & BigTIFF stacking (`s2_mosaic_stack.py`)
-* **Sub-pixel geometric co-registration**: Warps optical mosaics to the exact spatial extent, bounding box, and pixel grid of the Sentinel-1 SAR stack ($\Delta X = 0.000\text{ m}, \Delta Y = 0.000\text{ m}$ at 10.0 m resolution), guaranteeing zero spatial shift during machine learning feature fusion.
+* **Shared pool sourcing**: Automatically locates synthetic tiles in `workingDirs/{COUNTRY}/S2/` (with fallback to legacy track folders).
+* **Sub-pixel geometric co-registration**: Warps optical mosaics to the exact spatial extent, bounding box, and pixel grid of the target Sentinel-1 SAR stack ($\Delta X = 0.000\text{ m}, \Delta Y = 0.000\text{ m}$ at 10.0 m resolution), guaranteeing zero spatial shift during machine learning feature fusion.
 * **BigTIFF & pyramid generation**: Compiles all 126 layers into a single compressed BigTIFF (`COMPRESS=DEFLATE`, `TILED=YES`) and builds external pyramid overviews (`[2, 4, 8, 16, 32, 64]`) for smooth visualization.
 
 ---

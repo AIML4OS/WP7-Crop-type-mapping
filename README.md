@@ -371,36 +371,36 @@ Located in `1_Sentinel-1_preprocessor/`, this toolbox transforms raw Copernicus 
 
 ### Toolbox 2: Sentinel-2 optical preprocessor
 
-Located in `1a_Sentinel-2_preprocessor/`, this toolbox creates cloud-free, regular 10-day synthetic optical time-series composites matching 1:1 with the Sentinel-1 SAR pixel grid.
+Located in `1a_Sentinel-2_preprocessor/`, this toolbox creates cloud-free, regular 10-day synthetic optical time-series composites matching 1:1 with the Sentinel-1 SAR pixel grid using an optimized **country-level shared repository architecture** (`workingDirs/{COUNTRY}/S2/`).
 
 ```
 [Copernicus CDSE API / CreoDIAS L2A Archive]
                      |
                      v
     +----------------------------------+
-    |  Stage 1: Retrieval & Masking    |  --> S2 L2A tile download/extraction, Scene Classification
-    |  (SCL Cloud & Shadow Filtering)  |      Layer (SCL) filtering for clouds, shadows, and snow
+    |  Stage 1: Retrieval & Masking    |  --> S2 L2A tile download/extraction to shared country pool,
+    |  (SCL Cloud & Shadow Filtering)  |      SCL filtering for clouds, shadows, snow, and invalid pixels
     +----------------+-----------------+
                      |
                      v
     +----------------------------------+
-    |  Stage 2: Synthetic DOY          |  --> Multi-temporal interpolation across 14 standardized DOYs:
-    |  Time-Series Interpolation       |      [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]
+    |  Stage 2: Synthetic DOY          |  --> Multi-temporal spline interpolation across 14 standardized DOYs
+    |  Time-Series Interpolation       |      (computed ONCE per country tile, eliminating duplicate processing)
     +----------------+-----------------+
                      |
                      v
     +----------------------------------+
-    |  Stage 3: SAR Grid Alignment     |  --> Sub-pixel resampling to Sentinel-1 raster bounding box,
-    |  & 126-Band BigTIFF Stacking     |      126-band BigTIFF creation, and 6 pyramid overviews
+    |  Stage 3: Per-Orbit Stacking     |  --> Sub-pixel warping to Sentinel-1 raster bounding box,
+    |  & 126-Band BigTIFF Generation   |      126-band BigTIFF creation, and 6 pyramid overviews per orbit
     +----------------------------------+
 ```
 
 * **Master runner script**: `run_s2_preprocessor.py`
 * **Internal modules (`modules/`)**:
-  * `s2_download_cdse.py`: Automated search, download, and SCL cloud masking from CDSE API.
+  * `s2_download_cdse.py`: Automated search, download, and SCL cloud masking from CDSE API directly to `workingDirs/{COUNTRY}/S2/`.
   * `s2_extract_creodias.py`: Direct extraction from local CreoDIAS archives (`Y:/Sentinel-2/MSI/L2A`).
-  * `s2_time_series.py`: Pure Python multi-temporal interpolation across 14 standardized agricultural DOYs.
-  * `s2_mosaic_stack.py`: Mosaicking, sub-pixel grid alignment to Sentinel-1 SAR raster, 126-band BigTIFF creation, and pyramid overview generation.
+  * `s2_time_series.py`: Pure Python multi-temporal interpolation across 14 standardized agricultural DOYs per country tile.
+  * `s2_mosaic_stack.py`: Dynamic discovery of shared country tiles, sub-pixel grid alignment to Sentinel-1 SAR raster, 126-band BigTIFF creation, and pyramid overview generation.
   * `s2_pipeline.py`: Object-oriented pipeline orchestrator.
 
 ---
@@ -738,11 +738,14 @@ python 2_classifier/run_classifier.py
 
 #### How to execute:
 ```powershell
-# Merge SLIC superpixel classification maps across all orbits for Portugal:
-python 2_classifier/run_merge.py --country PT --seg_mode slic
+# Merge SLIC superpixel classification maps across all orbits for Portugal (with SOTA ensemble):
+python 2_classifier/run_merge.py --country PT --classifier mlpxgb_presto --seg_mode slic
 
 # Merge LPIS cadastral classification maps across all orbits for the Netherlands:
-python 2_classifier/run_merge.py --country NL --seg_mode lpis
+python 2_classifier/run_merge.py --country NL --classifier mlpxgb_presto --seg_mode lpis
+
+# Merge Meta AI SAM classifications using confidence blending:
+python 2_classifier/run_merge.py --country PT --classifier mlpxgb_presto --seg_mode sam --method confidence
 ```
 
 #### Expected output artifacts:
