@@ -50,13 +50,25 @@ Examples:
 """
     )
     parser.add_argument('-c', '--country', required=True, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
+    parser.add_argument('--classifier', default='auto', choices=['auto', 'mlpxgb_presto', 'presto_s1', 'otb'], help="Classifier model: 'mlpxgb_presto', 'presto_s1', 'otb', 'auto' (default: auto)")
     parser.add_argument('--seg_mode', default='slic', choices=['slic', 'sam', 'lpis'], help="Segmentation mode: 'slic', 'sam', 'lpis' (default: slic)")
     parser.add_argument('--method', default='confidence', choices=['confidence', 'priority', 'majority'], help="Blending method across overlapping tracks (default: confidence)")
 
     args = parser.parse_args()
+
+    suffix = ""
+    if args.classifier == 'mlpxgb_presto':
+        suffix = f"_mlpxgb_presto_{args.seg_mode}"
+    elif args.classifier == 'presto_s1':
+        suffix = f"_presto_{args.seg_mode}"
+    elif args.classifier == 'otb':
+        suffix = f"_{args.seg_mode}"
+
     merge_mod.run_merge_for_country(
         country=args.country.upper(),
-        seg_mode=args.seg_mode
+        seg_mode=args.seg_mode,
+        suffix=suffix,
+        method=args.method
     )
 
 
