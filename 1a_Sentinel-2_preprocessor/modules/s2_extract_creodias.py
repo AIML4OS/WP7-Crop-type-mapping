@@ -512,7 +512,8 @@ def process_orbit_creodias_s2(
     end_date: datetime.date,
     all_scenes: Optional[List[Dict]] = None,
     max_cloud_cover: float = 80.0,
-    max_workers: int = 8
+    max_workers: int = 8,
+    target_s2_dir: Optional[Path] = None
 ):
     country_code = country_code.upper()
     track_name = f"{country_code}/orbit_{orbit_num}"
@@ -520,7 +521,12 @@ def process_orbit_creodias_s2(
     logging.info(f" INGESTING & CONVERTING S2 FOR TRACK: {track_name} (Workers: {max_workers})")
     logging.info(f"========================================================")
 
-    dest_track_s2 = BASE_DIR / track_name / "S2"
+    if target_s2_dir is not None:
+        dest_track_s2 = target_s2_dir
+    else:
+        shared_s2 = BASE_DIR / country_code / "S2"
+        orbit_s2 = BASE_DIR / track_name / "S2"
+        dest_track_s2 = shared_s2 if shared_s2.exists() else orbit_s2
     dest_track_s2.mkdir(parents=True, exist_ok=True)
 
     if all_scenes is None:
@@ -538,7 +544,10 @@ def process_orbit_creodias_s2(
         dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / sc['title']
         check_b02 = dest_prod_tif_dir / f"{sc['title']}_B02_20m.tif"
         if not (check_b02.exists() and check_b02.stat().st_size > 1024):
-            scenes_to_process.append(sc)
+            # Also check fallback shared directory
+            shared_check = BASE_DIR / country_code / "S2" / f"{tile_upper}_tif" / sc['title'] / f"{sc['title']}_B02_20m.tif"
+            if not (shared_check.exists() and shared_check.stat().st_size > 1024):
+                scenes_to_process.append(sc)
 
     total_scenes = len(scenes_to_process)
     logging.info(f"Remaining S2 products to convert for {track_name}: {total_scenes} (out of {len(all_scenes)} total)")
@@ -580,17 +589,29 @@ def process_country_creodias_s2(
     max_workers: int = 8
 ):
     country_code = country_code.upper()
+    dest_country_s2 = BASE_DIR / country_code / "S2"
+    dest_country_s2.mkdir(parents=True, exist_ok=True)
+
     if orbit is not None:
         selected_orbits = [orbit]
     else:
         selected_orbits = discover_s1_orbits(country_code)
 
-    logging.info(f"=== PROCESSING SENTINEL-2 FOR COUNTRY: {country_code} | TARGET ORBITS: {selected_orbits} ===")
+    logging.info(f"=== PROCESSING SENTINEL-2 FOR COUNTRY: {country_code} (Shared pool: {dest_country_s2}) ===")
     target_tiles = COUNTRY_MGRS_TILES.get(country_code, None)
     all_scenes = scan_creodias_for_dates(S2_REPO_PATH, start_date, end_date, target_tiles=target_tiles, max_cloud_cover=max_cloud_cover)
 
     for o_num in selected_orbits:
-        process_orbit_creodias_s2(country_code, o_num, start_date, end_date, all_scenes, max_cloud_cover, max_workers)
+        process_orbit_creodias_s2(
+            country_code=country_code,
+            orbit_num=o_num,
+            start_date=start_date,
+            end_date=end_date,
+            all_scenes=all_scenes,
+            max_cloud_cover=max_cloud_cover,
+            max_workers=max_workers,
+            target_s2_dir=dest_country_s2
+        )
 
 
 def main():

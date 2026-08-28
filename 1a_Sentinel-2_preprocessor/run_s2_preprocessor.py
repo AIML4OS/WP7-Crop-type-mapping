@@ -168,19 +168,40 @@ class Sentinel2Pipeline:
             self.track = f"{self.country} (All greedy orbits)"
 
     def stage_1_download_extract(self):
-        """Stage 1: Download or Extract L2A bands with SCL cloud masking."""
+        """Stage 1: Download or Extract L2A bands with SCL cloud masking into shared country S2 pool."""
         logging.info(f"\n============================================================")
         logging.info(f" [Stage 1/3] Sentinel-2 L2A Ingestion & SCL Masking ({self.source.upper()})")
         logging.info(f" Track: {self.track} | Date range: {self.start_date_str} to {self.end_date_str}")
         logging.info(f"============================================================")
 
-        orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
-        for orb in orbits_to_run:
+        if self.orbit:
+            orbits_to_run = [self.orbit]
+            for orb in orbits_to_run:
+                if self.source == "creodias":
+                    extract_mod = importlib.import_module("s2_extract_creodias")
+                    extract_mod.process_orbit_creodias_s2(
+                        country_code=self.country,
+                        orbit_num=orb,
+                        start_date=self.start_date,
+                        end_date=self.end_date,
+                        max_cloud_cover=self.cloud_cover,
+                        max_workers=self.threads
+                    )
+                else:
+                    download_mod = importlib.import_module("s2_download_cdse")
+                    download_mod.process_orbit_cdse_s2(
+                        country_code=self.country,
+                        orbit_num=orb,
+                        start_date=self.start_date,
+                        end_date=self.end_date,
+                        cloud_cover=self.cloud_cover,
+                        max_workers=self.threads
+                    )
+        else:
             if self.source == "creodias":
                 extract_mod = importlib.import_module("s2_extract_creodias")
-                extract_mod.process_orbit_creodias_s2(
+                extract_mod.process_country_creodias_s2(
                     country_code=self.country,
-                    orbit_num=orb,
                     start_date=self.start_date,
                     end_date=self.end_date,
                     max_cloud_cover=self.cloud_cover,
@@ -188,9 +209,8 @@ class Sentinel2Pipeline:
                 )
             else:
                 download_mod = importlib.import_module("s2_download_cdse")
-                download_mod.process_orbit_cdse_s2(
+                download_mod.process_country_cdse_s2(
                     country_code=self.country,
-                    orbit_num=orb,
                     start_date=self.start_date,
                     end_date=self.end_date,
                     cloud_cover=self.cloud_cover,
@@ -198,25 +218,30 @@ class Sentinel2Pipeline:
                 )
 
     def stage_2_time_series(self):
-        """Stage 2: Synthetic DOY time-series interpolation."""
+        """Stage 2: Synthetic DOY time-series interpolation across shared country S2 pool."""
         logging.info(f"\n============================================================")
         logging.info(f" [Stage 2/3] Sentinel-2 Synthetic DOY Time-Series Interpolation")
         logging.info(f" Track: {self.track} | Target DOYs: {len(self.doys)} dates")
         logging.info(f"============================================================")
 
         ts_mod = importlib.import_module("s2_time_series")
-        orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
-        for orb in orbits_to_run:
-            track_name = f"{self.country}/orbit_{orb}"
+        if self.orbit:
             ts_mod.run_time_series_for_track(
-                track=track_name,
+                track=f"{self.country}/orbit_{self.orbit}",
+                doys=self.doys,
+                max_workers=self.threads,
+                overwrite=self.overwrite
+            )
+        else:
+            ts_mod.run_time_series(
+                country=self.country,
                 doys=self.doys,
                 max_workers=self.threads,
                 overwrite=self.overwrite
             )
 
     def stage_3_mosaic_stack(self):
-        """Stage 3: Mosaicking, S1 SAR grid matching and BigTIFF stacking."""
+        """Stage 3: Mosaicking from shared country S2 pool, S1 SAR grid matching and BigTIFF stacking."""
         logging.info(f"\n============================================================")
         logging.info(f" [Stage 3/3] Sentinel-2 Mosaicking, S1 Grid Matching & BigTIFF Stacking")
         logging.info(f" Track: {self.track}")

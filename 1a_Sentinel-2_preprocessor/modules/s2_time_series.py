@@ -227,9 +227,8 @@ def generate_s2_time_series_for_tile(
     return True
 
 
-def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 8, overwrite: bool = False):
+def run_time_series_for_dir(s2_base: Path, doys: List[int], max_workers: int = 8, overwrite: bool = False):
     import threading
-    s2_base = BASE_DIR / track / "S2"
     if not s2_base.exists():
         return
 
@@ -241,7 +240,7 @@ def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 8,
     done_tiles = 0
     lock = threading.Lock()
 
-    logging.info(f"Generating seamless synthetic time-series for track {track} ({total_tiles} tiles, Workers: {max_workers})...")
+    logging.info(f"Generating seamless synthetic time-series for {s2_base} ({total_tiles} tiles, Workers: {max_workers})...")
 
     def _worker_tile(t_dir):
         nonlocal done_tiles
@@ -250,11 +249,16 @@ def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 8,
         with lock:
             done_tiles += 1
             pct = (done_tiles / total_tiles) * 100.0
-            logging.info(f"  [TIME-SERIES PROGRESS] Track {track}: {done_tiles}/{total_tiles} tiles completed ({pct:.1f}%) - Last: {clean_tile_name}")
+            logging.info(f"  [TIME-SERIES PROGRESS] {s2_base.name}: {done_tiles}/{total_tiles} tiles completed ({pct:.1f}%) - Last: {clean_tile_name}")
         return res
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         list(executor.map(_worker_tile, tile_dirs))
+
+
+def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 8, overwrite: bool = False):
+    s2_base = BASE_DIR / track / "S2"
+    run_time_series_for_dir(s2_base, doys, max_workers, overwrite)
 
 
 def run_time_series(
@@ -262,25 +266,31 @@ def run_time_series(
     track: Optional[str] = None,
     orbit: Optional[int] = None,
     doys: List[int] = DEFAULT_DOYS,
-    max_workers: int = 4
+    max_workers: int = 4,
+    overwrite: bool = False
 ):
     if track:
-        run_time_series_for_track(track, doys, max_workers)
+        run_time_series_for_track(track, doys, max_workers, overwrite)
     elif country:
         country_code = country.upper()
-        country_dir = BASE_DIR / country_code
-        if orbit is not None:
-            orbits = [orbit]
-        elif country_dir.exists():
-            orbits = [int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name)]
-            if not orbits:
-                orbits = COUNTRY_ORBITS.get(country_code, [88, 161])
+        shared_s2 = BASE_DIR / country_code / "S2"
+        if shared_s2.exists() and any(d.name.endswith("_tif") for d in shared_s2.iterdir() if d.is_dir()):
+            logging.info(f"Using shared country-level S2 repository for {country_code} at {shared_s2}")
+            run_time_series_for_dir(shared_s2, doys, max_workers, overwrite)
         else:
-            orbits = COUNTRY_ORBITS.get(country_code, [88, 161])
+            country_dir = BASE_DIR / country_code
+            if orbit is not None:
+                orbits = [orbit]
+            elif country_dir.exists():
+                orbits = [int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name)]
+                if not orbits:
+                    orbits = COUNTRY_ORBITS.get(country_code, [88, 161])
+            else:
+                orbits = COUNTRY_ORBITS.get(country_code, [88, 161])
 
-        logging.info(f"Generating synthetic time-series for country {country_code} across orbits {orbits}...")
-        for o in orbits:
-            run_time_series_for_track(f"{country_code}/orbit_{o}", doys, max_workers)
+            logging.info(f"Generating synthetic time-series for country {country_code} across orbits {orbits}...")
+            for o in orbits:
+                run_time_series_for_track(f"{country_code}/orbit_{o}", doys, max_workers, overwrite)
 
 
 def main():

@@ -461,7 +461,8 @@ def process_orbit_cdse_s2(
     username: str = CDSE_USERNAME,
     password: str = CDSE_PASSWORD,
     cloud_cover: float = 80.0,
-    max_workers: int = 8
+    max_workers: int = 8,
+    target_s2_dir: Optional[Path] = None
 ):
     country_code = country_code.upper()
     track_name = f"{country_code}/orbit_{orbit_num}"
@@ -469,14 +470,20 @@ def process_orbit_cdse_s2(
     logging.info(f" CDSE S2 DOWNLOAD & CONVERSION FOR TRACK: {track_name} (Workers: {max_workers})")
     logging.info(f"========================================================")
 
-    dest_track_s2 = BASE_DIR / track_name / "S2"
+    # Use shared country-level S2 directory as primary target
+    if target_s2_dir is not None:
+        dest_track_s2 = target_s2_dir
+    else:
+        shared_s2 = BASE_DIR / country_code / "S2"
+        orbit_s2 = BASE_DIR / track_name / "S2"
+        dest_track_s2 = shared_s2 if shared_s2.exists() else orbit_s2
     dest_track_s2.mkdir(parents=True, exist_ok=True)
 
     # 1. Parallel conversion of any existing unzipped SAFE folders already on disk
     existing_safes = list(dest_track_s2.glob("*/*.SAFE"))
     if existing_safes:
         total_safes = len(existing_safes)
-        logging.info(f"Found {total_safes} existing downloaded SAFE products in {track_name}. Starting parallel GeoTIFF conversion ({max_workers} threads)...")
+        logging.info(f"Found {total_safes} existing downloaded SAFE products in {dest_track_s2}. Starting parallel GeoTIFF conversion ({max_workers} threads)...")
         
         converted_count = 0
         lock = threading.Lock()
@@ -524,7 +531,7 @@ def process_orbit_cdse_s2(
     products = finder.search_by_geometry(orbit_geom, start_date, end_date, cloud_cover)
     logging.info(f"Discovered {len(products)} Sentinel-2 products on CDSE intersecting {track_name}.")
 
-    # Filter out products already converted and constrain strictly to country's official MGRS tiles
+    # Filter out products already converted across shared S2 or orbit S2
     target_country_tiles = set(COUNTRY_MGRS_TILES.get(country_code.upper(), []))
     prods_to_process = []
     for prod in products:
@@ -535,7 +542,10 @@ def process_orbit_cdse_s2(
         dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / stem_name
         check_b02 = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
         if not (check_b02.exists() and check_b02.stat().st_size > 1024):
-            prods_to_process.append(prod)
+            # Also check fallback shared directory
+            shared_check = BASE_DIR / country_code / "S2" / f"{tile_upper}_tif" / stem_name / f"{stem_name}_B02_20m.tif"
+            if not (shared_check.exists() and shared_check.stat().st_size > 1024):
+                prods_to_process.append(prod)
 
     total_prods = len(prods_to_process)
     logging.info(f"Remaining CDSE products to download & convert: {total_prods} (out of {len(products)} total)")
@@ -581,7 +591,6 @@ def process_orbit_cdse_s2(
                 pct = (proc_count / total_prods) * 100.0
                 logging.info(f"  [DOWNLOAD & CONVERSION] {proc_count}/{total_prods} products completed ({pct:.1f}%)")
 
-    # Download and process in parallel (max 4 concurrent downloads to avoid API throttling)
     dl_workers = min(max_workers, 6)
     with ThreadPoolExecutor(max_workers=dl_workers) as executor:
         list(executor.map(_worker_process_product, prods_to_process))
@@ -600,15 +609,28 @@ def process_country_cdse_s2(
     max_workers: int = 4
 ):
     country_code = country_code.upper()
+    dest_country_s2 = BASE_DIR / country_code / "S2"
+    dest_country_s2.mkdir(parents=True, exist_ok=True)
+
     if orbit is not None:
         selected_orbits = [orbit]
     else:
         selected_orbits = discover_s1_orbits(country_code)
 
-    logging.info(f"=== CDSE SENTINEL-2 DOWNLOAD FOR COUNTRY: {country_code} | TARGET ORBITS: {selected_orbits} ===")
+    logging.info(f"=== CDSE SENTINEL-2 DOWNLOAD FOR COUNTRY: {country_code} (Shared pool: {dest_country_s2}) ===")
 
     for o_num in selected_orbits:
-        process_orbit_cdse_s2(country_code, o_num, start_date, end_date, username, password, cloud_cover, max_workers)
+        process_orbit_cdse_s2(
+            country_code=country_code,
+            orbit_num=o_num,
+            start_date=start_date,
+            end_date=end_date,
+            username=username,
+            password=password,
+            cloud_cover=cloud_cover,
+            max_workers=max_workers,
+            target_s2_dir=dest_country_s2
+        )
 
 
 def main():

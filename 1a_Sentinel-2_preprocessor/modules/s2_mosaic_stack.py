@@ -208,8 +208,10 @@ def mosaic_stack_clip_single_track(
     track_dir = BASE_DIR / track
 
     candidate_s2_bases = [
-        track_dir / "_temp_processing" / "s2_optical",
+        BASE_DIR / country_code.upper() / "S2",
         track_dir / "S2",
+        track_dir / "_temp_processing" / "s2_optical",
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / "S2",
         Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track / "S2"
     ]
     s2_base = candidate_s2_bases[0]
@@ -219,6 +221,7 @@ def mosaic_stack_clip_single_track(
             break
 
     if not s2_base.exists():
+        logging.warning(f"Could not locate S2 synthetic repository for {track} (checked {candidate_s2_bases})")
         return
 
     out_final_dir = track_dir / "s2_doy_mosaics"
