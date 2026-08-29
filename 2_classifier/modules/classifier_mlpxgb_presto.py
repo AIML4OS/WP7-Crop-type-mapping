@@ -830,14 +830,18 @@ class ProcessingPipelineS1S2:
                 return p
 
         agrimasks_dir = self.aux_dir / "raster_files" / "AgriMasks" / self.country
+        samples_dir = self.aux_dir / "shapefiles_samples" / self.country
         candidates = [
             agrimasks_dir / "brpgewaspercelen_definitief_2025.gpkg",
             agrimasks_dir / "lpis.gpkg",
             agrimasks_dir / "lpis.shp",
-            self.aux_dir / "shapefiles_samples" / self.country / "lpis.gpkg",
-            self.aux_dir / "shapefiles_samples" / self.country / "lpis.shp",
-            self.aux_dir / "shapefiles_samples" / self.country / "parcels.gpkg",
-            self.aux_dir / "shapefiles_samples" / self.country / "parcels.shp",
+            samples_dir / "lpis.gpkg",
+            samples_dir / "lpis.shp",
+            samples_dir / "parcels.gpkg",
+            samples_dir / "parcels.shp",
+            samples_dir / "samples_all.shp",
+            samples_dir / "samples_all.gpkg",
+            samples_dir / "samples.shp",
             self.aux_dir / "shapefiles_samples" / f"{self.country}_{self.sanitized_track}" / "lpis.shp",
             self.base_dir / self.track / "lpis.shp",
             self.base_dir / self.track / "parcels.gpkg"
