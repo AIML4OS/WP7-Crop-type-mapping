@@ -1049,7 +1049,7 @@ class ProcessingPipelineS1S2:
                 band.Fill(0)
 
                 print(f"    Rasterizing parcels to {self.seg_tif.name} (burning column '{id_col}')...")
-                gdal.Rasterize(ds_out, str(temp_gpkg), attribute=id_col)
+                gdal.Rasterize(ds_out, str(temp_gpkg), attribute=id_col, callback=gdal.TermProgress_nocb)
 
                 ds_out.FlushCache()
                 ds_out = None
@@ -1141,7 +1141,8 @@ class ProcessingPipelineS1S2:
                 for future in as_completed(futures):
                     x, y, segments, valid_mask_crop = future.result()
                     completed_count += 1
-                    print(f"    [Tile Finished] x={x}, y={y} | Progress: {completed_count}/{total_tasks} tiles ({completed_count/total_tasks*100:.1f}%)")
+                    pct = (completed_count / total_tasks) * 100.0
+                    print(f"    [SAM PROGRESS] Tile {completed_count}/{total_tasks} ({pct:.1f}%) finished (x={x}, y={y}) | Total segments: {global_seg_id-1:,}", flush=True)
 
                     if segments is not None:
                         seg_valid_mask = segments > 0
@@ -1164,8 +1165,11 @@ class ProcessingPipelineS1S2:
                                 break
         else:
             # Tiled SLIC
+            total_tiles = math.ceil(rows / tile_size) * math.ceil(cols / tile_size)
+            tile_idx = 0
             for y in range(0, rows, tile_size):
                 for x in range(0, cols, tile_size):
+                    tile_idx += 1
                     xsize_valid = min(tile_size, cols - x)
                     ysize_valid = min(tile_size, rows - y)
                     x_start_buf = max(0, x - buffer)
@@ -1196,6 +1200,9 @@ class ProcessingPipelineS1S2:
                         valid_mask = np.sum(np.abs(img), axis=2) > 0
 
                     if not np.any(valid_mask):
+                        pct = (tile_idx / total_tiles) * 100.0
+                        if tile_idx % 10 == 0 or tile_idx == total_tiles:
+                            print(f"    [SLIC PROGRESS] Tile {tile_idx}/{total_tiles} ({pct:.1f}%) [NoData tile skipped] | Total segments: {global_seg_id-1:,}", flush=True)
                         continue
 
                     img_norm = img_as_float(img)
@@ -1227,6 +1234,8 @@ class ProcessingPipelineS1S2:
                         segments[~valid_mask_crop] = 0
 
                     out_band.WriteArray(segments.astype(np.int32), x, y)
+                    pct = (tile_idx / total_tiles) * 100.0
+                    print(f"    [SLIC PROGRESS] Tile {tile_idx}/{total_tiles} ({pct:.1f}%) completed | Total segments: {global_seg_id-1:,}", flush=True)
 
         out_band.FlushCache()
         out_ds = None
@@ -1292,7 +1301,24 @@ class ProcessingPipelineS1S2:
         cols, rows = seg_ds.RasterXSize, seg_ds.RasterYSize
 
         gdf_wgs84 = gdf.to_crs("EPSG:4326")
-        xs, ys = gdf.geometry.x.values, gdf.geometry.y.values
+        seg_proj = seg_ds.GetProjection()
+        if seg_proj and gdf.crs:
+            from pyproj import CRS
+            target_crs = CRS.from_wkt(seg_proj)
+            if gdf.crs != target_crs:
+                gdf_proj = gdf.to_crs(target_crs)
+            else:
+                gdf_proj = gdf
+        else:
+            gdf_proj = gdf
+
+        if hasattr(gdf_proj.geometry, 'x'):
+            xs = gdf_proj.geometry.x.values
+            ys = gdf_proj.geometry.y.values
+        else:
+            xs = gdf_proj.geometry.centroid.x.values
+            ys = gdf_proj.geometry.centroid.y.values
+
         pxs = (inv_gt[0] + inv_gt[1] * xs + inv_gt[2] * ys).astype(int)
         pys = (inv_gt[3] + inv_gt[4] * xs + inv_gt[5] * ys).astype(int)
         crop_ids = gdf['crop_id'].values
@@ -1304,7 +1330,9 @@ class ProcessingPipelineS1S2:
                 sid = seg_arr[py, px]
                 if sid > 0:
                     target_segments[sid] = cid
-                    segment_coords[sid] = (gdf_wgs84.iloc[idx].geometry.centroid.y, gdf_wgs84.iloc[idx].geometry.centroid.x)
+                    geom_wgs = gdf_wgs84.iloc[idx].geometry
+                    centroid_wgs = geom_wgs.centroid if hasattr(geom_wgs, 'centroid') else geom_wgs
+                    segment_coords[sid] = (centroid_wgs.y, centroid_wgs.x)
 
         print(f"    Found {len(target_segments)} unique training segments.")
         from scipy.ndimage import find_objects
@@ -1834,9 +1862,25 @@ class ProcessingPipelineS1S2:
         inv_gt = gdal.InvGeoTransform(gt)
         cols, rows = ds.RasterXSize, ds.RasterYSize
         cls_arr = ds.GetRasterBand(1).ReadAsArray()
+        ras_proj = ds.GetProjection()
 
-        xs = gdf_val.geometry.x.values
-        ys = gdf_val.geometry.y.values
+        if ras_proj and gdf_val.crs:
+            from pyproj import CRS
+            target_crs = CRS.from_wkt(ras_proj)
+            if gdf_val.crs != target_crs:
+                gdf_val_proj = gdf_val.to_crs(target_crs)
+            else:
+                gdf_val_proj = gdf_val
+        else:
+            gdf_val_proj = gdf_val
+
+        if hasattr(gdf_val_proj.geometry, 'x'):
+            xs = gdf_val_proj.geometry.x.values
+            ys = gdf_val_proj.geometry.y.values
+        else:
+            xs = gdf_val_proj.geometry.centroid.x.values
+            ys = gdf_val_proj.geometry.centroid.y.values
+
         pxs = (inv_gt[0] + inv_gt[1] * xs + inv_gt[2] * ys).astype(int)
         pys = (inv_gt[3] + inv_gt[4] * xs + inv_gt[5] * ys).astype(int)
 
