@@ -533,11 +533,21 @@ def process_orbit_cdse_s2(
 
     # Filter out products already converted across shared S2 or orbit S2
     target_country_tiles = set(COUNTRY_MGRS_TILES.get(country_code.upper(), []))
-    prods_to_process = []
+    target_products = []
     for prod in products:
         tile_upper = prod['tile'].upper()
         if target_country_tiles and tile_upper not in target_country_tiles:
             continue
+        target_products.append(prod)
+
+    filtered_border_count = len(products) - len(target_products)
+    if filtered_border_count > 0:
+        logging.info(f"Target track MGRS scenes: {len(target_products)} (Filtered {filtered_border_count} scenes outside target country MGRS tiles).")
+
+    prods_to_process = []
+    already_converted_count = 0
+    for prod in target_products:
+        tile_upper = prod['tile'].upper()
         stem_name = prod['title'][:-5] if prod['title'].endswith('.SAFE') else prod['title']
         dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / stem_name
         check_b02 = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
@@ -546,9 +556,13 @@ def process_orbit_cdse_s2(
             shared_check = BASE_DIR / country_code / "S2" / f"{tile_upper}_tif" / stem_name / f"{stem_name}_B02_20m.tif"
             if not (shared_check.exists() and shared_check.stat().st_size > 1024):
                 prods_to_process.append(prod)
+            else:
+                already_converted_count += 1
+        else:
+            already_converted_count += 1
 
     total_prods = len(prods_to_process)
-    logging.info(f"Remaining CDSE products to download & convert: {total_prods} (out of {len(products)} total)")
+    logging.info(f"Remaining CDSE products to download & convert: {total_prods} (Already converted on disk: {already_converted_count})")
 
     if total_prods == 0:
         logging.info(f"All Sentinel-2 products for {track_name} are already converted to GeoTIFF!")
@@ -696,19 +710,31 @@ def process_country_cdse_s2(
 
     # Filter scenes to target country MGRS tiles if defined, and check existing converted GeoTIFFs
     target_tiles = set(COUNTRY_MGRS_TILES.get(country_code, []))
-    tasks = []
+    target_products = []
     for prod in products:
         tile_upper = prod['tile'].upper()
         if target_tiles and tile_upper not in target_tiles:
             continue
+        target_products.append(prod)
+
+    filtered_border_count = len(products) - len(target_products)
+    if filtered_border_count > 0:
+        logging.info(f"Target country MGRS scenes: {len(target_products)} (Filtered {filtered_border_count} scenes outside target country MGRS tiles).")
+
+    tasks = []
+    already_converted_count = 0
+    for prod in target_products:
+        tile_upper = prod['tile'].upper()
         stem_name = prod['title'][:-5] if prod['title'].endswith('.SAFE') else prod['title']
         dest_prod_tif_dir = dest_country_s2 / f"{tile_upper}_tif" / stem_name
         check_b02 = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
         if not (check_b02.exists() and check_b02.stat().st_size > 1024):
             tasks.append(prod)
+        else:
+            already_converted_count += 1
 
     total_prods = len(tasks)
-    logging.info(f"Remaining scenes to download & convert for {country_code}: {total_prods} (Already processed: {len(products) - total_prods})")
+    logging.info(f"Remaining scenes to download & convert for {country_code}: {total_prods} (Already converted on disk: {already_converted_count})")
 
     if total_prods == 0:
         logging.info(f"All Sentinel-2 products for country {country_code} are already converted!")
