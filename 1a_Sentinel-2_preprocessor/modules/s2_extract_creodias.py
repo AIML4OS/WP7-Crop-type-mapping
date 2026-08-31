@@ -382,7 +382,7 @@ def scan_creodias_for_dates(
     start_date: datetime.date,
     end_date: datetime.date,
     target_tiles: Optional[List[str]] = None,
-    max_cloud_cover: float = 80.0
+    max_cloud_cover: float = 60.0
 ) -> List[Dict]:
     tiles_key = tuple(sorted(set(t.upper().replace('T', '') for t in target_tiles))) if target_tiles else None
     cache_key = (str(repo_path), str(start_date), str(end_date), tiles_key, max_cloud_cover)
@@ -511,7 +511,7 @@ def process_orbit_creodias_s2(
     start_date: datetime.date,
     end_date: datetime.date,
     all_scenes: Optional[List[Dict]] = None,
-    max_cloud_cover: float = 80.0,
+    max_cloud_cover: float = 60.0,
     max_workers: int = 8,
     target_s2_dir: Optional[Path] = None
 ):
@@ -585,7 +585,7 @@ def process_country_creodias_s2(
     start_date: datetime.date,
     end_date: datetime.date,
     orbit: Optional[int] = None,
-    max_cloud_cover: float = 80.0,
+    max_cloud_cover: float = 60.0,
     max_workers: int = 8
 ):
     country_code = country_code.upper()
@@ -620,7 +620,7 @@ def main():
     parser.add_argument('-e', '--end_date', required=True, help="End date (YYYY-MM-DD), e.g. 2025-09-15")
     parser.add_argument('-c', '--country', required=True, help="Country code, e.g. PL, NL, FR, PT, AT")
     parser.add_argument('-o', '--orbit', type=int, default=None, help="Optional single orbit override")
-    parser.add_argument('--cloud_cover', type=float, default=80.0, help="Max cloud cover (default: 80)")
+    parser.add_argument('--cloud_cover', type=float, default=60.0, help="Max cloud cover (default: 60)")
     parser.add_argument('--threads', type=int, default=8, help="Worker threads (default: 8)")
     parser.add_argument('--repo_path', type=str, default=None, help="Override CREODIAS repo path")
 

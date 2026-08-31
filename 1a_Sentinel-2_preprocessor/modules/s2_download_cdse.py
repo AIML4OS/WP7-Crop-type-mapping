@@ -293,7 +293,7 @@ class Sentinel2FinderCDSE:
         geom: ogr.Geometry,
         start_date: datetime.date,
         end_date: datetime.date,
-        cloud_cover: float = 80.0
+        cloud_cover: float = 60.0
     ) -> List[Dict]:
         start_str = start_date.strftime("%Y-%m-%dT00:00:00.000Z")
         end_str = end_date.strftime("%Y-%m-%dT23:59:59.999Z")
@@ -460,7 +460,7 @@ def process_orbit_cdse_s2(
     end_date: datetime.date,
     username: str = CDSE_USERNAME,
     password: str = CDSE_PASSWORD,
-    cloud_cover: float = 80.0,
+    cloud_cover: float = 60.0,
     max_workers: int = 8,
     target_s2_dir: Optional[Path] = None
 ):
@@ -605,7 +605,7 @@ def process_country_cdse_s2(
     orbit: Optional[int] = None,
     username: str = CDSE_USERNAME,
     password: str = CDSE_PASSWORD,
-    cloud_cover: float = 80.0,
+    cloud_cover: float = 60.0,
     max_workers: int = 4
 ):
     country_code = country_code.upper()
@@ -639,7 +639,7 @@ def main():
     parser.add_argument('-e', '--end_date', required=True, help="End date (YYYY-MM-DD), e.g. 2025-09-15")
     parser.add_argument('-c', '--country', required=True, help="Country code, e.g. PL, NL, FR, PT, AT")
     parser.add_argument('-o', '--orbit', type=int, default=None, help="Optional single orbit override")
-    parser.add_argument('--cloud_cover', type=float, default=80.0, help="Maximum cloud cover (default: 80)")
+    parser.add_argument('--cloud_cover', type=float, default=60.0, help="Maximum cloud cover (default: 60)")
     parser.add_argument('--threads', type=int, default=4, help="Worker threads (default: 4)")
     parser.add_argument('--username', default=CDSE_USERNAME, help="CDSE Username")
     parser.add_argument('--password', default=CDSE_PASSWORD, help="CDSE Password")
