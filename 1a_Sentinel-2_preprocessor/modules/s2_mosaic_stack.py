@@ -98,6 +98,9 @@ def get_s1_raster_reference(track_dir: Path) -> Optional[Dict]:
         Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track_dir.relative_to(BASE_DIR) / "processed_raster" if BASE_DIR in track_dir.parents else None,
         Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track_dir.relative_to(BASE_DIR) if BASE_DIR in track_dir.parents else None
     ]
+    if track_dir.exists():
+        candidate_dirs.extend(list(track_dir.glob("orbit_*/1_input_stacks")))
+        candidate_dirs.extend(list(track_dir.glob("orbit_*")))
     for proc_dir in candidate_dirs:
         if proc_dir and proc_dir.exists():
             s1_tifs = list(proc_dir.glob("*_VH_VV*.tif")) + list(proc_dir.glob("*Sigma0*.tif")) + list(proc_dir.glob("S1_*_stack*.tif"))
@@ -365,17 +368,25 @@ def mosaic_stack_clip_single_track(
         if out_final_tmp.exists():
             out_final_tmp.rename(out_final_tif)
 
+        # Ensure shared country S2 directory has master stack (via instant hardlink, 0 bytes extra space)
+        shared_s2_dir = BASE_DIR / country_code.upper() / "S2"
+        shared_s2_dir.mkdir(parents=True, exist_ok=True)
+        shared_country_tif = shared_s2_dir / f"{country_code.upper()}_S2_timeseries.tif"
+        if out_final_tif.exists() and shared_country_tif.resolve() != out_final_tif.resolve():
+            try:
+                if shared_country_tif.exists():
+                    shared_country_tif.unlink()
+                os.link(str(out_final_tif), str(shared_country_tif))
+                logging.info(f"Shared country master S2 stack linked to {shared_country_tif}")
+            except Exception:
+                try:
+                    shutil.copy2(str(out_final_tif), str(shared_country_tif))
+                except Exception:
+                    pass
+
     if out_vrt.exists():
         try: out_vrt.unlink()
         except: pass
-
-    # Always keep final DOY mosaics intact for inspection and instant re-stacking.
-    # Auto-cleanup raw MGRS tile folders, *_tif, and _synthetic_s2 to free ~600 GB of disk space.
-    if out_final_tif.exists() and out_final_tif.stat().st_size > 100 * 1024 * 1024:
-        s2_root = track_dir / 'S2'
-        if s2_root.exists():
-            logging.info(f"Auto-cleanup: removing raw S2 granules and tile tifs for {track} to free disk space (~600 GB)...")
-            shutil.rmtree(str(s2_root), ignore_errors=True)
 
     logging.info(f"SUCCESS: Sentinel-2 Multi-Temporal Stack saved to {out_final_tif} ({len(band_descriptions)} bands)!")
 

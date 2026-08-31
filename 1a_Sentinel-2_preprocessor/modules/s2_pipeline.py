@@ -24,6 +24,7 @@ import datetime
 import logging
 import os
 import pathlib
+import re
 import sys
 from pathlib import Path
 from typing import Optional, List, Dict
@@ -46,6 +47,122 @@ logging.basicConfig(
 )
 
 
+import shutil
+
+
+def try_reuse_existing_country_s2_stack(track_name: str, country_code: str, overwrite: bool = False) -> bool:
+    """
+    Checks if a valid multi-temporal S2 stack for this country already exists
+    in another orbit or shared repository. If found, instantly links or aligns it,
+    saving ~70 hours of repetitive downloading and mosaicking.
+    """
+    from osgeo import gdal
+    norm_track = track_name.replace('\\', '/')
+    sanitized_track = norm_track.replace('/', '_')
+    track_dir = mosaic_stack.BASE_DIR / norm_track
+    dest_proc_dir = track_dir / "1_input_stacks"
+    dest_s2_stack = dest_proc_dir / f"{sanitized_track}_S2_timeseries.tif"
+
+    if dest_s2_stack.exists() and dest_s2_stack.stat().st_size > 100 * 1024 * 1024 and not overwrite:
+        try:
+            ds_check = gdal.Open(str(dest_s2_stack))
+            if ds_check and ds_check.RasterCount >= 126:
+                logging.info(f"Target Sentinel-2 stack {dest_s2_stack.name} already exists and is complete ({dest_s2_stack.stat().st_size / (1024**3):.1f} GB). Skipping S2 pipeline!")
+                return True
+        except Exception:
+            pass
+
+    s1_ref = mosaic_stack.get_s1_raster_reference(track_dir)
+    if not s1_ref:
+        return False
+
+    target_w = s1_ref['width']
+    target_h = s1_ref['height']
+    target_gt = s1_ref['gt']
+    target_bounds = s1_ref['bounds']
+    target_proj = s1_ref['proj']
+
+    # Search for candidates across the country
+    candidate_paths = [
+        mosaic_stack.BASE_DIR / country_code.upper() / "S2" / f"{country_code.upper()}_S2_timeseries.tif",
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / "S2" / f"{country_code.upper()}_S2_timeseries.tif",
+    ]
+    for c_dir in [mosaic_stack.BASE_DIR / country_code.upper(), Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper()]:
+        if c_dir.exists():
+            for o_stack in c_dir.glob("orbit_*/1_input_stacks/*S2*.tif"):
+                if o_stack.resolve() != dest_s2_stack.resolve() and not o_stack.name.endswith(".tmp.tif"):
+                    candidate_paths.append(o_stack)
+
+    for cand in candidate_paths:
+        if cand.exists() and cand.stat().st_size > 100 * 1024 * 1024:
+            try:
+                ds_cand = gdal.Open(str(cand))
+                if not ds_cand or ds_cand.RasterCount < 126:
+                    continue
+
+                cand_w = ds_cand.RasterXSize
+                cand_h = ds_cand.RasterYSize
+                cand_gt = ds_cand.GetGeoTransform()
+
+                # Case A: Exact or near-exact match (within 10 meters / 1 pixel shift)
+                if cand_w == target_w and cand_h == target_h and abs(cand_gt[0] - target_gt[0]) < 10.0 and abs(cand_gt[3] - target_gt[3]) < 10.0:
+                    dest_proc_dir.mkdir(parents=True, exist_ok=True)
+                    if dest_s2_stack.exists():
+                        try: dest_s2_stack.unlink()
+                        except: pass
+                    try:
+                        os.link(str(cand), str(dest_s2_stack))
+                        logging.info(f" >>> [OPTIMIZATION] Created instant hardlink from {cand.name} to {dest_s2_stack.name} (0 bytes duplicated) <<<")
+                    except Exception:
+                        shutil.copy2(str(cand), str(dest_s2_stack))
+                        logging.info(f" >>> [OPTIMIZATION] Copied {cand.name} to {dest_s2_stack.name} <<<")
+
+                    # Also link overviews if present
+                    cand_ovr = cand.parent / f"{cand.name}.ovr"
+                    if cand_ovr.exists():
+                        dest_ovr = dest_proc_dir / f"{dest_s2_stack.name}.ovr"
+                        try:
+                            if dest_ovr.exists(): dest_ovr.unlink()
+                            os.link(str(cand_ovr), str(dest_ovr))
+                        except: pass
+
+                    logging.info(f" >>> [OPTIMIZATION] Reused existing full-country S2 stack ({cand.stat().st_size / (1024**3):.1f} GB) for {track_name}! (Saved ~70h processing time) <<<\n")
+                    return True
+
+                # Case B: Slight bounding box difference (e.g. 1-2 rows diff) - Warp existing stack in ~1-2 minutes instead of 70 hours
+                elif abs(cand_w - target_w) <= 10 and abs(cand_h - target_h) <= 10:
+                    dest_proc_dir.mkdir(parents=True, exist_ok=True)
+                    logging.info(f" >>> [OPTIMIZATION] Found country S2 stack {cand.name} with minor boundary shift ({cand_w}x{cand_h} vs target {target_w}x{target_h}). Fast-warping in ~1-2 mins instead of 70 hours...")
+                    warp_opts = gdal.WarpOptions(
+                        outputBounds=target_bounds,
+                        width=target_w,
+                        height=target_h,
+                        dstSRS=target_proj,
+                        resampleAlg='bilinear',
+                        creationOptions=['COMPRESS=DEFLATE', 'PREDICTOR=2', 'ZLEVEL=6', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'],
+                        callback=gdal.TermProgress_nocb
+                    )
+                    ds_warp = gdal.Warp(str(dest_s2_stack), str(cand), options=warp_opts)
+                    if ds_warp:
+                        ds_warp.FlushCache()
+                        ds_warp = None
+                        logging.info(f" >>> [OPTIMIZATION] Fast-warp complete for {dest_s2_stack.name}! Building overviews...")
+                        ds_out = gdal.Open(str(dest_s2_stack), gdal.GA_Update)
+                        if ds_out:
+                            gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
+                            gdal.SetConfigOption('PREDICTOR_OVERVIEW', '2')
+                            gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
+                            ds_out.BuildOverviews('AVERAGE', [2, 4, 8, 16, 32, 64])
+                            ds_out = None
+                        logging.info(f" >>> [OPTIMIZATION] Successfully adapted existing country S2 stack for {track_name}! (Saved ~70 hours!) <<<\n")
+                        return True
+            except Exception as e:
+                logging.warning(f"Error checking S2 candidate {cand}: {e}")
+                continue
+
+    return False
+
+
 def run_s2_pipeline_for_orbit(
     country_code: str,
     orbit_num: int,
@@ -56,12 +173,19 @@ def run_s2_pipeline_for_orbit(
     cloud_cover: float = 80.0,
     doys: list = time_series.DEFAULT_DOYS,
     threads: int = 4,
-    all_scenes_cache: Optional[list] = None
+    all_scenes_cache: Optional[list] = None,
+    overwrite: bool = False
 ):
     track_name = f"{country_code}/orbit_{orbit_num}"
     logging.info(f"\n################################################################################")
     logging.info(f" >>> STARTING S2 PIPELINE FOR TRACK: {track_name} (Orbit {orbit_num}) <<<")
     logging.info(f"################################################################################")
+
+    # Step 0: Check if a matching country-wide S2 stack already exists in another orbit / repository
+    if not overwrite:
+        if try_reuse_existing_country_s2_stack(track_name, country_code, overwrite=overwrite):
+            logging.info(f" >>> FINISHED S2 PIPELINE FOR TRACK: {track_name} (Reused Country S2 Stack) <<<\n")
+            return
 
     # Step 1: Ingestion / Extraction / Download
     if mode in ['all', 'download', 'download_only']:
@@ -116,6 +240,36 @@ def run_s2_pipeline_for_orbit(
     logging.info(f" >>> FINISHED S2 PIPELINE FOR TRACK: {track_name} <<<\n")
 
 
+def run_s2_pipeline_for_track(
+    track_name: str,
+    country_code: str,
+    start_date: Optional[datetime.date] = None,
+    end_date: Optional[datetime.date] = None,
+    source: str = "creodias",
+    mode: str = "all",
+    cloud_cover: float = 80.0,
+    doys: list = time_series.DEFAULT_DOYS,
+    threads: int = 4,
+    all_scenes_cache: Optional[list] = None,
+    overwrite: bool = False
+):
+    orbit_match = re.search(r'orbit_(\d+)', track_name)
+    orbit_num = int(orbit_match.group(1)) if orbit_match else 0
+    return run_s2_pipeline_for_orbit(
+        country_code=country_code,
+        orbit_num=orbit_num,
+        start_date=start_date,
+        end_date=end_date,
+        source=source,
+        mode=mode,
+        cloud_cover=cloud_cover,
+        doys=doys,
+        threads=threads,
+        all_scenes_cache=all_scenes_cache,
+        overwrite=overwrite
+    )
+
+
 def run_s2_master_pipeline(
     country: str,
     start_date: Optional[datetime.date] = None,
@@ -160,8 +314,11 @@ def run_s2_master_pipeline(
         logging.info(f"   SOURCE: {source.upper()} | MODE: {mode.upper()} | THREADS: {threads}")
         logging.info(f"#####################################################################\n")
 
-        for o_num in selected_orbits:
+        for idx, o_num in enumerate(selected_orbits):
             track_name = f"{country_code}/orbit_{o_num}"
+            # For the first orbit, respect the overwrite flag. For subsequent orbits in the same run,
+            # always attempt instant reuse of the newly generated country stack (0 sec / 0 bytes).
+            orbit_overwrite = overwrite if idx == 0 else False
             run_s2_pipeline_for_track(
                 track_name=track_name,
                 country_code=country_code,
@@ -172,7 +329,7 @@ def run_s2_master_pipeline(
                 cloud_cover=cloud_cover,
                 doys=doys,
                 threads=threads,
-                overwrite=overwrite
+                overwrite=orbit_overwrite
             )
 
         logging.info(f"\n=====================================================================")

@@ -779,17 +779,54 @@ class ProcessingPipelineS1S2:
     def _resolve_s2_raster(self) -> Optional[Path]:
         candidate_dirs = [
             self.base_dir / self.track / '1_input_stacks',
+            self.base_dir / self.country / 'S2',
+            self.base_dir / self.country / '1_input_stacks',
             self.base_dir / self.track / 'processed_raster',
             Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / '1_input_stacks',
+            Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.country / 'S2',
             Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.track / 'processed_raster'
         ]
-        patterns = [f"*{self.sanitized_track}*S2*.tif", f"*S2_timeseries*.tif", f"*S2*.tif"]
+        patterns = [
+            f"*{self.sanitized_track}*S2*.tif",
+            f"{self.country}_S2_timeseries*.tif",
+            f"*{self.country}*S2_timeseries*.tif",
+            f"*S2_timeseries*.tif",
+            f"*{self.country}*S2*.tif",
+            f"*S2*.tif"
+        ]
         for c_dir in candidate_dirs:
             if c_dir.exists():
                 for pat in patterns:
-                    matches = list(c_dir.glob(pat))
+                    matches = [f for f in c_dir.glob(pat) if f.is_file() and not f.name.endswith(".tmp.tif") and not f.name.endswith(".ovr")]
                     if matches:
                         return matches[0]
+
+        # Cross-orbit discovery fallback: search other orbit folders of the same country
+        country_dirs = [self.base_dir / self.country, Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.country]
+        for c_root in country_dirs:
+            if not c_root.exists():
+                continue
+            cross_candidates = list(c_root.glob("orbit_*/1_input_stacks/*S2*.tif"))
+            for cand in cross_candidates:
+                if cand.exists() and cand.stat().st_size > 100 * 1024 * 1024 and not cand.name.endswith(".tmp.tif") and not cand.name.endswith(".ovr"):
+                    try:
+                        ds_c = gdal.Open(str(cand))
+                        if ds_c and ds_c.RasterCount >= 126:
+                            dest_dir = self.base_dir / self.track / '1_input_stacks'
+                            dest_dir.mkdir(parents=True, exist_ok=True)
+                            dest_s2 = dest_dir / f"{self.file_prefix}_S2_timeseries.tif"
+                            if not dest_s2.exists():
+                                try:
+                                    os.link(str(cand), str(dest_s2))
+                                    print(f"    [OPTIMIZATION] Reused country S2 stack from {cand.name} via instant hardlink to {dest_s2.name}!")
+                                except Exception:
+                                    import shutil
+                                    shutil.copy2(str(cand), str(dest_s2))
+                                    print(f"    [OPTIMIZATION] Reused country S2 stack from {cand.name} via copy to {dest_s2.name}!")
+                            return dest_s2 if dest_s2.exists() else cand
+                    except Exception:
+                        continue
+
         return None
 
     def _resolve_samples_shp(self) -> Optional[Path]:
