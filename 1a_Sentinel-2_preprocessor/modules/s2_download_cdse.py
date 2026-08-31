@@ -639,31 +639,73 @@ def process_country_cdse_s2(
     logging.info(f" Date range: {start_date} to {end_date} | Cloud cover <= {cloud_cover}% | Workers: {max_workers}")
     logging.info(f"========================================================")
 
+    # 1. Parallel conversion of any existing unzipped SAFE folders already on disk
+    existing_safes = list(dest_country_s2.glob("*/*.SAFE"))
+    if existing_safes:
+        total_safes = len(existing_safes)
+        logging.info(f"Found {total_safes} existing downloaded SAFE products in {dest_country_s2}. Starting parallel GeoTIFF conversion ({max_workers} threads)...")
+
+        converted_count = 0
+        lock = threading.Lock()
+
+        def _worker_convert_existing(safe_path: Path):
+            nonlocal converted_count
+            tile_name = safe_path.parent.name.upper()
+            stem_name = safe_path.stem
+            dest_prod_tif_dir = dest_country_s2 / f"{tile_name}_tif" / stem_name
+
+            all_ready = True
+            for band in S2_BANDS_20M:
+                check_band = dest_prod_tif_dir / f"{stem_name}_{band}_20m.tif"
+                if not (check_band.exists() and check_band.stat().st_size > 1024):
+                    all_ready = False
+                    break
+
+            if not all_ready:
+                ok = convert_safe_to_geotiff(safe_path, dest_prod_tif_dir)
+                if ok:
+                    try: shutil.rmtree(str(safe_path))
+                    except: pass
+            else:
+                try: shutil.rmtree(str(safe_path))
+                except: pass
+
+            with lock:
+                converted_count += 1
+                if converted_count % 10 == 0 or converted_count == total_safes:
+                    pct = (converted_count / total_safes) * 100.0
+                    logging.info(f"  [CONVERSION PROGRESS] {converted_count}/{total_safes} SAFE products converted ({pct:.1f}%)")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            list(executor.map(_worker_convert_existing, existing_safes))
+
+    # 2. Search CDSE API for country products
     country_geom = get_country_extent_geometry(country_code)
     if not country_geom:
         logging.error(f"Cannot get bounding geometry for country {country_code}")
         return
 
-    client = CDSEClient(username, password)
+    finder = Sentinel2FinderCDSE(username, password)
     logging.info(f"Searching Sentinel-2 products for {country_code} in CDSE catalog...")
-    products = client.search_by_geometry(country_geom, start_date, end_date, cloud_cover=cloud_cover)
+    products = finder.search_by_geometry(country_geom, start_date, end_date, cloud_cover=cloud_cover)
     logging.info(f"Found {len(products)} Sentinel-2 scenes for country {country_code}.")
 
     if not products:
         logging.warning(f"No Sentinel-2 products found for {country_code}.")
         return
 
-    # Filter scenes to target country MGRS tiles if defined, and check existing
-    target_tiles = COUNTRY_MGRS_TILES.get(country_code, None)
+    # Filter scenes to target country MGRS tiles if defined, and check existing converted GeoTIFFs
+    target_tiles = set(COUNTRY_MGRS_TILES.get(country_code, []))
     tasks = []
-    for p in products:
-        tile_id, prod_date_str = extract_tile_and_date(p['Name'])
-        if target_tiles and tile_id not in target_tiles:
+    for prod in products:
+        tile_upper = prod['tile'].upper()
+        if target_tiles and tile_upper not in target_tiles:
             continue
-        out_granule_dir = dest_country_s2 / tile_id
-        is_processed = out_granule_dir.exists() and any(out_granule_dir.glob(f"S2*_{prod_date_str}_*.tif"))
-        if not is_processed:
-            tasks.append((p, out_granule_dir))
+        stem_name = prod['title'][:-5] if prod['title'].endswith('.SAFE') else prod['title']
+        dest_prod_tif_dir = dest_country_s2 / f"{tile_upper}_tif" / stem_name
+        check_b02 = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
+        if not (check_b02.exists() and check_b02.stat().st_size > 1024):
+            tasks.append(prod)
 
     total_prods = len(tasks)
     logging.info(f"Remaining scenes to download & convert for {country_code}: {total_prods} (Already processed: {len(products) - total_prods})")
@@ -675,21 +717,41 @@ def process_country_cdse_s2(
     proc_count = 0
     lock = threading.Lock()
 
-    def _worker_process_product(item):
+    def _worker_process_product(prod: dict):
         nonlocal proc_count
-        prod, out_dir = item
-        try:
-            download_single_product(prod, out_dir, username, password)
-        except Exception as e:
-            logging.debug(f"Skipping failed download {prod.get('title')}: {e}")
-        finally:
-            with lock:
-                proc_count += 1
-                if proc_count % 5 == 0 or proc_count == total_prods:
-                    pct = (proc_count / total_prods) * 100.0
-                    logging.info(f"  [DOWNLOAD & CONVERSION] {proc_count}/{total_prods} products completed ({pct:.1f}%)")
+        tile_upper = prod['tile'].upper()
+        stem_name = prod['title'][:-5] if prod['title'].endswith('.SAFE') else prod['title']
+        safe_name = prod['title'] if prod['title'].endswith('.SAFE') else f"{prod['title']}.SAFE"
 
-    dl_workers = min(max_workers, 6)
+        dest_prod_tif_dir = dest_country_s2 / f"{tile_upper}_tif" / stem_name
+        tile_raw_dir = dest_country_s2 / tile_upper
+        tile_raw_dir.mkdir(parents=True, exist_ok=True)
+        unzipped_safe = tile_raw_dir / safe_name
+
+        if not unzipped_safe.exists():
+            zip_file = download_single_product(prod, tile_raw_dir, username, password)
+            if zip_file and zip_file.exists():
+                try:
+                    with ZipFile(str(zip_file), 'r') as z:
+                        z.extractall(str(tile_raw_dir))
+                    try: zip_file.unlink()
+                    except: pass
+                except BadZipfile:
+                    try: zip_file.unlink()
+                    except: pass
+
+        if unzipped_safe.exists():
+            convert_safe_to_geotiff(unzipped_safe, dest_prod_tif_dir)
+            try: shutil.rmtree(str(unzipped_safe))
+            except: pass
+
+        with lock:
+            proc_count += 1
+            if proc_count % 5 == 0 or proc_count == total_prods:
+                pct = (proc_count / total_prods) * 100.0
+                logging.info(f"  [DOWNLOAD & CONVERSION] {proc_count}/{total_prods} products completed ({pct:.1f}%)")
+
+    dl_workers = min(max_workers, 8)
     with ThreadPoolExecutor(max_workers=dl_workers) as executor:
         list(executor.map(_worker_process_product, tasks))
 
