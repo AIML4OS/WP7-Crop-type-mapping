@@ -106,7 +106,7 @@ COUNTRY_MGRS_TILES = {
     'PT': [
         '29SMC', '29SMD', '29SNC', '29SND', '29SPC', '29SPD', '29SQC', '29SQD',
         '29SMB', '29SNB', '29SPB', '29SQB', '29SMA', '29SNA', '29SPA', '29SQA',
-        '29TNE', '29TNF', '29TPE', '29TPF', '29TQE', '29TQF'
+        '29TNE', '29TNF', '29TNG', '29TPE', '29TPF', '29TPG', '29TQE', '29TQF', '29TQG'
     ],
     'PL': [
         '33UUT', '33UUS', '33UVR', '33UVS', '33UVT', '33UWU', '33UWV', '33UWR', '33UWS', '33UWT',

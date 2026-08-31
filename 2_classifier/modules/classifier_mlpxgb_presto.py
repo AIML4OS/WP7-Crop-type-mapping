@@ -1051,12 +1051,28 @@ class ProcessingPipelineS1S2:
                 print(f"    Rasterizing parcels to {self.seg_tif.name} (burning column '{id_col}')...")
                 gdal.Rasterize(ds_out, str(temp_gpkg), attribute=id_col, callback=gdal.TermProgress_nocb)
 
+                # Strictly mask with multimodal footprint (S1 + S2 intersection)
+                if self.footprint_mask.exists():
+                    print(f"    Masking LPIS segmentation with multimodal footprint ({self.footprint_mask.name})...")
+                    ds_foot = gdal.Open(str(self.footprint_mask))
+                    tile_size = 4096
+                    for y in range(0, rows, tile_size):
+                        for x in range(0, cols, tile_size):
+                            xsize = min(tile_size, cols - x)
+                            ysize = min(tile_size, rows - y)
+                            seg_block = band.ReadAsArray(x, y, xsize, ysize)
+                            foot_block = ds_foot.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                            if np.any(foot_block == 0):
+                                seg_block[foot_block == 0] = 0
+                                band.WriteArray(seg_block, x, y)
+                    ds_foot = None
+
                 ds_out.FlushCache()
                 ds_out = None
                 if os.path.exists(temp_gpkg):
                     try: os.remove(temp_gpkg)
                     except: pass
-                print(f"    [OK] LPIS segmentation raster created: {self.seg_tif}")
+                print(f"    [OK] LPIS segmentation raster created and masked with footprint: {self.seg_tif}")
                 return
             else:
                 print(f"    [WARNING] LPIS vector dataset not found. Falling back to SLIC.")
@@ -1194,8 +1210,11 @@ class ProcessingPipelineS1S2:
 
                     img = np.dstack(img_list)
                     if ds_foot:
-                        valid_mask_buf = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf) > 0
-                        valid_mask = valid_mask_buf
+                        valid_mask_buf = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                        if valid_mask_buf is not None:
+                            valid_mask = valid_mask_buf > 0
+                        else:
+                            valid_mask = np.sum(np.abs(img), axis=2) > 0
                     else:
                         valid_mask = np.sum(np.abs(img), axis=2) > 0
 
