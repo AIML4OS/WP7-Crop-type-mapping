@@ -396,7 +396,7 @@ def discover_s1_orbits(country_code: str) -> List[int]:
     if country_dir.exists():
         found = [int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name)]
         if found: return sorted(list(set(found)))
-    return COUNTRY_ORBITS.get(country_code.upper(), [88, 161])
+    return COUNTRY_ORBITS.get(country_code.upper(), [])
 
 
 def mosaic_stack_clip_s2(

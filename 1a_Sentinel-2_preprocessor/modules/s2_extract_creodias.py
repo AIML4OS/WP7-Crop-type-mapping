@@ -195,7 +195,7 @@ def discover_s1_orbits(country_code: str) -> List[int]:
         logging.info(f"Automatically detected {len(orbits)} Sentinel-1 orbit(s) in workingDir for {country_code}: {sorted(orbits)}")
         return sorted(orbits)
 
-    cand = COUNTRY_ORBITS.get(country_code, [88, 161])
+    cand = COUNTRY_ORBITS.get(country_code, [])
     logging.info(f"No existing orbit folders in workingDir/{country_code}. Using candidate greedy orbits: {cand}")
     return cand
 

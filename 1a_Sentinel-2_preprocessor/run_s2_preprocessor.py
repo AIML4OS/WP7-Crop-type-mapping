@@ -134,7 +134,7 @@ def discover_country_orbits(country_code: str) -> List[int]:
                     return data[country_code.upper()]
         except Exception:
             pass
-    return COUNTRY_ORBITS.get(country_code.upper(), [88, 161])
+    return COUNTRY_ORBITS.get(country_code.upper(), [])
 
 
 class Sentinel2Pipeline:

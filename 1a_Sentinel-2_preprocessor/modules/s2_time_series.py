@@ -284,9 +284,9 @@ def run_time_series(
             elif country_dir.exists():
                 orbits = [int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name)]
                 if not orbits:
-                    orbits = COUNTRY_ORBITS.get(country_code, [88, 161])
+                    orbits = COUNTRY_ORBITS.get(country_code, [])
             else:
-                orbits = COUNTRY_ORBITS.get(country_code, [88, 161])
+                orbits = COUNTRY_ORBITS.get(country_code, [])
 
             logging.info(f"Generating synthetic time-series for country {country_code} across orbits {orbits}...")
             for o in orbits:
