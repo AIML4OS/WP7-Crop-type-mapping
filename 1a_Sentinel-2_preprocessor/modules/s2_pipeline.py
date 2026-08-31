@@ -304,21 +304,7 @@ def run_s2_master_pipeline(
         )
     else:
         if orbit is not None:
-            selected_orbits = [orbit]
-        else:
-            selected_orbits = mosaic_stack.discover_s1_orbits(country_code)
-
-        logging.info(f"\n#####################################################################")
-        logging.info(f"   STARTING SENTINEL-2 PIPELINE FOR COUNTRY: {country_code}")
-        logging.info(f"   TARGET ORBITS: {selected_orbits}")
-        logging.info(f"   SOURCE: {source.upper()} | MODE: {mode.upper()} | THREADS: {threads}")
-        logging.info(f"#####################################################################\n")
-
-        for idx, o_num in enumerate(selected_orbits):
-            track_name = f"{country_code}/orbit_{o_num}"
-            # For the first orbit, respect the overwrite flag. For subsequent orbits in the same run,
-            # always attempt instant reuse of the newly generated country stack (0 sec / 0 bytes).
-            orbit_overwrite = overwrite if idx == 0 else False
+            track_name = f"{country_code}/orbit_{orbit}"
             run_s2_pipeline_for_track(
                 track_name=track_name,
                 country_code=country_code,
@@ -329,11 +315,60 @@ def run_s2_master_pipeline(
                 cloud_cover=cloud_cover,
                 doys=doys,
                 threads=threads,
-                overwrite=orbit_overwrite
+                overwrite=overwrite
             )
+        else:
+            logging.info(f"\n#####################################################################")
+            logging.info(f"   STARTING UNIFIED SENTINEL-2 PIPELINE FOR COUNTRY: {country_code}")
+            logging.info(f"   SOURCE: {source.upper()} | MODE: {mode.upper()} | THREADS: {threads}")
+            logging.info(f"#####################################################################\n")
+
+            # Step 1: Ingestion
+            if mode in ['all', 'download', 'download_only']:
+                if not start_date or not end_date:
+                    raise ValueError("Start date (-s) and end date (-e) must be specified for download mode.")
+
+                if source.lower() == 'creodias':
+                    extract_creodias.process_country_creodias_s2(
+                        country_code=country_code,
+                        start_date=start_date,
+                        end_date=end_date,
+                        max_cloud_cover=cloud_cover,
+                        max_workers=threads
+                    )
+                else:
+                    download_cdse.process_country_cdse_s2(
+                        country_code=country_code,
+                        start_date=start_date,
+                        end_date=end_date,
+                        cloud_cover=cloud_cover,
+                        max_workers=threads
+                    )
+
+            if mode in ['download', 'download_only']:
+                logging.info(f"Country download & conversion complete for {country_code}.")
+                return
+
+            # Step 2: Synthetic Time-series Interpolation
+            if mode in ['all', 'process', 'process_only']:
+                time_series.run_time_series(
+                    country=country_code,
+                    doys=doys,
+                    max_workers=threads,
+                    overwrite=overwrite
+                )
+
+                # Step 3: Mosaic & Stack into Country Master BigTIFF
+                mosaic_stack.mosaic_stack_clip_single_track(
+                    track=country_code,
+                    country_code=country_code,
+                    doys=doys,
+                    max_workers=threads,
+                    overwrite=overwrite
+                )
 
         logging.info(f"\n=====================================================================")
-        logging.info(f" ALL Sentinel-2 Pipelines for country {country_code} (Orbits: {selected_orbits}) COMPLETED SUCCESSFULLY!")
+        logging.info(f" Sentinel-2 Pipeline for country {country_code} COMPLETED SUCCESSFULLY!")
         logging.info(f"=====================================================================\n")
 
 

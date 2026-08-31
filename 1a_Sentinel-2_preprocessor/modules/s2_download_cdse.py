@@ -598,49 +598,112 @@ def process_orbit_cdse_s2(
     logging.info(f"SUCCESS: CDSE S2 download & conversion completed for track {track_name}!")
 
 
+def get_country_extent_geometry(country_code: str) -> Optional[ogr.Geometry]:
+    """Computes union bounding polygon across all S1 orbit rasters or country shapefile."""
+    country_code = country_code.upper()
+    country_dir = BASE_DIR / country_code
+    polys = []
+
+    if country_dir.exists():
+        for orb_dir in country_dir.glob("orbit_*"):
+            m = re.search(r'orbit_(\d+)', orb_dir.name)
+            if m:
+                g = get_s1_orbit_extent_geometry(country_code, int(m.group(1)))
+                if g:
+                    polys.append(g)
+
+    if polys:
+        union_geom = polys[0].Clone()
+        for p in polys[1:]:
+            union_geom = union_geom.Union(p)
+        return union_geom
+
+    return get_country_geometry(country_code)
+
+
 def process_country_cdse_s2(
     country_code: str,
     start_date: datetime.date,
     end_date: datetime.date,
-    orbit: Optional[int] = None,
     username: str = CDSE_USERNAME,
     password: str = CDSE_PASSWORD,
     cloud_cover: float = 60.0,
-    max_workers: int = 4
+    max_workers: int = 8
 ):
     country_code = country_code.upper()
     dest_country_s2 = BASE_DIR / country_code / "S2"
     dest_country_s2.mkdir(parents=True, exist_ok=True)
 
-    if orbit is not None:
-        selected_orbits = [orbit]
-    else:
-        selected_orbits = discover_s1_orbits(country_code)
+    logging.info(f"\n========================================================")
+    logging.info(f" CDSE SENTINEL-2 DOWNLOAD FOR COUNTRY: {country_code} (Target: {dest_country_s2})")
+    logging.info(f" Date range: {start_date} to {end_date} | Cloud cover <= {cloud_cover}% | Workers: {max_workers}")
+    logging.info(f"========================================================")
 
-    logging.info(f"=== CDSE SENTINEL-2 DOWNLOAD FOR COUNTRY: {country_code} (Shared pool: {dest_country_s2}) ===")
+    country_geom = get_country_extent_geometry(country_code)
+    if not country_geom:
+        logging.error(f"Cannot get bounding geometry for country {country_code}")
+        return
 
-    for o_num in selected_orbits:
-        process_orbit_cdse_s2(
-            country_code=country_code,
-            orbit_num=o_num,
-            start_date=start_date,
-            end_date=end_date,
-            username=username,
-            password=password,
-            cloud_cover=cloud_cover,
-            max_workers=max_workers,
-            target_s2_dir=dest_country_s2
-        )
+    client = CDSEClient(username, password)
+    logging.info(f"Searching Sentinel-2 products for {country_code} in CDSE catalog...")
+    products = client.search_by_geometry(country_geom, start_date, end_date, cloud_cover=cloud_cover)
+    logging.info(f"Found {len(products)} Sentinel-2 scenes for country {country_code}.")
+
+    if not products:
+        logging.warning(f"No Sentinel-2 products found for {country_code}.")
+        return
+
+    # Filter scenes to target country MGRS tiles if defined, and check existing
+    target_tiles = COUNTRY_MGRS_TILES.get(country_code, None)
+    tasks = []
+    for p in products:
+        tile_id, prod_date_str = extract_tile_and_date(p['Name'])
+        if target_tiles and tile_id not in target_tiles:
+            continue
+        out_granule_dir = dest_country_s2 / tile_id
+        is_processed = out_granule_dir.exists() and any(out_granule_dir.glob(f"S2*_{prod_date_str}_*.tif"))
+        if not is_processed:
+            tasks.append((p, out_granule_dir))
+
+    total_prods = len(tasks)
+    logging.info(f"Remaining scenes to download & convert for {country_code}: {total_prods} (Already processed: {len(products) - total_prods})")
+
+    if total_prods == 0:
+        logging.info(f"All Sentinel-2 products for country {country_code} are already converted!")
+        return
+
+    proc_count = 0
+    lock = threading.Lock()
+
+    def _worker_process_product(item):
+        nonlocal proc_count
+        prod, out_dir = item
+        try:
+            download_single_product(prod, out_dir, username, password)
+        except Exception as e:
+            logging.debug(f"Skipping failed download {prod.get('title')}: {e}")
+        finally:
+            with lock:
+                proc_count += 1
+                if proc_count % 5 == 0 or proc_count == total_prods:
+                    pct = (proc_count / total_prods) * 100.0
+                    logging.info(f"  [DOWNLOAD & CONVERSION] {proc_count}/{total_prods} products completed ({pct:.1f}%)")
+
+    dl_workers = min(max_workers, 6)
+    with ThreadPoolExecutor(max_workers=dl_workers) as executor:
+        list(executor.map(_worker_process_product, tasks))
+
+    logging.info(f"SUCCESS: CDSE S2 download & conversion completed for country {country_code}!\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download and convert Sentinel-2 L2A from CDSE automatically detecting S1 orbits.")
+    parser = argparse.ArgumentParser(description="Download and convert Sentinel-2 L2A from CDSE.")
     parser.add_argument('-s', '--start_date', required=True, help="Start date (YYYY-MM-DD), e.g. 2024-10-15")
     parser.add_argument('-e', '--end_date', required=True, help="End date (YYYY-MM-DD), e.g. 2025-09-15")
     parser.add_argument('-c', '--country', required=True, help="Country code, e.g. PL, NL, FR, PT, AT")
     parser.add_argument('-o', '--orbit', type=int, default=None, help="Optional single orbit override")
     parser.add_argument('--cloud_cover', type=float, default=60.0, help="Maximum cloud cover (default: 60)")
-    parser.add_argument('--threads', type=int, default=4, help="Worker threads (default: 4)")
+    parser.add_argument('--threads', type=int, default=8, help="Worker threads (default: 8)")
     parser.add_argument('--username', default=CDSE_USERNAME, help="CDSE Username")
     parser.add_argument('--password', default=CDSE_PASSWORD, help="CDSE Password")
 
@@ -649,16 +712,27 @@ def main():
     start_dt = datetime.datetime.strptime(args.start_date, "%Y-%m-%d").date()
     end_dt = datetime.datetime.strptime(args.end_date, "%Y-%m-%d").date()
 
-    process_country_cdse_s2(
-        country_code=args.country,
-        start_date=start_dt,
-        end_date=end_dt,
-        orbit=args.orbit,
-        username=args.username,
-        password=args.password,
-        cloud_cover=args.cloud_cover,
-        max_workers=args.threads
-    )
+    if args.orbit:
+        process_orbit_cdse_s2(
+            country_code=args.country,
+            orbit_num=args.orbit,
+            start_date=start_dt,
+            end_date=end_dt,
+            username=args.username,
+            password=args.password,
+            cloud_cover=args.cloud_cover,
+            max_workers=args.threads
+        )
+    else:
+        process_country_cdse_s2(
+            country_code=args.country,
+            start_date=start_dt,
+            end_date=end_dt,
+            username=args.username,
+            password=args.password,
+            cloud_cover=args.cloud_cover,
+            max_workers=args.threads
+        )
 
 
 if __name__ == '__main__':

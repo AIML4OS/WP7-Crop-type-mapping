@@ -272,17 +272,20 @@ class Sentinel2Pipeline:
         logging.info(f"============================================================")
 
         mosaic_mod = importlib.import_module("s2_mosaic_stack")
-        pipeline_mod = importlib.import_module("s2_pipeline")
-        orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
-        for idx, orb in enumerate(orbits_to_run):
-            track_name = f"{self.country}/orbit_{orb}"
-            # For the first orbit, respect self.overwrite. For subsequent orbits in the same run,
-            # attempt instant reuse/fast-warp of the first orbit's completed stack (saving ~70h per orbit).
-            if idx > 0 and pipeline_mod.try_reuse_existing_country_s2_stack(track_name, self.country, overwrite=False):
-                continue
-
+        if self.orbit:
+            track_name = f"{self.country}/orbit_{self.orbit}"
             mosaic_mod.mosaic_stack_clip_single_track(
                 track=track_name,
+                country_code=self.country,
+                target_epsg=3857,
+                doys=self.doys,
+                max_workers=self.threads,
+                overwrite=self.overwrite,
+                build_overviews=True
+            )
+        else:
+            mosaic_mod.mosaic_stack_clip_single_track(
+                track=self.country,
                 country_code=self.country,
                 target_epsg=3857,
                 doys=self.doys,

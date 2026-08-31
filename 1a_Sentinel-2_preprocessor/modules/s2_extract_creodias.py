@@ -584,7 +584,6 @@ def process_country_creodias_s2(
     country_code: str,
     start_date: datetime.date,
     end_date: datetime.date,
-    orbit: Optional[int] = None,
     max_cloud_cover: float = 60.0,
     max_workers: int = 8
 ):
@@ -592,30 +591,60 @@ def process_country_creodias_s2(
     dest_country_s2 = BASE_DIR / country_code / "S2"
     dest_country_s2.mkdir(parents=True, exist_ok=True)
 
-    if orbit is not None:
-        selected_orbits = [orbit]
-    else:
-        selected_orbits = discover_s1_orbits(country_code)
+    logging.info(f"\n========================================================")
+    logging.info(f" CREODIAS SENTINEL-2 EXTRACTION FOR COUNTRY: {country_code} (Target: {dest_country_s2})")
+    logging.info(f" Date range: {start_date} to {end_date} | Cloud cover <= {max_cloud_cover}% | Workers: {max_workers}")
+    logging.info(f"========================================================")
 
-    logging.info(f"=== PROCESSING SENTINEL-2 FOR COUNTRY: {country_code} (Shared pool: {dest_country_s2}) ===")
     target_tiles = COUNTRY_MGRS_TILES.get(country_code, None)
     all_scenes = scan_creodias_for_dates(S2_REPO_PATH, start_date, end_date, target_tiles=target_tiles, max_cloud_cover=max_cloud_cover)
 
-    for o_num in selected_orbits:
-        process_orbit_creodias_s2(
-            country_code=country_code,
-            orbit_num=o_num,
-            start_date=start_date,
-            end_date=end_date,
-            all_scenes=all_scenes,
-            max_cloud_cover=max_cloud_cover,
-            max_workers=max_workers,
-            target_s2_dir=dest_country_s2
-        )
+    if not all_scenes:
+        logging.warning(f"No Sentinel-2 products found on CREODIAS for country {country_code}.")
+        return
+
+    # Filter scenes already converted in shared country pool
+    scenes_to_process = []
+    for sc in all_scenes:
+        tile_upper = sc['tile'].upper()
+        dest_prod_tif_dir = dest_country_s2 / f"{tile_upper}_tif" / sc['title']
+        check_b02 = dest_prod_tif_dir / f"{sc['title']}_B02_20m.tif"
+        if not (check_b02.exists() and check_b02.stat().st_size > 1024):
+            scenes_to_process.append(sc)
+
+    total_scenes = len(scenes_to_process)
+    logging.info(f"Remaining S2 products to convert for country {country_code}: {total_scenes} (Already processed: {len(all_scenes) - total_scenes})")
+
+    if total_scenes == 0:
+        logging.info(f"All Sentinel-2 products for country {country_code} are already converted to GeoTIFF!")
+        return
+
+    converted_count = 0
+    lock = threading.Lock()
+
+    def _worker_convert_creodias(sc: dict):
+        nonlocal converted_count
+        try:
+            tile_upper = sc['tile'].upper()
+            out_tile_dir = dest_country_s2 / f"{tile_upper}_tif" / sc['title']
+            convert_safe_to_geotiff(sc['safe_path'], out_tile_dir)
+        except Exception as e:
+            logging.debug(f"Skipping damaged scene {sc.get('title')}: {e}")
+        finally:
+            with lock:
+                converted_count += 1
+                if converted_count % 10 == 0 or converted_count == total_scenes:
+                    pct = (converted_count / total_scenes) * 100.0
+                    logging.info(f"  [CREODIAS CONVERSION] {converted_count}/{total_scenes} products completed ({pct:.1f}%)")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(_worker_convert_creodias, scenes_to_process))
+
+    logging.info(f"SUCCESS: Sentinel-2 extraction & conversion completed for country {country_code}!\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract & Convert Sentinel-2 L2A from CREODIAS Y: automatically detecting S1 orbits.")
+    parser = argparse.ArgumentParser(description="Extract & Convert Sentinel-2 L2A from CREODIAS Y: drive.")
     parser.add_argument('-s', '--start_date', required=True, help="Start date (YYYY-MM-DD), e.g. 2024-10-15")
     parser.add_argument('-e', '--end_date', required=True, help="End date (YYYY-MM-DD), e.g. 2025-09-15")
     parser.add_argument('-c', '--country', required=True, help="Country code, e.g. PL, NL, FR, PT, AT")
@@ -633,14 +662,23 @@ def main():
     if args.repo_path:
         S2_REPO_PATH = Path(args.repo_path)
 
-    process_country_creodias_s2(
-        country_code=args.country,
-        start_date=start_dt,
-        end_date=end_dt,
-        orbit=args.orbit,
-        max_cloud_cover=args.cloud_cover,
-        max_workers=args.threads
-    )
+    if args.orbit:
+        process_orbit_creodias_s2(
+            country_code=args.country,
+            orbit_num=args.orbit,
+            start_date=start_dt,
+            end_date=end_dt,
+            max_cloud_cover=args.cloud_cover,
+            max_workers=args.threads
+        )
+    else:
+        process_country_creodias_s2(
+            country_code=args.country,
+            start_date=start_dt,
+            end_date=end_dt,
+            max_cloud_cover=args.cloud_cover,
+            max_workers=args.threads
+        )
 
 
 if __name__ == '__main__':

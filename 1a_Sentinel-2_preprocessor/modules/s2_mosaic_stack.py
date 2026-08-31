@@ -327,6 +327,9 @@ def mosaic_stack_clip_single_track(
         return
 
     out_vrt = out_final_dir / f"{sanitized_track}_S2_timeseries_temp.vrt"
+    if "/" not in norm_track and "\\" not in norm_track:
+        out_proc_dir = BASE_DIR / country_code.upper() / "S2"
+        out_proc_dir.mkdir(parents=True, exist_ok=True)
     out_final_tif = out_proc_dir / f"{sanitized_track}_S2_timeseries.tif"
     out_final_tmp = out_proc_dir / f"{sanitized_track}_S2_timeseries.tmp.tif"
 
