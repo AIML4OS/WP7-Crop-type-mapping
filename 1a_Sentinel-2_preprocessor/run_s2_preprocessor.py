@@ -142,8 +142,8 @@ class Sentinel2Pipeline:
         self,
         country: str,
         orbit: Optional[int] = None,
-        start_date: str = "2024-10-15",
-        end_date: str = "2025-09-15",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         source: str = "auto",
         cloud_cover: float = 80.0,
         doys: List[int] = DEFAULT_DOYS,
@@ -154,8 +154,8 @@ class Sentinel2Pipeline:
         self.orbit = orbit
         self.start_date_str = start_date
         self.end_date_str = end_date
-        self.start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
-        self.end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+        self.start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
+        self.end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
         self.cloud_cover = cloud_cover
         self.doys = doys
         self.threads = threads
@@ -167,8 +167,32 @@ class Sentinel2Pipeline:
         else:
             self.track = f"{self.country} (All greedy orbits)"
 
+    def prompt_dates(self):
+        """Forces the user to enter valid start and end dates."""
+        print("\n--- Mandatory Acquisition Dates Configuration ---")
+        while True:
+            s_input = input(" Enter acquisition start date [YYYY-MM-DD] (e.g. 2024-10-15): ").strip()
+            try:
+                self.start_date = datetime.datetime.strptime(s_input, "%Y-%m-%d").date()
+                self.start_date_str = s_input
+                break
+            except ValueError:
+                print(" [ERROR] Invalid date format! Please enter date as YYYY-MM-DD.")
+
+        while True:
+            e_input = input(" Enter acquisition end date [YYYY-MM-DD] (e.g. 2025-09-15): ").strip()
+            try:
+                self.end_date = datetime.datetime.strptime(e_input, "%Y-%m-%d").date()
+                self.end_date_str = e_input
+                break
+            except ValueError:
+                print(" [ERROR] Invalid date format! Please enter date as YYYY-MM-DD.")
+
     def stage_1_download_extract(self):
         """Stage 1: Download or Extract L2A bands with SCL cloud masking into shared country S2 pool."""
+        if not self.start_date or not self.end_date:
+            self.prompt_dates()
+
         logging.info(f"\n============================================================")
         logging.info(f" [Stage 1/3] Sentinel-2 L2A Ingestion & SCL Masking ({self.source.upper()})")
         logging.info(f" Track: {self.track} | Date range: {self.start_date_str} to {self.end_date_str}")
@@ -269,6 +293,8 @@ class Sentinel2Pipeline:
 
     def run_all(self):
         """Executes all 3 stages sequentially."""
+        if not self.start_date or not self.end_date:
+            self.prompt_dates()
         self.stage_1_download_extract()
         self.stage_2_time_series()
         self.stage_3_mosaic_stack()
@@ -277,18 +303,19 @@ class Sentinel2Pipeline:
 
 def interactive_menu(pipeline: Sentinel2Pipeline):
     while True:
+        range_str = f"{pipeline.start_date_str} to {pipeline.end_date_str}" if (pipeline.start_date and pipeline.end_date) else "[NOT SET - REQUIRED]"
         menu_text = f"""
 ============================================================
  Sentinel-2 Multi-Temporal Preprocessing Pipeline
  Track  : {pipeline.track}
  Source : [{pipeline.source.upper()}] (CREODIAS local / CDSE API)
- Range  : {pipeline.start_date_str} to {pipeline.end_date_str}
+ Range  : {range_str}
 ============================================================
  [1] Stage 1: Ingestion & SCL cloud masking ({pipeline.source.upper()})
  [2] Stage 2: Multi-temporal synthetic DOY interpolation (14 dates)
  [3] Stage 3: Mosaicking, S1 grid matching & 126-band BigTIFF stack
  -----------------------------------------------------------
- [D] Change Date Range (Current: {pipeline.start_date_str} to {pipeline.end_date_str})
+ [D] Change / Enter Acquisition Dates
  [S] Switch data source (Toggle: CREODIAS <-> CDSE)
  [A] Run all stages automatically (1 -> 2 -> 3)
  [Q] Quit
@@ -299,16 +326,7 @@ def interactive_menu(pipeline: Sentinel2Pipeline):
             if choice == '1': pipeline.stage_1_download_extract()
             elif choice == '2': pipeline.stage_2_time_series()
             elif choice == '3': pipeline.stage_3_mosaic_stack()
-            elif choice == 'D':
-                new_s = input(f" Enter new start date [YYYY-MM-DD] (current: {pipeline.start_date_str}): ").strip()
-                new_e = input(f" Enter new end date [YYYY-MM-DD] (current: {pipeline.end_date_str}): ").strip()
-                if new_s:
-                    pipeline.start_date_str = new_s
-                    pipeline.start_date = datetime.datetime.strptime(new_s, "%Y-%m-%d").date()
-                if new_e:
-                    pipeline.end_date_str = new_e
-                    pipeline.end_date = datetime.datetime.strptime(new_e, "%Y-%m-%d").date()
-                print(f"\n    Date range updated to: {pipeline.start_date_str} -> {pipeline.end_date_str}")
+            elif choice == 'D': pipeline.prompt_dates()
             elif choice == 'S':
                 pipeline.source = 'cdse' if pipeline.source == 'creodias' else 'creodias'
                 print(f"\n    Data source switched to: {pipeline.source.upper()}")
@@ -384,9 +402,23 @@ def interactive_setup_wizard():
     sources = {'1': 'auto', '2': 'creodias', '3': 'cdse'}
     source = sources.get(src_choice, 'auto')
 
-    # Step 3: Date Range
-    start_date = input(" Enter acquisition start date [YYYY-MM-DD] (default: 2024-10-15): ").strip() or "2024-10-15"
-    end_date = input(" Enter acquisition end date [YYYY-MM-DD] (default: 2025-09-15): ").strip() or "2025-09-15"
+    # Step 3: Date Range (Forced input, no hidden defaults)
+    print("\n--- Mandatory Acquisition Dates Configuration ---")
+    while True:
+        start_date = input(" Enter acquisition start date [YYYY-MM-DD] (e.g. 2024-10-15): ").strip()
+        try:
+            datetime.datetime.strptime(start_date, "%Y-%m-%d")
+            break
+        except ValueError:
+            print(" [ERROR] Invalid date format! You must provide a valid date formatted as YYYY-MM-DD.")
+
+    while True:
+        end_date = input(" Enter acquisition end date [YYYY-MM-DD] (e.g. 2025-09-15): ").strip()
+        try:
+            datetime.datetime.strptime(end_date, "%Y-%m-%d")
+            break
+        except ValueError:
+            print(" [ERROR] Invalid date format! You must provide a valid date formatted as YYYY-MM-DD.")
 
     pipeline = Sentinel2Pipeline(
         country=selected_country,
@@ -408,10 +440,10 @@ Examples:
   python run_s2_preprocessor.py
 
   # Single orbit automated run:
-  python run_s2_preprocessor.py --track NL/orbit_88 --stage A
+  python run_s2_preprocessor.py --track NL/orbit_88 -s 2024-10-15 -e 2025-09-15 --stage A
 
   # Entire country automated run:
-  python run_s2_preprocessor.py --country NL --stage A
+  python run_s2_preprocessor.py --country NL -s 2024-10-15 -e 2025-09-15 --stage A
 """
     )
     parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
@@ -419,8 +451,8 @@ Examples:
     parser.add_argument('-o', '--orbit', type=int, default=None, help="Specific relative orbit number")
     parser.add_argument('--stage', default=None, choices=['A', '1', '2', '3'], help="Stage to execute: 'A' (all), '1' (ingest), '2' (time series), '3' (stack)")
     parser.add_argument('--source', default='auto', choices=['auto', 'creodias', 'cdse'], help="Data source: 'auto' (detect local), 'creodias', 'cdse' (default: auto)")
-    parser.add_argument('-s', '--start_date', default='2024-10-15', help="Acquisition start date (YYYY-MM-DD, default: 2024-10-15)")
-    parser.add_argument('-e', '--end_date', default='2025-09-15', help="Acquisition end date (YYYY-MM-DD, default: 2025-09-15)")
+    parser.add_argument('-s', '--start_date', default=None, help="Acquisition start date (YYYY-MM-DD, required for Stage 1/A)")
+    parser.add_argument('-e', '--end_date', default=None, help="Acquisition end date (YYYY-MM-DD, required for Stage 1/A)")
     parser.add_argument('--cloud_cover', type=float, default=80.0, help="Max scene cloud cover percentage (default: 80.0)")
     parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="Target DOYs list (default: 14 dates)")
     parser.add_argument('--threads', type=int, default=8, help="Worker threads for parallel processing (default: 8)")
@@ -446,6 +478,10 @@ Examples:
 
     if not country:
         parser.error("Either --track (-t) or --country (-c) must be specified.")
+
+    # Validate mandatory dates for Stage 1 and Stage A
+    if args.stage in ['A', '1'] and (not args.start_date or not args.end_date):
+        parser.error("Start date (-s/--start_date) and end date (-e/--end_date) in format YYYY-MM-DD are required when running Stage 1 or All stages.")
 
     pipeline = Sentinel2Pipeline(
         country=country,

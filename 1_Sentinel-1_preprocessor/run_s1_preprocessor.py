@@ -152,8 +152,8 @@ class Sentinel1Pipeline:
         self,
         country: str,
         orbit: Optional[int] = None,
-        start_date: str = "2024-10-15",
-        end_date: str = "2025-09-15",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         exclude_winter: bool = False,
         source: str = "auto",
         threads: int = 4,
@@ -173,8 +173,32 @@ class Sentinel1Pipeline:
         else:
             self.track = f"{self.country} (All greedy orbits)"
 
+    def prompt_dates(self):
+        """Forces the user to enter valid start and end dates."""
+        print("\n--- Mandatory Acquisition Dates Configuration ---")
+        while True:
+            s_input = input(" Enter acquisition start date [YYYY-MM-DD] (e.g. 2024-10-15): ").strip()
+            try:
+                datetime.datetime.strptime(s_input, "%Y-%m-%d")
+                self.start_date = s_input
+                break
+            except ValueError:
+                print(" [ERROR] Invalid date format! Please enter date as YYYY-MM-DD.")
+
+        while True:
+            e_input = input(" Enter acquisition end date [YYYY-MM-DD] (e.g. 2025-09-15): ").strip()
+            try:
+                datetime.datetime.strptime(e_input, "%Y-%m-%d")
+                self.end_date = e_input
+                break
+            except ValueError:
+                print(" [ERROR] Invalid date format! Please enter date as YYYY-MM-DD.")
+
     def stage_1_calibration(self):
         """Stage 1: Calibration & Slicing via COG, CREODIAS SAFE, or CDSE API."""
+        if not self.start_date or not self.end_date:
+            self.prompt_dates()
+
         winter_str = " [Excluding Winter 01.12-14.02]" if self.exclude_winter else ""
         logging.info(f"\n============================================================")
         logging.info(f" [Stage 1/3] Sentinel-1 SAR Ingestion & Calibration ({self.source.upper()}){winter_str}")
@@ -218,37 +242,46 @@ class Sentinel1Pipeline:
                     orbit=orb,
                     start_date=self.start_date,
                     end_date=self.end_date,
-                    exclude_winter=self.exclude_winter
+                    exclude_winter=self.exclude_winter,
+                    max_workers=self.threads
                 )
 
     def stage_2_coregistration(self):
-        """Stage 2: SNAP Multi-temporal Coregistration."""
+        """Stage 2: Multi-temporal coregistration using ESA SNAP GPT."""
         logging.info(f"\n============================================================")
-        logging.info(f" [Stage 2/3] Sentinel-1 Multi-temporal Coregistration (SNAP)")
+        logging.info(f" [Stage 2/3] Sentinel-1 SNAP Multi-temporal Coregistration")
         logging.info(f" Track: {self.track}")
         logging.info(f"============================================================")
 
         coreg_mod = importlib.import_module("s1_coregistration")
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
-            track_name = f"{self.country}/orbit_{orb}"
-            coreg_mod.process_track(track_name, overwrite=self.overwrite)
+            coreg_mod.process_orbit_coregistration(
+                country=self.country,
+                orbit=orb,
+                overwrite=self.overwrite
+            )
 
     def stage_3_stack_clip(self):
-        """Stage 3: Multi-temporal Stacking & Area Clipping (BigTIFF)."""
+        """Stage 3: Multi-temporal stacking, reprojecting to Web Mercator, and NUTS clipping."""
         logging.info(f"\n============================================================")
-        logging.info(f" [Stage 3/3] Sentinel-1 Time-series Stacking & Clipping (BigTIFF)")
+        logging.info(f" [Stage 3/3] Sentinel-1 Multi-Temporal Stacking & Area Clipping")
         logging.info(f" Track: {self.track}")
         logging.info(f"============================================================")
 
         stack_mod = importlib.import_module("s1_stack_clip")
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
-            track_name = f"{self.country}/orbit_{orb}"
-            stack_mod.process_track(track_name)
+            stack_mod.process_orbit_stack_and_clip(
+                country=self.country,
+                orbit=orb,
+                overwrite=self.overwrite
+            )
 
     def run_all(self):
         """Executes all 3 stages sequentially."""
+        if not self.start_date or not self.end_date:
+            self.prompt_dates()
         self.stage_1_calibration()
         self.stage_2_coregistration()
         self.stage_3_stack_clip()
@@ -257,17 +290,19 @@ class Sentinel1Pipeline:
 
 def interactive_menu(pipeline: Sentinel1Pipeline):
     while True:
+        range_str = f"{pipeline.start_date} to {pipeline.end_date}" if (pipeline.start_date and pipeline.end_date) else "[NOT SET - REQUIRED]"
         menu_text = f"""
 ============================================================
  Sentinel-1 SAR Preprocessing Pipeline (Sigma0 VH/VV)
  Track  : {pipeline.track}
  Source : [{pipeline.source.upper()}] (CREODIAS local / CDSE API)
- Range  : {pipeline.start_date} to {pipeline.end_date}
+ Range  : {range_str}
 ============================================================
  [1] Stage 1: Ingestion & calibration ({pipeline.source.upper()})
  [2] Stage 2: SNAP coregistration & terrain correction
  [3] Stage 3: Multi-temporal stacking & AOI clipping
  -----------------------------------------------------------
+ [D] Change / Enter Acquisition Dates
  [S] Switch data source (Toggle: CREODIAS <-> CDSE)
  [A] Run all stages automatically (1 -> 2 -> 3)
  [Q] Quit
@@ -278,6 +313,7 @@ def interactive_menu(pipeline: Sentinel1Pipeline):
             if choice == '1': pipeline.stage_1_calibration()
             elif choice == '2': pipeline.stage_2_coregistration()
             elif choice == '3': pipeline.stage_3_stack_clip()
+            elif choice == 'D': pipeline.prompt_dates()
             elif choice == 'S':
                 pipeline.source = 'cdse' if pipeline.source == 'creodias' else 'creodias'
                 print(f"\n    Data source switched to: {pipeline.source.upper()}")
@@ -354,9 +390,24 @@ def interactive_setup_wizard():
     sources = {'1': 'auto', '2': 'cog', '3': 'creodias', '4': 'cdse'}
     source = sources.get(src_choice, 'auto')
 
-    # Step 3: Date Range & Winter Exclusion
-    start_date = input(" Enter acquisition start date [YYYY-MM-DD] (default: 2024-10-15): ").strip() or "2024-10-15"
-    end_date = input(" Enter acquisition end date [YYYY-MM-DD] (default: 2025-09-15): ").strip() or "2025-09-15"
+    # Step 3: Date Range & Winter Exclusion (Forced input, no hidden defaults)
+    print("\n--- Mandatory Acquisition Dates Configuration ---")
+    while True:
+        start_date = input(" Enter acquisition start date [YYYY-MM-DD] (e.g. 2024-10-15): ").strip()
+        try:
+            datetime.datetime.strptime(start_date, "%Y-%m-%d")
+            break
+        except ValueError:
+            print(" [ERROR] Invalid date format! You must provide a valid date formatted as YYYY-MM-DD.")
+
+    while True:
+        end_date = input(" Enter acquisition end date [YYYY-MM-DD] (e.g. 2025-09-15): ").strip()
+        try:
+            datetime.datetime.strptime(end_date, "%Y-%m-%d")
+            break
+        except ValueError:
+            print(" [ERROR] Invalid date format! You must provide a valid date formatted as YYYY-MM-DD.")
+
     winter_ans = input(" Exclude winter dormancy period 01.12-14.02? [Y/n] (default: Y): ").strip().upper()
     exclude_winter = (winter_ans != 'N')
 
@@ -392,8 +443,8 @@ Examples:
     parser.add_argument('-o', '--orbit', type=int, default=None, help="Specific relative orbit number")
     parser.add_argument('--stage', default=None, choices=['A', '1', '2', '3'], help="Stage to execute: 'A' (all), '1' (calib), '2' (snap), '3' (stack)")
     parser.add_argument('--source', default='auto', choices=['auto', 'cog', 'creodias', 'cdse'], help="Data source: 'auto' (detect local), 'cog', 'creodias', 'cdse' (default: auto)")
-    parser.add_argument('-s', '--start_date', default='2024-10-15', help="Acquisition start date (YYYY-MM-DD, default: 2024-10-15)")
-    parser.add_argument('-e', '--end_date', default='2025-09-15', help="Acquisition end date (YYYY-MM-DD, default: 2025-09-15)")
+    parser.add_argument('-s', '--start_date', default=None, help="Acquisition start date (YYYY-MM-DD, required for Stage 1/A)")
+    parser.add_argument('-e', '--end_date', default=None, help="Acquisition end date (YYYY-MM-DD, required for Stage 1/A)")
     parser.add_argument('--exclude_winter', action='store_true', help="Exclude winter dormancy period (December 1 to February 14) from processing (default: False)")
     parser.add_argument('--threads', type=int, default=4, help="Worker threads for parallel processing (default: 4)")
     parser.add_argument('--overwrite', action='store_true', help="Force re-processing of intermediate/final products")
@@ -418,6 +469,10 @@ Examples:
 
     if not country:
         parser.error("Either --track (-t) or --country (-c) must be specified.")
+
+    # Validate mandatory dates for Stage 1 and Stage A
+    if args.stage in ['A', '1'] and (not args.start_date or not args.end_date):
+        parser.error("Start date (-s/--start_date) and end date (-e/--end_date) in format YYYY-MM-DD are required when running Stage 1 or All stages.")
 
     pipeline = Sentinel1Pipeline(
         country=country,
