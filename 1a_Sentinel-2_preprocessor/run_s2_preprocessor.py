@@ -147,7 +147,7 @@ class Sentinel2Pipeline:
         source: str = "auto",
         cloud_cover: float = 80.0,
         doys: List[int] = DEFAULT_DOYS,
-        threads: int = 4,
+        threads: int = 8,
         overwrite: bool = False
     ):
         self.country = country.upper()
@@ -423,7 +423,7 @@ Examples:
     parser.add_argument('-e', '--end_date', default='2025-09-15', help="Acquisition end date (YYYY-MM-DD, default: 2025-09-15)")
     parser.add_argument('--cloud_cover', type=float, default=80.0, help="Max scene cloud cover percentage (default: 80.0)")
     parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="Target DOYs list (default: 14 dates)")
-    parser.add_argument('--threads', type=int, default=4, help="Worker threads for parallel processing (default: 4)")
+    parser.add_argument('--threads', type=int, default=8, help="Worker threads for parallel processing (default: 8)")
     parser.add_argument('--overwrite', action='store_true', help="Force re-generation of existing intermediate and final stacks")
 
     args = parser.parse_args()
