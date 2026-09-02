@@ -1,7 +1,7 @@
 NOTICE
 ======
 
-Sentinel-1 OBIA Crop Type Mapping Pipeline (v2.0)
+Sentinel-1 & Sentinel-2 OBIA Crop Type Mapping Pipeline (v2.5)
 Copyright (c) 2024-2027 Przemyslaw Slesinski, Natalia Kotulak, Marko Roos, Marek Mróz, Magdalena Mleczko, Cristina Gabriel, Nina Hofer, Sam Belton, Mohana Logakrishnan, Mathias Kästenbauer, Carla Martins, Ivana I. L. M. Pallister, Isabel Gonçalves
 AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics (https://cros.ec.europa.eu/dashboard/aiml4os)
 Funded by Eurostat, European Commission
@@ -11,144 +11,196 @@ See the LICENSE file for the full license text.
 
 -------------------------------------------------------------------------------
 
-This software makes use of the following third-party open-source libraries
-and software. Each is governed by its own license, listed below.
+This software makes use of and acknowledges the following third-party
+open-source libraries, foundation models, external tools, and geospatial
+data sources. Each is governed by its respective copyright holders and
+license terms detailed below.
 
 -------------------------------------------------------------------------------
 
-1. GDAL / OGR / OSR
-   Copyright (c) 1998-2024 Frank Warmerdam, Even Roulet, and contributors
+I. AI FOUNDATION MODELS & MACHINE LEARNING ARCHITECTURES
+
+1. NASA Harvest Presto Geospatial Foundation Model
+   Copyright (c) 2023 NASA Harvest, Clark Center for Global Geography, World Resources Institute
    License: MIT License
-   Website: https://gdal.org
-   Python binding: osgeo (GDAL Python Bindings)
-   Used for: raster/vector processing, coordinate transformations,
-             clipping, reprojection, and format conversion.
+   Website: https://github.com/nasaharvest/presto
+   Reference: Tseng, G., Zvonkov, I., Duro, C. L. B., et al. (2023).
+              Presto: A Multimodal Geospatial Foundation Model. arXiv:2304.14065.
+              https://doi.org/10.48550/arXiv.2304.14065
+   Used for: Multi-temporal 128-dimensional transformer embeddings extracted
+             from combined Sentinel-1 SAR and Sentinel-2 optical time series.
 
-2. NumPy
-   Copyright (c) 2005-2024 NumPy Developers
-   License: BSD 3-Clause License
-   Website: https://numpy.org
-   Used for: numerical array operations, statistical calculations,
-             time-series band stacking.
-
-3. pandas
-   Copyright (c) 2008-2024 AQR Capital Management, LLC; Lambda Foundry, Inc.;
-                PyData Development Team
-   License: BSD 3-Clause License
-   Website: https://pandas.pydata.org
-   Used for: tabular data processing, training sample management,
-             metrics reporting.
-
-4. GeoPandas
-   Copyright (c) 2013-2024 GeoPandas developers
-   License: BSD 3-Clause License
-   Website: https://geopandas.org
-   Used for: reading/writing vector shapefiles, NUTS2 boundary processing,
-             spatial joins.
-
-5. scikit-learn
-   Copyright (c) 2007-2024 The scikit-learn developers
-   License: BSD 3-Clause License
-   Website: https://scikit-learn.org
-   Reference: Pedregosa et al., 2011. Scikit-learn: Machine Learning in
-              Python. JMLR, 12, pp. 2825-2830.
-   Used for: ANN (MLPClassifier) training and inference,
-             StandardScaler normalization, confusion matrix,
-             precision/recall/F1 metrics, bootstrapped resampling.
-
-6. joblib
-   Copyright (c) 2008-2024 joblib developers
-   License: BSD 3-Clause License
-   Website: https://joblib.readthedocs.io
-   Used for: model serialization (saving/loading trained ANN classifiers).
-
-7. openpyxl
-   Copyright (c) 2010-2024 openpyxl developers
-   License: MIT License
-   Website: https://openpyxl.readthedocs.io
-   Used for: generating Excel (.xlsx) classification accuracy reports.
-
-8. Segment Anything Model (SAM)
+2. Meta AI Segment Anything Model (SAM) & GeoSAM
    Copyright (c) 2023 Meta AI Research
    License: Apache License 2.0
    Website: https://github.com/facebookresearch/segment-anything
    Reference: Kirillov, A., Mintun, E., Ravi, N., et al. (2023).
               Segment Anything. arXiv:2304.02643.
               https://doi.org/10.48550/arXiv.2304.02643
-   Used for: image segmentation to delineate agricultural parcels
-             as input to ANN classification.
+   Used for: Zero-shot deep vision segmentation to delineate agricultural
+             field boundaries and superpixel objects.
 
-9. PyTorch
-   Copyright (c) 2016-2024 The PyTorch Foundation; Facebook, Inc.
+3. XGBoost (Extreme Gradient Boosting)
+   Copyright (c) 2016-2024 XGBoost Contributors / DMLC
+   License: Apache License 2.0
+   Website: https://github.com/dmlc/xgboost
+   Reference: Chen, T., & Guestrin, C. (2016). XGBoost: A Scalable Tree
+              Boosting System. ACM SIGKDD, pp. 785-794.
+   Used for: Gradient boosted decision tree classifier in the dual-tier
+             multimodal soft-voting ensemble.
+
+4. PyTorch & Torchvision
+   Copyright (c) 2016-2024 The PyTorch Foundation, Meta AI, and contributors
    License: BSD 3-Clause License
    Website: https://pytorch.org
-   Reference: Paszke, A., et al. (2019). PyTorch: An Imperative Style,
-              High-Performance Deep Learning Library. NeurIPS.
-   Used for: underlying deep learning framework for SAM inference.
+   Reference: Paszke, A., Gross, S., Massa, F., et al. (2019). PyTorch: An
+              Imperative Style, High-Performance Deep Learning Library. NeurIPS.
+   Used for: Deep PyTorch MLP multi-layer perceptron neural network,
+             tensor matrix operations, and foundation model inference (GPU/CPU).
 
-10. ESA SNAP (Sentinel Application Platform)
-    Copyright (c) European Space Agency (ESA)
-    License: GNU GPL v3 with ESA SNAP License
-    Website: https://step.esa.int/main/toolboxes/snap/
-    Used for: Sentinel-1 SAR preprocessing – radiometric calibration,
-              orbit file application, thermal noise removal,
-              terrain correction, and coregistration.
-    Note: SNAP is invoked as an external process via the SNAP Graph
-          Processing Tool (GPT). It is not bundled with this software.
+5. scikit-learn
+   Copyright (c) 2007-2024 The scikit-learn developers
+   License: BSD 3-Clause License
+   Website: https://scikit-learn.org
+   Reference: Pedregosa, F., Varoquaux, G., Gramfort, A., et al. (2011).
+              Scikit-learn: Machine Learning in Python. JMLR, 12, pp. 2825-2830.
+   Used for: Data normalization (StandardScaler, RobustScaler), sample
+             splitting, confusion matrix calculation, and accuracy metrics.
 
-11. NASA-IBM Prithvi-EO-1.0-100M Foundation Model
-    Copyright (c) 2023 NASA / IBM
-    License: Apache License 2.0
-    Website: https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-1.0-100M
-    Used for: extracting deep temporal-spectral embeddings from Sentinel-1 SAR.
+6. scikit-image
+   Copyright (c) 2011-2024 The scikit-image developers
+   License: BSD 3-Clause License
+   Website: https://scikit-image.org
+   Reference: van der Walt, S., Schönberger, J. L., Nunez-Iglesias, J., et al. (2014).
+              scikit-image: Image Processing in Python. PeerJ, 2:e453.
+   Used for: Simple Linear Iterative Clustering (SLIC) edge-constrained
+             superpixel segmentation and morphological image analysis.
 
-12. timm (PyTorch Image Models)
-    Copyright (c) 2019-2024 Ross Wightman / HuggingFace
-    License: Apache License 2.0
-    Website: https://github.com/huggingface/pytorch-image-models
-    Used for: vision transformer modules in the Prithvi model.
-
-13. einops
-    Copyright (c) 2018-2024 Alex Rogozhnikov
-    License: MIT License
-    Website: https://github.com/arogozhnikov/einops
-    Used for: tensor rearranging operations.
+7. SciPy
+   Copyright (c) 2001-2024 SciPy Developers
+   License: BSD 3-Clause License
+   Website: https://scipy.org
+   Reference: Virtanen, P., Gommers, R., Oliphant, T. E., et al. (2020).
+              SciPy 1.0: Fundamental Algorithms for Scientific Computing in Python.
+              Nature Methods, 17(3), pp. 261-272.
+   Used for: Euclidean distance transforms (distance_transform_edt), connected
+             component labeling, and spatial neighborhood filtering.
 
 -------------------------------------------------------------------------------
 
-DATA SOURCES
+II. GEOSPATIAL & SCIENTIFIC DATA PROCESSING LIBRARIES
 
-14. Copernicus Land Monitoring Service (CLMS) – High Resolution Layers
-    Copyright (c) European Environment Agency (EEA) / European Union
-    License: Copernicus Data Policy (free and open access)
-    Website: https://land.copernicus.eu/en/products/high-resolution-layer-crop-type
-    Used as: Agricultural mask (crop type reference layer) for
-             masking non-agricultural areas prior to classification.
-    Note: Data must be manually downloaded from the CLMS portal
-          (authentication required). See README.md for instructions.
+8. GDAL / OGR / OSR
+   Copyright (c) 1998-2024 Frank Warmerdam, Even Rouault, and GDAL contributors
+   License: MIT / X11-style License
+   Website: https://gdal.org
+   Used for: High-performance BigTIFF raster I/O, multi-band virtual mosaics (VRT),
+             warp/reprojection to EPSG:3857, vector rasterization, polygonization,
+             and multi-scale pyramid overviews.
 
-15. Eurostat GISCO – NUTS2 Administrative Boundaries
-    Copyright (c) European Union, 1995-2024
-    License: Eurostat © (open data, reuse with attribution)
+9. NumPy
+   Copyright (c) 2005-2024 NumPy Developers
+   License: BSD 3-Clause License
+   Website: https://numpy.org
+   Reference: Harris, C. R., Millman, K. J., van der Walt, S. J., et al. (2020).
+              Array Programming with NumPy. Nature, 585, pp. 357-362.
+   Used for: Fast vectorized matrix transformations, multidimensional array math,
+             and statistical reductions across multi-temporal raster stacks.
+
+10. pandas
+    Copyright (c) 2008-2024 AQR Capital Management, LLC; Lambda Foundry, Inc.;
+                 PyData Development Team
+    License: BSD 3-Clause License
+    Website: https://pandas.pydata.org
+    Used for: Tabular dataset manipulation, training sample feature tables,
+              crop code cross-referencing, and metadata aggregation.
+
+11. GeoPandas & Shapely
+    Copyright (c) 2013-2024 GeoPandas developers; Sean Gillies and contributors
+    License: BSD 3-Clause License
+    Websites: https://geopandas.org, https://shapely.readthedocs.io
+    Used for: Spatial vector data analysis, NUTS administrative subsetting,
+              cadastral parcel geometry manipulation, and spatial indexing.
+
+12. Rasterio & RioXarray
+    Copyright (c) 2013-2024 Mapbox and Rasterio contributors; Alan D. Snow
+    License: BSD 3-Clause License / Apache License 2.0
+    Websites: https://rasterio.readthedocs.io, https://corteva.github.io/rioxarray
+    Used for: Geospatial raster metadata reading, windowed tile streaming,
+              and coordinate reference system translations.
+
+13. joblib
+    Copyright (c) 2008-2024 joblib developers
+    License: BSD 3-Clause License
+    Website: https://joblib.readthedocs.io
+    Used for: High-efficiency Python object and machine learning model serialization.
+
+14. openpyxl
+    Copyright (c) 2010-2024 openpyxl developers
+    License: MIT License
+    Website: https://openpyxl.readthedocs.io
+    Used for: Generating styled, multi-tab Microsoft Excel (.xlsx) classification
+              reports with per-class F1-scores, precision, recall, and confusion matrices.
+
+15. requests & tqdm
+    Copyright (c) Kenneth Reitz; Casper da Costa-Luis and contributors
+    Licenses: Apache License 2.0 / MIT License
+    Websites: https://requests.readthedocs.io, https://tqdm.github.io
+    Used for: HTTP REST API communication with CDSE/CreoDIAS and visual progress bars.
+
+-------------------------------------------------------------------------------
+
+III. EXTERNAL PROCESSING PLATFORMS & SOFTWARE
+
+16. ESA SNAP (Sentinel Application Platform) & Graph Processing Tool (GPT)
+    Copyright (c) European Space Agency (ESA)
+    License: GNU General Public License v3 (GPLv3) with ESA SNAP License
+    Website: https://step.esa.int/main/toolboxes/snap/
+    Used for: Sentinel-1 SAR preprocessing: orbit state vector application,
+              radiometric calibration (Sigma0), thermal noise removal,
+              Range-Doppler terrain correction with DEM, and co-registration.
+    Note: SNAP is an external application executed via CLI subprocesses.
+          It is not bundled directly within this repository.
+
+-------------------------------------------------------------------------------
+
+IV. SATELLITE MISSIONS, SPATIAL DATASETS & REPOSITORIES
+
+17. Copernicus Sentinel-1 & Sentinel-2 Earth Observation Data
+    Copyright (c) European Union / European Space Agency (ESA)
+    License: Copernicus Open Access Data Policy (Free, full, and open access)
+    Websites: https://sentinel.esa.int, https://dataspace.copernicus.eu
+    Terms: Reuse is permitted subject to the Copernicus Data Policy and
+           acknowledgment of the European Union / ESA Copernicus Programme.
+
+18. Eurostat GISCO Administrative Boundaries (NUTS 2024)
+    Copyright (c) European Union, Eurostat GISCO
+    License: Open Data reuse permitted with acknowledgment of Eurostat source
     Website: https://gisco-services.ec.europa.eu/distribution/v2/nuts/
-    Used as: Country and region boundary shapefiles for spatial
-             subsetting of Sentinel-1 scenes.
+    Used for: Standard European regional and national boundary vector geometry.
 
-16. Copernicus Sentinel-1 SAR Data
-    Copyright (c) European Space Agency (ESA) / Copernicus Programme
-    License: Copernicus Sentinel Data Terms and Conditions (free and open)
-    Website: https://sentinel.esa.int/web/sentinel/missions/sentinel-1
-    Used as: Primary input data – Sentinel-1 GRD SAR scenes (IW mode)
-             acquired over agricultural areas.
+19. Copernicus Land Monitoring Service (CLMS) – High Resolution Layers
+    Copyright (c) European Environment Agency (EEA) / European Union
+    License: Copernicus Data Policy (Open and free access)
+    Website: https://land.copernicus.eu
+    Used for: Agricultural reference masks to delineate arable cropland.
+
+20. Land Parcel Identification System (LPIS) / GSAA Cadastral Data
+    Copyright (c) Respective National Paying Agencies and Ministries of Agriculture
+    License: National Open Government Data Licenses compliant with EU Open Data
+             Directive (EU 2019/1024) and INSPIRE Directive (2007/2/EC).
+    Used for: Object-based cadastral parcel boundaries in agricultural monitoring.
 
 -------------------------------------------------------------------------------
 
 DISCLAIMER
 
-This software was developed as part of the AIML4OS project. The views and
-opinions expressed are those of the authors and do not necessarily reflect
-the official policy or position of Eurostat or the European Commission.
+This software was developed as part of the AIML4OS project under Work Package 7.
+The views and conclusions expressed here are those of the authors and do not
+necessarily reflect the official policies or positions of Eurostat or the
+European Commission.
 
-The use of third-party libraries, data, and software is subject to their
-respective license terms. Users are responsible for compliance with all
-applicable licenses when using or redistributing this software.
+Use of third-party software libraries, deep learning weights, APIs, and satellite
+datasets is subject to their respective copyright holders, terms of service, and
+licenses. Users are responsible for ensuring compliance with all third-party
+terms when executing or redistributing this software.

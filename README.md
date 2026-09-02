@@ -37,8 +37,9 @@ An automated, cloud-optimized object-based image analysis (OBIA) pipeline design
 13. [How to inspect and use output products](#how-to-inspect-and-use-output-products)
 14. [Directory and file lineage structure](#directory-and-file-lineage-structure)
 15. [Troubleshooting and FAQ](#troubleshooting-and-faq)
-16. [Authors and citation](#authors-and-citation)
-17. [License](#license)
+16. [Third-party software, foundation models, and data licenses](#third-party-software-foundation-models-and-data-licenses)
+17. [Authors and citation](#authors-and-citation)
+18. [License](#license)
 
 ---
 
@@ -960,6 +961,37 @@ Run the pyramid overviews utility on your output rasters to enable smooth zoomin
 python tools/5_build_raster_overviews.py -i workingDirs/NL/orbit_88/1_input_stacks/NL_orbit_88_S2_timeseries.tif
 ```
 
+## Third-party software, foundation models, and data licenses
+
+This project builds upon, integrates, and acknowledges key open-source libraries, pretrained foundation models, scientific processing engines, and public Earth observation datasets. All components are used in full compliance with their respective open licenses:
+
+### AI foundation models and deep learning
+* **NASA Harvest Presto Geospatial Foundation Model** ([MIT License](https://github.com/nasaharvest/presto/blob/main/LICENSE)): Multi-temporal transformer embeddings across Sentinel-1 SAR and Sentinel-2 optical time series ([Tseng et al., 2023](https://doi.org/10.48550/arXiv.2304.14065)).
+* **Meta AI Segment Anything Model (SAM) & GeoSAM** ([Apache 2.0 License](https://github.com/facebookresearch/segment-anything/blob/main/LICENSE)): Zero-shot deep vision segmentation foundation model for agricultural field and parcel boundary delineation ([Kirillov et al., 2023](https://doi.org/10.48550/arXiv.2304.02643)).
+* **PyTorch & Torchvision** ([BSD 3-Clause License](https://github.com/pytorch/pytorch/blob/main/LICENSE)): Deep learning tensor computation framework powering the Deep MLP classifier and transformer model inference ([Paszke et al., 2019](https://pytorch.org)).
+* **XGBoost (Extreme Gradient Boosting)** ([Apache 2.0 License](https://github.com/dmlc/xgboost/blob/master/LICENSE)): High-performance gradient boosted decision trees for tabular multimodal feature classification ([Chen & Guestrin, 2016](https://doi.org/10.1145/2939672.2939785)).
+
+### Geospatial, scientific, and image processing libraries
+* **GDAL / OGR / OSR** ([MIT / X11-style License](https://gdal.org/license.html)): High-throughput geospatial raster/vector I/O, BigTIFF handling, warping, and pyramid overviews.
+* **scikit-learn** ([BSD 3-Clause License](https://scikit-learn.org/stable/about.html#citing-scikit-learn)): Robust feature scaling, stratified sampling, and classification evaluation metrics ([Pedregosa et al., 2011](https://scikit-learn.org)).
+* **scikit-image** ([BSD 3-Clause License](https://scikit-image.org/docs/stable/license.html)): SLIC edge-constrained superpixel segmentation and image morphology ([van der Walt et al., 2014](https://doi.org/10.7717/peerj.453)).
+* **SciPy** ([BSD 3-Clause License](https://scipy.org/license/)): Distance transforms, morphological filters, and spatial connected component analysis ([Virtanen et al., 2020](https://doi.org/10.1038/s41592-019-0686-2)).
+* **NumPy** ([BSD 3-Clause License](https://numpy.org/license/)): Vectorized multi-dimensional array operations and time-series reductions ([Harris et al., 2020](https://doi.org/10.1038/s41586-020-2649-2)).
+* **pandas** ([BSD 3-Clause License](https://pandas.pydata.org/pandas-docs/stable/getting_started/overview.html#license)): Tabular data structures and sample attribute manipulation.
+* **GeoPandas & Shapely** ([BSD 3-Clause License](https://geopandas.org/en/stable/about.html)): Spatial vector analysis, NUTS administrative subsetting, and polygon geometry operations.
+* **Rasterio & RioXarray** ([BSD 3-Clause / Apache 2.0](https://rasterio.readthedocs.io)): Windowed raster streaming and coordinate reference system transformations.
+* **openpyxl** ([MIT License](https://openpyxl.readthedocs.io)): Generation of multi-tab Microsoft Excel (`.xlsx`) validation reports.
+* **joblib** ([BSD 3-Clause License](https://joblib.readthedocs.io)): High-efficiency machine learning model serialization.
+
+### External software and processing engines
+* **ESA SNAP (Sentinel Application Platform) & Graph Processing Tool (GPT)** ([GPLv3 / ESA SNAP License](https://step.esa.int/main/toolboxes/snap/)): Sentinel-1 SAR radiometric calibration, orbit application, thermal noise removal, and Range-Doppler terrain correction. *(Invoked as an external command-line tool; not bundled with this repository)*.
+
+### Satellite data, boundaries, and cadastral reference layers
+* **Copernicus Sentinel-1 SAR & Sentinel-2 Optical Data** ([Copernicus Open Access Data Policy](https://dataspace.copernicus.eu/terms-and-conditions)): Free, full, and open Earth observation imagery provided by the European Union and the European Space Agency (ESA).
+* **Eurostat GISCO Administrative Boundaries (NUTS 2024)** ([Eurostat Copyright Notice](https://ec.europa.eu/eurostat/web/gisco/geodata/reference-data/administrative-units-statistical-units)): European administrative boundary shapefiles provided under open data terms with attribution.
+* **Copernicus Land Monitoring Service (CLMS)** ([Copernicus Land Monitoring Policy](https://land.copernicus.eu)): High Resolution Layer crop type and agricultural mask datasets provided by the European Environment Agency (EEA) and the European Union.
+* **Land Parcel Identification System (LPIS) / GSAA Cadastral Data**: National agricultural parcel datasets provided by EU Member State Paying Agencies and Ministries of Agriculture under open government data licenses compliant with the EU Open Data Directive (Directive (EU) 2019/1024) and INSPIRE Directive (2007/2/EC).
+
 ---
 
 ## Authors and citation
@@ -986,3 +1018,4 @@ If you use this software in your research or statistical production pipelines, p
 ## License
 
 This project is licensed under the Apache License 2.0. Developed under the European Statistical System (ESS) AIML4OS initiative funded by Eurostat and the European Commission.
+

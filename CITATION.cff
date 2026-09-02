@@ -4,21 +4,21 @@ message: >-
   This citation is required under the terms of the Apache 2.0 License
   accompanying this software.
 
-title: "Sentinel-1 OBIA Crop Type Mapping Pipeline"
-version: "2.0.0"
-date-released: "2026-05-27"
+title: "Sentinel-1 & Sentinel-2 OBIA Crop Type Mapping Pipeline"
+version: "2.5.0"
+date-released: "2026-08-31"
 license: "Apache-2.0"
 repository-code: "https://github.com/AIML4OS/WP7-Crop-type-mapping"
 url: "https://github.com/AIML4OS/WP7-Crop-type-mapping"
 
 abstract: >-
-  An automated, object-based image analysis (OBIA) pipeline for Sentinel-1
-  SAR time series processing and crop type classification using Artificial
-  Neural Networks (ANN) and Segment Anything Model (SAM). Developed within
-  the AIML4OS project (One Stop Shop for Artificial Intelligence in Official
-  Statistics), funded by Eurostat, European Commission. Supports dynamic
-  country-wide processing for any EU member state using adaptive orbit
-  optimization and multi-orbit merging.
+  An automated, cloud-optimized object-based image analysis (OBIA) pipeline
+  designed to process Sentinel-1 SAR and Sentinel-2 optical time series for
+  large-scale, national crop type classification. Developed within the AIML4OS
+  project (One Stop Shop for Artificial Intelligence in Official Statistics),
+  funded by Eurostat, European Commission. Features multimodal feature fusion
+  combining NASA Harvest Presto transformer embeddings, PyTorch Deep MLP,
+  and XGBoost GBDT with Bayesian prior calibration and multi-orbit nationwide merging.
 
 authors:
   - family-names: "Slesinski"
@@ -90,22 +90,22 @@ authors:
     email: "isabel.goncalves@ine.pt"
     affiliation: "Statistics Portugal"
 
-
-
 keywords:
   - "Sentinel-1"
+  - "Sentinel-2"
   - "SAR"
-  - "remote sensing"
+  - "optical remote sensing"
   - "crop type mapping"
   - "OBIA"
   - "object-based image analysis"
-  - "neural network"
-  - "ANN"
-  - "SAM"
+  - "foundation models"
+  - "Presto"
   - "Segment Anything"
+  - "PyTorch"
+  - "XGBoost"
   - "time series"
   - "agriculture"
-  - "land cover"
+  - "official statistics"
   - "European Union"
   - "Eurostat"
   - "AIML4OS"
@@ -116,19 +116,26 @@ funding:
     url: "https://cros.ec.europa.eu/dashboard/aiml4os"
 
 references:
-  # --- Core SAR Processing ---
-  - type: software
-    title: "Sentinel Application Platform (SNAP)"
-    abbreviation: "SNAP"
+  # --- AI Foundation Models ---
+  - type: article
+    title: "Presto: A Multimodal Geospatial Foundation Model"
+    abbreviation: "Presto"
     authors:
-      - name: "European Space Agency (ESA)"
-    license: "GPL-3.0"
-    url: "https://step.esa.int/main/toolboxes/snap/"
+      - family-names: "Tseng"
+        given-names: "Gabriel"
+      - family-names: "Zvonkov"
+        given-names: "Ivan"
+      - family-names: "Duro"
+        given-names: "Catherine L. B."
+      - name: "et al."
+    journal: "arXiv preprint"
+    year: 2023
+    doi: "10.48550/arXiv.2304.14065"
+    url: "https://github.com/nasaharvest/presto"
     notes: >-
-      Used for Sentinel-1 SAR preprocessing: radiometric calibration,
-      orbit correction, thermal noise removal, and terrain correction.
+      Geospatial foundation model providing multi-temporal 128-dimensional
+      transformer embeddings across optical and SAR time series.
 
-  # --- Deep Learning / Segmentation ---
   - type: article
     title: "Segment Anything"
     abbreviation: "SAM"
@@ -140,26 +147,50 @@ references:
       - family-names: "Ravi"
         given-names: "Nikhila"
       - name: "et al."
-    journal: "arXiv"
+    journal: "arXiv preprint"
     year: 2023
     doi: "10.48550/arXiv.2304.02643"
     url: "https://github.com/facebookresearch/segment-anything"
     notes: >-
-      Used for image segmentation to delineate agricultural parcels.
+      Vision foundation model used for agricultural parcel boundary delineation.
 
-  - type: software
-    title: "PyTorch"
+  # --- Machine Learning & Deep Learning ---
+  - type: conference-paper
+    title: "XGBoost: A Scalable Tree Boosting System"
+    abbreviation: "XGBoost"
     authors:
-      - name: "The PyTorch Foundation"
-    license: "BSD-3-Clause"
+      - family-names: "Chen"
+        given-names: "Tianqi"
+      - family-names: "Guestrin"
+        given-names: "Carlos"
+    collection-title: "Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and Data Mining"
+    year: 2016
+    start: 785
+    end: 794
+    doi: "10.1145/2939672.2939785"
+    url: "https://github.com/dmlc/xgboost"
+    notes: >-
+      Gradient boosted decision tree classifier integrated into the multimodal ensemble.
+
+  - type: conference-paper
+    title: "PyTorch: An Imperative Style, High-Performance Deep Learning Library"
+    abbreviation: "PyTorch"
+    authors:
+      - family-names: "Paszke"
+        given-names: "Adam"
+      - family-names: "Gross"
+        given-names: "Sam"
+      - family-names: "Massa"
+        given-names: "Francisco"
+      - name: "et al."
+    collection-title: "Advances in Neural Information Processing Systems 32 (NeurIPS 2019)"
+    year: 2019
     url: "https://pytorch.org"
     notes: >-
-      Underlying deep learning framework for SAM model inference.
+      Deep learning framework powering the Deep MLP neural network and Presto/SAM models.
 
-  # --- Machine Learning ---
   - type: article
-    title: >-
-      Scikit-learn: Machine Learning in Python
+    title: "Scikit-learn: Machine Learning in Python"
     abbreviation: "scikit-learn"
     authors:
       - family-names: "Pedregosa"
@@ -174,8 +205,57 @@ references:
     end: 2830
     url: "https://scikit-learn.org"
     notes: >-
-      Used for ANN (MLPClassifier) training and inference,
-      StandardScaler normalization, confusion matrix and accuracy metrics.
+      Used for sample feature scaling, data splitting, and validation metrics.
+
+  - type: article
+    title: "scikit-image: Image Processing in Python"
+    abbreviation: "scikit-image"
+    authors:
+      - family-names: "van der Walt"
+        given-names: "Stéfan"
+      - family-names: "Schönberger"
+        given-names: "Johannes L."
+      - name: "et al."
+    journal: "PeerJ"
+    volume: 2
+    year: 2014
+    pages: "e453"
+    doi: "10.7717/peerj.453"
+    url: "https://scikit-image.org"
+    notes: >-
+      Used for SLIC superpixel segmentation and image morphology operations.
+
+  - type: article
+    title: "SciPy 1.0: Fundamental Algorithms for Scientific Computing in Python"
+    abbreviation: "SciPy"
+    authors:
+      - family-names: "Virtanen"
+        given-names: "Pauli"
+      - family-names: "Gommers"
+        given-names: "Ralf"
+      - name: "et al."
+    journal: "Nature Methods"
+    volume: 17
+    issue: 3
+    year: 2020
+    start: 261
+    end: 272
+    doi: "10.1038/s41592-019-0686-2"
+    url: "https://scipy.org"
+    notes: >-
+      Used for distance transforms, spatial connected components, and filtering.
+
+  # --- Core SAR Preprocessing ---
+  - type: software
+    title: "Sentinel Application Platform (SNAP)"
+    abbreviation: "SNAP"
+    authors:
+      - name: "European Space Agency (ESA)"
+    license: "GPL-3.0"
+    url: "https://step.esa.int/main/toolboxes/snap/"
+    notes: >-
+      Used for Sentinel-1 SAR preprocessing: radiometric calibration,
+      orbit state vector application, thermal noise removal, and terrain correction.
 
   # --- Geospatial Libraries ---
   - type: software
@@ -186,8 +266,7 @@ references:
     license: "MIT"
     url: "https://gdal.org"
     notes: >-
-      Used for raster/vector I/O, clipping, reprojection, and format
-      conversion throughout the preprocessing and classification pipeline.
+      Used for raster/vector I/O, clipping, reprojection, and BigTIFF creation.
 
   - type: software
     title: "GeoPandas"
@@ -196,19 +275,26 @@ references:
     license: "BSD-3-Clause"
     url: "https://geopandas.org"
     notes: >-
-      Used for reading and processing NUTS2 shapefiles and training sample
-      vector data.
+      Used for reading and processing NUTS2 shapefiles and cadastral parcel geometries.
 
   # --- Scientific Python Stack ---
-  - type: software
-    title: "NumPy"
+  - type: article
+    title: "Array Programming with NumPy"
+    abbreviation: "NumPy"
     authors:
       - family-names: "Harris"
         given-names: "Charles R."
+      - family-names: "Millman"
+        given-names: "K. Jarrod"
       - name: "et al."
-    license: "BSD-3-Clause"
+    journal: "Nature"
+    volume: 585
+    year: 2020
+    start: 357
+    end: 362
+    doi: "10.1038/s41586-020-2649-2"
     url: "https://numpy.org"
-    notes: "Used for array operations, band stacking, and time-series statistics."
+    notes: "Used for high-speed array operations and raster time-series reductions."
 
   - type: software
     title: "pandas"
@@ -216,15 +302,7 @@ references:
       - name: "The Pandas Development Team"
     license: "BSD-3-Clause"
     url: "https://pandas.pydata.org"
-    notes: "Used for tabular data handling, training sample management, and reporting."
-
-  - type: software
-    title: "joblib"
-    authors:
-      - name: "joblib developers"
-    license: "BSD-3-Clause"
-    url: "https://joblib.readthedocs.io"
-    notes: "Used for serializing and loading trained ANN classification models."
+    notes: "Used for tabular dataset management and training point processing."
 
   - type: software
     title: "openpyxl"
@@ -232,67 +310,36 @@ references:
       - name: "openpyxl developers"
     license: "MIT"
     url: "https://openpyxl.readthedocs.io"
-    notes: "Used for generating Excel (.xlsx) accuracy and confusion matrix reports."
+    notes: "Used for generating styled Excel (.xlsx) validation and accuracy reports."
 
-  # --- Data Sources ---
+  # --- Satellite Missions & Data Sources ---
   - type: data
-    title: >-
-      Copernicus Land Monitoring Service – High Resolution Layer Crop Type
-    abbreviation: "CLMS HRL Crop Type"
+    title: "Copernicus Sentinel-1 SAR & Sentinel-2 Optical Data"
+    abbreviation: "Sentinel-1 / Sentinel-2"
     authors:
-      - name: "European Environment Agency (EEA)"
-    license: "Copernicus Data Policy"
-    url: "https://land.copernicus.eu/en/products/high-resolution-layer-crop-type"
+      - name: "European Space Agency (ESA) / European Union Copernicus Programme"
+    license: "Copernicus Sentinel Data Terms and Conditions"
+    url: "https://dataspace.copernicus.eu"
     notes: >-
-      Used as an agricultural mask to exclude non-agricultural areas before
-      classification. Must be downloaded manually from the CLMS portal.
+      Primary input satellite data obtained via Copernicus Data Space Ecosystem (CDSE)
+      and CreoDIAS cloud platforms.
 
   - type: data
     title: "Eurostat GISCO – NUTS Administrative Boundaries"
-    abbreviation: "NUTS2 Shapefiles"
+    abbreviation: "NUTS Administrative Boundaries"
     authors:
       - name: "Eurostat, European Commission"
     license: "Eurostat © (open, reuse with attribution)"
     url: "https://gisco-services.ec.europa.eu/distribution/v2/nuts/"
     notes: >-
-      Provides country and NUTS2 region boundary shapefiles for spatial
-      subsetting of Sentinel-1 scenes.
+      Provides European country and NUTS2 region boundary shapefiles for spatial subsetting.
 
   - type: data
-    title: "Copernicus Sentinel-1 SAR Data"
-    abbreviation: "Sentinel-1 GRD"
+    title: "Copernicus Land Monitoring Service – High Resolution Layers"
+    abbreviation: "CLMS HRL"
     authors:
-      - name: "European Space Agency (ESA) / Copernicus Programme"
-    license: "Copernicus Sentinel Data Terms and Conditions"
-    url: "https://sentinel.esa.int/web/sentinel/missions/sentinel-1"
+      - name: "European Environment Agency (EEA) / European Union"
+    license: "Copernicus Data Policy"
+    url: "https://land.copernicus.eu"
     notes: >-
-      Primary input data: Sentinel-1 GRD SAR scenes (IW mode) acquired
-      over agricultural areas across EU member states.
-
-  - type: generic
-    title: "NASA-IBM Prithvi-EO-1.0-100M Foundation Model"
-    authors:
-      - name: "NASA / IBM"
-    license: "Apache-2.0"
-    url: "https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-1.0-100M"
-    notes: >-
-      Geospatial foundation model used for deep temporal-spectral feature
-      extraction from multi-date Sentinel-1 stacks.
-
-  - type: software
-    title: "timm (PyTorch Image Models)"
-    authors:
-      - family-names: "Wightman"
-        given-names: "Ross"
-    license: "Apache-2.0"
-    url: "https://github.com/huggingface/pytorch-image-models"
-    notes: "Provides vision transformer backbones for the Prithvi architecture."
-
-  - type: software
-    title: "einops"
-    authors:
-      - family-names: "Rogozhnikov"
-        given-names: "Alex"
-    license: "MIT"
-    url: "https://github.com/arogozhnikov/einops"
-    notes: "Used for tensor layout manipulations and operations."
+      Used as agricultural reference masks to delineate arable cropland.
