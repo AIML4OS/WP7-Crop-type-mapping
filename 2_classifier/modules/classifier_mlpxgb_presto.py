@@ -942,9 +942,9 @@ class ProcessingPipelineS1S2:
         ds = None
         return composite_tif
 
-    # --- Stage 0: Footprint ---
-    def stage_0_generate_footprint(self, force_recompute=False):
-        stage = 0
+    # --- Stage 1: Footprint ---
+    def stage_1_generate_footprint(self, force_recompute=False):
+        stage = 1
         if self.footprint_mask.exists() and self.footprint_mask.stat().st_size > 1024 and not force_recompute:
             print(f"[Stage {stage}/{self.total_stages}] Footprint already exists ({self.footprint_mask.name}), skipping.")
             return
@@ -998,9 +998,9 @@ class ProcessingPipelineS1S2:
         ds_s2 = None
         print(f"    Multimodal intersection footprint saved to {self.footprint_mask}")
 
-    # --- Stage 1: Segmentation (LPIS / SAM / SLIC) ---
-    def stage_1_segmentation(self, force_recompute=False):
-        stage = 1
+    # --- Stage 2: Segmentation (LPIS / SAM / SLIC) ---
+    def stage_2_segmentation(self, force_recompute=False):
+        stage = 2
         if self.seg_tif.exists() and not force_recompute:
             print(f"[Stage {stage}/{self.total_stages}] Segmentation raster exists ({self.seg_tif.name}), skipping.")
             return
@@ -1298,11 +1298,11 @@ class ProcessingPipelineS1S2:
         ds = None
         print(f"    Segmentation completed: {self.seg_tif}")
 
-    # --- Stage 2: Sample Point Split (70/30) ---
-    def stage_2_split_samples(self, force_recompute=False, learn_frac=0.7, random_state=42):
-        stage = 2
+    # --- Stage 3: Sample Point Split (70/30) ---
+    def stage_3_split_samples(self, force_recompute=False, learn_frac=0.7, random_state=42):
+        stage = 3
         if self.learn_shp.exists() and self.control_shp.exists() and not force_recompute:
-            print(f"[Stage {stage}] Train/Validation sample split exists, skipping.")
+            print(f"[Stage {stage}/{self.total_stages}] Train/Validation sample split exists, skipping.")
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Performing Stratified Train/Control Split...")
@@ -1330,17 +1330,17 @@ class ProcessingPipelineS1S2:
         gdf_val.to_file(str(self.control_shp), engine="pyogrio")
         print(f"    Split {len(gdf)} points -> {len(gdf_train)} train, {len(gdf_val)} validation.")
 
-    # --- Stage 3: Multimodal Feature Extraction ---
-    def stage_3_selection(self, force_recompute=False):
-        stage = 3
+    # --- Stage 4: Multimodal Feature Extraction ---
+    def stage_4_selection(self, force_recompute=False):
+        stage = 4
         if self.sel_csv.exists() and not force_recompute:
             try:
                 df_test = pd.read_csv(self.sel_csv, nrows=5)
                 n_feats = df_test.shape[1] - 2
                 if self.s1_ras and self.s2_ras and n_feats < 400:
-                    print(f"[Stage {stage}] Existing CSV has only {n_feats} features (expected ~426 multimodal features). Re-extracting...")
+                    print(f"[Stage {stage}/{self.total_stages}] Existing CSV has only {n_feats} features (expected ~426 multimodal features). Re-extracting...")
                 else:
-                    print(f"[Stage {stage}] Multimodal features already extracted ({n_feats} features in {self.sel_csv.name}), skipping.")
+                    print(f"[Stage {stage}/{self.total_stages}] Multimodal features already extracted ({n_feats} features in {self.sel_csv.name}), skipping.")
                     return
             except Exception:
                 pass
@@ -1506,11 +1506,11 @@ class ProcessingPipelineS1S2:
         df.to_csv(self.sel_csv, index=False)
         print(f"\n    Multimodal features saved to {self.sel_csv} ({df.shape[1] - 2} features).\n")
 
-    # --- Stage 4: Train Unified MLP + XGBoost Fusion Ensemble ---
-    def stage_4_train_classifier(self, force_recompute=False, **kwargs):
-        stage = 4
+    # --- Stage 5: Train Unified MLP + XGBoost Fusion Ensemble ---
+    def stage_5_train_classifier(self, force_recompute=False, **kwargs):
+        stage = 5
         if self.model_pkl.exists() and not force_recompute:
-            print(f"[Stage {stage}] Fusion Ensemble model exists ({self.model_pkl.name}), skipping.")
+            print(f"[Stage {stage}/{self.total_stages}] Fusion Ensemble model exists ({self.model_pkl.name}), skipping.")
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Training Unified Multimodal Fusion Ensemble (PyTorch MLP + XGBoost)...")
@@ -1554,11 +1554,11 @@ class ProcessingPipelineS1S2:
         joblib.dump({'model': fusion_ensemble, 'scaler': scaler, 'classes': all_classes}, self.model_pkl)
         print(f"    Fusion Ensemble model saved to {self.model_pkl}\n")
 
-    # --- Stage 5: Inference with Bayesian Priors ---
-    def stage_5_classify_vector(self, force_recompute=False):
-        stage = 5
+    # --- Stage 6: Inference with Bayesian Priors ---
+    def stage_6_classify_vector(self, force_recompute=False):
+        stage = 6
         if self.class_tif.exists() and not force_recompute:
-            print(f"[Stage {stage}] Classification raster exists, skipping.")
+            print(f"[Stage {stage}/{self.total_stages}] Classification raster exists, skipping.")
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Running Vectorized Tile-based Object Inference with Bayesian Priors...")
@@ -1769,11 +1769,11 @@ class ProcessingPipelineS1S2:
         print(f"\n    [INFERENCE COMPLETE] Successfully classified {total_segments_classified:,} objects across {total_tiles} tiles in {total_time_min:.1f} minutes.")
         print(f"    Raw classification saved: {self.class_tif}\n")
 
-    # --- Stage 6: Apply Masking ---
-    def stage_6_mask_classification(self, force_recompute=False):
-        stage = 6
+    # --- Stage 7: Apply Masking ---
+    def stage_7_mask_classification(self, force_recompute=False):
+        stage = 7
         if self.masked_class.exists() and self.masked_conf.exists() and not force_recompute:
-            print(f"[Stage {stage}] Masked outputs already exist, skipping.")
+            print(f"[Stage {stage}/{self.total_stages}] Masked outputs already exist, skipping.")
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Applying Agricultural & Footprint Masks...")
@@ -1895,9 +1895,9 @@ class ProcessingPipelineS1S2:
         print(f"    Masked classification saved to {self.masked_class}")
         print(f"    Masked confidence saved to {self.masked_conf}\n")
 
-    # --- Stage 7: Validation Metrics ---
-    def stage_7_calculate_metrics(self):
-        stage = 7
+    # --- Stage 8: Validation Metrics ---
+    def stage_8_calculate_metrics(self):
+        stage = 8
         print(f"[Stage {stage}/{self.total_stages}] Calculating Out-of-Bag Validation Metrics and Generating Excel Report...")
         eval_shp = self.control_shp if (self.control_shp and self.control_shp.exists()) else self.learn_shp
         if not eval_shp or not eval_shp.exists():
@@ -2213,6 +2213,27 @@ class ProcessingPipelineS1S2:
         print(f"    [OK] Metrics report saved to: {self.metrics_fp}")
         print(f"    Validation Overall Accuracy (OA): {oa * 100:.1f}% | Kappa: {kappa:.4f}\n")
 
+    def run_all(self):
+        """Executes all classification stages (1 through 8) sequentially."""
+        self.stage_1_generate_footprint(False)
+        self.stage_2_segmentation(False)
+        self.stage_3_split_samples(False)
+        self.stage_4_selection(False)
+        self.stage_5_train_classifier(False)
+        self.stage_6_classify_vector(True)
+        self.stage_7_mask_classification(True)
+        self.stage_8_calculate_metrics()
+
+    # Backward compatibility aliases for legacy stage indexing (0-7 vs 1-8)
+    stage_0_generate_footprint = stage_1_generate_footprint
+    stage_1_segmentation = stage_2_segmentation
+    stage_2_split_samples = stage_3_split_samples
+    stage_3_selection = stage_4_selection
+    stage_4_train_classifier = stage_5_train_classifier
+    stage_5_classify_vector = stage_6_classify_vector
+    stage_6_mask_classification = stage_7_mask_classification
+    stage_7_calculate_metrics = stage_8_calculate_metrics
+
 
 # =====================================================================
 # 5. CLI & INTERACTIVE MENU
@@ -2226,38 +2247,31 @@ def main_menu(pipeline):
     Model: Unified PyTorch MLP + XGBoost Fusion Ensemble (weight: {pipeline.mlp_weight:.2f})
     Segmentation: {pipeline.seg_mode.upper()}
 
-    [0] Stage 0: Generate Data Footprint
-    [1] Stage 1: Multimodal Segmentation
-    [2] Stage 2: Prepare Point Split (70/30)
-    [3] Stage 3: Extract Multimodal Features (S1+S2+Presto)
-    [4] Stage 4: Train Unified MLP + XGBoost Fusion Ensemble
-    [5] Stage 5: Run Object-Based Inference with Bayesian Priors
-    [6] Stage 6: Apply Agricultural & Footprint Mask
-    [7] Stage 7: Calculate Validation Metrics (.xlsx)
+    [1] Stage 1: Generate Data Footprint (S1 + S2)
+    [2] Stage 2: Multimodal Segmentation ({pipeline.seg_mode.upper()})
+    [3] Stage 3: Prepare Point Split (70/30)
+    [4] Stage 4: Extract Multimodal Features (S1+S2+Presto)
+    [5] Stage 5: Train Unified MLP + XGBoost Fusion Ensemble
+    [6] Stage 6: Run Object-Based Inference with Bayesian Priors
+    [7] Stage 7: Apply Agricultural & Footprint Mask
+    [8] Stage 8: Calculate Validation Metrics (.xlsx)
 
-    [A] Run All Stages
+    [A] Run All Stages (1 -> 8)
     [Q] Quit
 
     Enter choice: """
         try:
             choice = input(menu).strip().upper()
-            if choice == '0': pipeline.stage_0_generate_footprint(True)
-            elif choice == '1': pipeline.stage_1_segmentation(True)
-            elif choice == '2': pipeline.stage_2_split_samples(True)
-            elif choice == '3': pipeline.stage_3_selection(True)
-            elif choice == '4': pipeline.stage_4_train_classifier(True)
-            elif choice == '5': pipeline.stage_5_classify_vector(True)
-            elif choice == '6': pipeline.stage_6_mask_classification(True)
-            elif choice == '7': pipeline.stage_7_calculate_metrics()
+            if choice in ['1', '0']: pipeline.stage_1_generate_footprint(True)
+            elif choice == '2': pipeline.stage_2_segmentation(True)
+            elif choice == '3': pipeline.stage_3_split_samples(True)
+            elif choice == '4': pipeline.stage_4_selection(True)
+            elif choice == '5': pipeline.stage_5_train_classifier(True)
+            elif choice == '6': pipeline.stage_6_classify_vector(True)
+            elif choice == '7': pipeline.stage_7_mask_classification(True)
+            elif choice == '8': pipeline.stage_8_calculate_metrics()
             elif choice == 'A':
-                pipeline.stage_0_generate_footprint(False)
-                pipeline.stage_1_segmentation(False)
-                pipeline.stage_2_split_samples(False)
-                pipeline.stage_3_selection(False)
-                pipeline.stage_4_train_classifier(False)
-                pipeline.stage_5_classify_vector(True)
-                pipeline.stage_6_mask_classification(True)
-                pipeline.stage_7_calculate_metrics()
+                pipeline.run_all()
             elif choice == 'Q': break
         except (KeyboardInterrupt, EOFError):
             break
@@ -2266,7 +2280,7 @@ def main_menu(pipeline):
 def main():
     parser = argparse.ArgumentParser(description="Multimodal S1 (Sigma0) + S2 Crop Classification with Unified MLP + XGBoost Fusion Ensemble.")
     parser.add_argument('--track', required=True, help="Track/orbit identifier, e.g. NL/orbit_88, PT/orbit_161, PL/orbit_12")
-    parser.add_argument('--stage', default=None, help="Stage to run: 'A' (all), '0', '1', '2', '3', '4', '5', '6', '7'")
+    parser.add_argument('--stage', default=None, help="Stage to run: 'A' (all 1-8), or single stage '1'..'8' (legacy '0'..'7' supported)")
     parser.add_argument('--seg_mode', default='slic', choices=['sam', 'slic', 'lpis'], help="Segmentation mode (default: slic)")
     parser.add_argument('--mlp_weight', type=float, default=0.65, help="Weight of MLP in fusion ensemble (0.0 to 1.0, default: 0.65)")
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 VH/VV GeoTIFF raster")
@@ -2289,22 +2303,15 @@ def main():
     else:
         choice = args.stage.strip().upper()
         if choice == 'A':
-            pipeline.stage_0_generate_footprint(False)
-            pipeline.stage_1_segmentation(False)
-            pipeline.stage_2_split_samples(False)
-            pipeline.stage_3_selection(False)
-            pipeline.stage_4_train_classifier(False)
-            pipeline.stage_5_classify_vector(True)
-            pipeline.stage_6_mask_classification(True)
-            pipeline.stage_7_calculate_metrics()
-        elif choice == '0': pipeline.stage_0_generate_footprint(True)
-        elif choice == '1': pipeline.stage_1_segmentation(True)
-        elif choice == '2': pipeline.stage_2_split_samples(True)
-        elif choice == '3': pipeline.stage_3_selection(True)
-        elif choice == '4': pipeline.stage_4_train_classifier(True)
-        elif choice == '5': pipeline.stage_5_classify_vector(True)
-        elif choice == '6': pipeline.stage_6_mask_classification(True)
-        elif choice == '7': pipeline.stage_7_calculate_metrics()
+            pipeline.run_all()
+        elif choice in ['1', '0']: pipeline.stage_1_generate_footprint(True)
+        elif choice == '2': pipeline.stage_2_segmentation(True)
+        elif choice == '3': pipeline.stage_3_split_samples(True)
+        elif choice == '4': pipeline.stage_4_selection(True)
+        elif choice == '5': pipeline.stage_5_train_classifier(True)
+        elif choice == '6': pipeline.stage_6_classify_vector(True)
+        elif choice == '7': pipeline.stage_7_mask_classification(True)
+        elif choice == '8': pipeline.stage_8_calculate_metrics()
 
 
 if __name__ == '__main__':

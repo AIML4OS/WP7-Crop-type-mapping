@@ -50,14 +50,14 @@ Execution Examples:
   python run_classifier.py --country NL --classifier mlpxgb_presto --seg_mode slic --stage A
 
   # 8. Run only individual stages:
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 0  # Multimodal footprint only
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 1  # Segmentation only
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 2  # Stratified sample split only
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 3  # Feature extraction & Presto embeddings
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 4  # Model training (MLP + XGBoost)
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 5  # Tile-based object inference & Bayesian priors
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 6  # Agricultural cropland masking
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 7  # Accuracy assessment & Excel report export
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 1  # Multimodal footprint only
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 2  # Segmentation only
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 3  # Stratified sample split only
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 4  # Feature extraction & Presto embeddings
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 5  # Model training (MLP + XGBoost)
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 6  # Tile-based object inference & Bayesian priors
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 7  # Agricultural cropland masking
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 8  # Accuracy assessment & Excel report export
 
   # 9. Merge all classified orbits for a country into a seamless national map (Phase 4):
   python run_merge.py --country NL --seg_mode slic
@@ -182,24 +182,27 @@ def run_pipeline(
     else:
         choice = stage.strip().upper()
         if choice == 'A':
-            pipeline.stage_0_generate_footprint(False)
-            pipeline.stage_1_segmentation(False)
-            pipeline.stage_2_split_samples(False)
-            pipeline.stage_3_selection(False)
-            pipeline.stage_4_train_classifier(False)
-            pipeline.stage_5_classify_vector(True)
-            pipeline.stage_6_mask_classification(True)
-            pipeline.stage_7_calculate_metrics()
-        elif choice == '0': pipeline.stage_0_generate_footprint(True)
-        elif choice == '1': pipeline.stage_1_segmentation(True)
-        elif choice == '2': pipeline.stage_2_split_samples(True)
-        elif choice == '3': pipeline.stage_3_selection(True)
-        elif choice == '4': pipeline.stage_4_train_classifier(True)
-        elif choice == '5': pipeline.stage_5_classify_vector(True)
-        elif choice == '6': pipeline.stage_6_mask_classification(True)
-        elif choice == '7': pipeline.stage_7_calculate_metrics()
+            if hasattr(pipeline, 'run_all'):
+                pipeline.run_all()
+            else:
+                pipeline.stage_1_generate_footprint(False)
+                pipeline.stage_2_segmentation(False)
+                pipeline.stage_3_split_samples(False)
+                pipeline.stage_4_selection(False)
+                pipeline.stage_5_train_classifier(False)
+                pipeline.stage_6_classify_vector(True)
+                pipeline.stage_7_mask_classification(True)
+                pipeline.stage_8_calculate_metrics()
+        elif choice in ['1', '0']: pipeline.stage_1_generate_footprint(True)
+        elif choice == '2': pipeline.stage_2_segmentation(True)
+        elif choice == '3': pipeline.stage_3_split_samples(True)
+        elif choice == '4': pipeline.stage_4_selection(True)
+        elif choice == '5': pipeline.stage_5_train_classifier(True)
+        elif choice == '6': pipeline.stage_6_classify_vector(True)
+        elif choice == '7': pipeline.stage_7_mask_classification(True)
+        elif choice == '8': pipeline.stage_8_calculate_metrics()
         else:
-            logging.error(f"Unknown stage '{stage}'. Use 'A' (all) or '0'..'7'.")
+            logging.error(f"Unknown stage '{stage}'. Use 'A' (all) or '1'..'8'.")
 
 
 def interactive_setup_wizard():
@@ -282,20 +285,20 @@ def interactive_setup_wizard():
     print("""
 ============================================================
  Select Execution Mode:
-  [A] Run all stages automatically (Stage 0 -> 7)
+  [A] Run all stages automatically (Stage 1 -> 8)
   [I] Enter interactive stage-by-stage menu
 
  Or select a specific stage directly:
-  [0] Stage 0: Generate multimodal data footprint (S1 & S2)
-  [1] Stage 1: Object-based segmentation (SLIC / SAM / LPIS)
-  [2] Stage 2: Stratified train/validation sample split
-  [3] Stage 3: Multimodal feature extraction (S1 + S2 + Presto)
-  [4] Stage 4: Train unified fusion ensemble (Deep MLP + XGB)
-  [5] Stage 5: Object-based inference with Bayesian priors
-  [6] Stage 6: Apply agricultural area masks
-  [7] Stage 7: Calculate accuracy metrics & export Excel report
+  [1] Stage 1: Generate multimodal data footprint (S1 & S2)
+  [2] Stage 2: Object-based segmentation (SLIC / SAM / LPIS)
+  [3] Stage 3: Stratified train/validation sample split
+  [4] Stage 4: Multimodal feature extraction (S1 + S2 + Presto)
+  [5] Stage 5: Train unified fusion ensemble (Deep MLP + XGB)
+  [6] Stage 6: Object-based inference with Bayesian priors
+  [7] Stage 7: Apply agricultural area masks
+  [8] Stage 8: Calculate accuracy metrics & export Excel report
 ============================================================""")
-    stage_choice = input(" Enter choice [A/I/0-7] (default: A): ").strip().upper()
+    stage_choice = input(" Enter choice [A/I/1-8] (default: A): ").strip().upper()
     if stage_choice == '' or stage_choice == 'I':
         stage_choice = None
 
@@ -341,31 +344,31 @@ def interactive_menu(pipeline, country: str, track: str, classifier_model: str =
  Segmentation     : [{pipeline.seg_mode.upper()}]
  Classifier Model : [{cls_name}]
 ============================================================
- [0] Stage 0: Generate multimodal data footprint (S1 & S2)
- [1] Stage 1: Object-based segmentation ({pipeline.seg_mode.upper()})
- [2] Stage 2: Stratified train/validation sample split
- [3] Stage 3: Multimodal feature extraction (S1 + S2 + Presto)
- [4] Stage 4: Train unified fusion ensemble (Deep MLP + XGB)
- [5] Stage 5: Object-based inference with Bayesian priors
- [6] Stage 6: Apply agricultural area masks
- [7] Stage 7: Calculate accuracy metrics & export Excel report
+ [1] Stage 1: Generate multimodal data footprint (S1 & S2)
+ [2] Stage 2: Object-based segmentation ({pipeline.seg_mode.upper()})
+ [3] Stage 3: Stratified train/validation sample split
+ [4] Stage 4: Multimodal feature extraction (S1 + S2 + Presto)
+ [5] Stage 5: Train unified fusion ensemble (Deep MLP + XGB)
+ [6] Stage 6: Object-based inference with Bayesian priors
+ [7] Stage 7: Apply agricultural area masks
+ [8] Stage 8: Calculate accuracy metrics & export Excel report
  -----------------------------------------------------------
  [M] Change segmentation mode (Current: {pipeline.seg_mode.upper()})
  [C] Change classifier model (Current: {classifier_model.upper()})
- [A] Run all classification stages automatically (0 -> 7)
+ [A] Run all classification stages automatically (1 -> 8)
  [Q] Quit
 ============================================================
  Enter choice: """
         try:
             choice = input(menu_text).strip().upper()
-            if choice == '0': pipeline.stage_0_generate_footprint(True)
-            elif choice == '1': pipeline.stage_1_segmentation(True)
-            elif choice == '2': pipeline.stage_2_split_samples(True)
-            elif choice == '3': pipeline.stage_3_selection(True)
-            elif choice == '4': pipeline.stage_4_train_classifier(True)
-            elif choice == '5': pipeline.stage_5_classify_vector(True)
-            elif choice == '6': pipeline.stage_6_mask_classification(True)
-            elif choice == '7': pipeline.stage_7_calculate_metrics()
+            if choice in ['1', '0']: pipeline.stage_1_generate_footprint(True)
+            elif choice == '2': pipeline.stage_2_segmentation(True)
+            elif choice == '3': pipeline.stage_3_split_samples(True)
+            elif choice == '4': pipeline.stage_4_selection(True)
+            elif choice == '5': pipeline.stage_5_train_classifier(True)
+            elif choice == '6': pipeline.stage_6_classify_vector(True)
+            elif choice == '7': pipeline.stage_7_mask_classification(True)
+            elif choice == '8': pipeline.stage_8_calculate_metrics()
             elif choice == 'M':
                 idx = (seg_modes.index(pipeline.seg_mode) + 1) % len(seg_modes)
                 pipeline.seg_mode = seg_modes[idx]
@@ -375,14 +378,17 @@ def interactive_menu(pipeline, country: str, track: str, classifier_model: str =
                 classifier_model = cls_models[idx]
                 print(f"\n    Classifier model switched to: {classifier_model.upper()}")
             elif choice == 'A':
-                pipeline.stage_0_generate_footprint(False)
-                pipeline.stage_1_segmentation(False)
-                pipeline.stage_2_split_samples(False)
-                pipeline.stage_3_selection(False)
-                pipeline.stage_4_train_classifier(False)
-                pipeline.stage_5_classify_vector(True)
-                pipeline.stage_6_mask_classification(True)
-                pipeline.stage_7_calculate_metrics()
+                if hasattr(pipeline, 'run_all'):
+                    pipeline.run_all()
+                else:
+                    pipeline.stage_1_generate_footprint(False)
+                    pipeline.stage_2_segmentation(False)
+                    pipeline.stage_3_split_samples(False)
+                    pipeline.stage_4_selection(False)
+                    pipeline.stage_5_train_classifier(False)
+                    pipeline.stage_6_classify_vector(True)
+                    pipeline.stage_7_mask_classification(True)
+                    pipeline.stage_8_calculate_metrics()
             elif choice == 'Q': break
         except (KeyboardInterrupt, EOFError):
             print("\nExiting classifier.")
@@ -419,7 +425,7 @@ Examples:
     )
     parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
     parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
-    parser.add_argument('--stage', default=None, help="Stage to execute: 'A' (all 0-7), or single stage '0'..'7'")
+    parser.add_argument('--stage', default=None, help="Stage to execute: 'A' (all 1-8), or single stage '1'..'8' (legacy '0'..'7' supported)")
     parser.add_argument('--classifier', default='mlpxgb_presto',
                         choices=['mlpxgb_presto', 'mlp', 'xgb', 'presto_s1', 'otb'],
                         help="Classifier model: 'mlpxgb_presto' [S1+S2 SOTA] (default), 'mlp' [S1+S2], 'xgb' [S1+S2] (archived: 'presto_s1', 'otb')")

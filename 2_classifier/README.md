@@ -106,14 +106,14 @@ Where:
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 0: Multimodal Data Footprint Generation]          |
+                     | [Stage 1: Multimodal Data Footprint Generation]          |
                      | Intersection of valid S1 SAR and S2 Optical coverage     |
                      | -> Output: {COUNTRY}_{ORBIT}_data_footprint.tif          |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 1: Object-Based Image Segmentation]               |
+                     | [Stage 2: Object-Based Image Segmentation]               |
                      | Delineation of agricultural field objects:               |
                      | - Mode 1: SLIC Superpixels (Fast, 64px buffered tiles)   |
                      | - Mode 2: Meta AI SAM (Vision Transformer Foundation)    |
@@ -123,7 +123,7 @@ Where:
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 2: Stratified Sample Point Partitioning]          |
+                     | [Stage 3: Stratified Sample Point Partitioning]          |
                      | Splits samples.shp into:                                 |
                      | - 70% Training / Learn dataset (learn_{MODE}.shp)        |
                      | - 30% Independent Validation (control_{MODE}.shp)        |
@@ -131,7 +131,7 @@ Where:
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 3: Multimodal Feature Extraction]                 |
+                     | [Stage 4: Multimodal Feature Extraction]                 |
                      | 1. S1 temporal backscatter stats (VH, VV, VH/VV)         |
                      | 2. S2 surface reflectances (B02-B12) & dynamic NDVI      |
                      | 3. NASA Harvest Presto 128d S1 + 128d S2 Token Embeddings|
@@ -140,7 +140,7 @@ Where:
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 4: Fusion Ensemble Training]                      |
+                     | [Stage 5: Fusion Ensemble Training]                      |
                      | 1. Class-weighted PyTorch Deep MLP (BatchNorm, Dropout)  |
                      | 2. XGBoost GBDT (250 trees, max_depth=6, hist-split)     |
                      | 3. Fit soft-voting ensemble & standard scaler            |
@@ -149,7 +149,7 @@ Where:
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 5: High-Performance Vectorized Inference]         |
+                     | [Stage 6: High-Performance Vectorized Inference]         |
                      | 1. Tile-level block I/O (Read full 2048x2048 tile once)  |
                      | 2. Vectorized np.bincount zonal stats across 170 bands   |
                      | 3. Presto batched embedding forward pass & MLP+XGB infer |
@@ -160,14 +160,14 @@ Where:
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 6: Cropland & Data Footprint Masking]             |
+                     | [Stage 7: Cropland & Data Footprint Masking]             |
                      | Suppresses non-agricultural areas (forests, water, urban)|
                      | -> Output: classified_masked.tif & confidence_masked.tif |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 7: Out-of-Bag Validation & Excel Reporting]       |
+                     | [Stage 8: Out-of-Bag Validation & Excel Reporting]       |
                      | Evaluates against 30% control dataset:                   |
                      | - Overall Accuracy (OA) and Cohen's Kappa (kappa)        |
                      | - Full confusion matrix (ground truth vs predictions)    |
@@ -266,7 +266,7 @@ $$\bar{\sigma}^0_{\text{temporal}}(x, y) = \frac{1}{N} \sum_{k=1}^N \sigma^0_k(x
 ### 3. Multimodal data footprint generation (`*_data_footprint.tif`)
 Because Sentinel-1 SAR orbits are tilted (inclined polar orbits) while Sentinel-2 optical granules follow UTM MGRS tiles, their valid observation swaths do not perfectly overlap. 
 
-In Stage 0, the pipeline generates a **multimodal data footprint mask**:
+In Stage 1, the pipeline generates a **multimodal data footprint mask**:
 
 $$\text{Footprint}(x, y) = \begin{cases} 1 & \text{if } \text{Valid}(\text{S1}_{\text{SAR}}(x, y)) \land \text{Valid}(\text{S2}_{\text{optical}}(x, y)) \land \text{Valid}(\text{NUTS2}(x, y)) \\ 0 & \text{otherwise} \end{cases}$$
 
@@ -302,19 +302,19 @@ python run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mo
 python run_classifier.py --track PT/orbit_52 --classifier presto_s1 --seg_mode slic --stage A
 ```
 
-### 4. Running specific single stages (0 to 7)
+### 4. Running specific single stages (1 to 8)
 ```powershell
-# Run only feature extraction (Stage 3):
-python run_classifier.py --track PT/orbit_52 --stage 3
-
-# Run only model training (Stage 4):
+# Run only feature extraction (Stage 4):
 python run_classifier.py --track PT/orbit_52 --stage 4
 
-# Run only vectorized inference with Bayesian priors (Stage 5):
+# Run only model training (Stage 5):
 python run_classifier.py --track PT/orbit_52 --stage 5
 
-# Run only accuracy metrics and export Excel report (Stage 7):
-python run_classifier.py --track PT/orbit_52 --stage 7
+# Run only vectorized inference with Bayesian priors (Stage 6):
+python run_classifier.py --track PT/orbit_52 --stage 6
+
+# Run only accuracy metrics and export Excel report (Stage 8):
+python run_classifier.py --track PT/orbit_52 --stage 8
 ```
 
 ### 5. Phase 4: Nationwide multi-orbit merge
@@ -341,7 +341,7 @@ python run_merge.py --country PT --classifier mlpxgb_presto --seg_mode sam --met
 | `-c, --country` | string | `None` | Country code (e.g. `PT`, `NL`, `PL`, `ES`, `FR`, `DE`). |
 | `--classifier` | choice | `mlpxgb_presto` | Classifier model: `mlpxgb_presto` [S1+S2 SOTA], `presto_s1` [S1 only], `otb` [S1+S2], `mlp` [S1+S2], `xgb` [S1+S2]. |
 | `--seg_mode` | choice | `slic` | Segmentation mode: `slic` (superpixels), `sam` (Meta AI), `lpis` (cadastre). |
-| `--stage` | string | `None` | Stage to execute: `A` (all stages 0-7), or single stage `0`..`7`. |
+| `--stage` | string | `None` | Stage to execute: `A` (all stages 1-8), or single stage `1`..`8` (legacy `0`..`7` supported). |
 | `--mlp_weight` | float | `0.65` | Weight of MLP in fusion ensemble (0.0 to 1.0; remaining weight assigned to XGBoost). |
 | `--s1_raster` | string | `None` | Optional explicit path override to Sentinel-1 BigTIFF raster. |
 | `--s2_raster` | string | `None` | Optional explicit path override to Sentinel-2 BigTIFF raster. |
@@ -364,20 +364,20 @@ All classification outputs are stored sequentially by stage in `workingDirs/{COU
 
 | Stage | Directory | Output file name pattern | Format / Type | Purpose & description |
 | :---: | :--- | :--- | :---: | :--- |
-| **0** | `0_segmentation/` | `{COUNTRY}_{ORBIT}_s1_composite.tif` | `Float32`, 1 b. | Multi-temporal mean SAR amplitude composite for segmentation. |
-| **0** | `0_segmentation/` | `{COUNTRY}_{ORBIT}_data_footprint.tif` | `Byte`, 1 b. | Binary mask ($1=\text{valid}, 0=\text{nodata}$) of S1, S2, and NUTS intersection. |
-| **1** | `0_segmentation/` | `{COUNTRY}_{ORBIT}_segmentation_{MODE}.tif` | `UInt32`, 1 b. | Object segmentation raster with unique integer `segment_id` per parcel. |
-| **2** | `1_samples_and_features/` | `learn_{MODE}.shp` | Vector Points | Stratified 70% training points with spatial attributes. |
-| **2** | `1_samples_and_features/` | `control_{MODE}.shp` | Vector Points | Stratified 30% independent validation points. |
-| **3** | `1_samples_and_features/` | `{COUNTRY}_{ORBIT}_features_{MODE}.csv` | Tabular CSV | Extracted S1 temporal statistics, S2 reflectances, and 128d Presto tokens. |
-| **3** | `1_samples_and_features/` | `features_scaler.pkl` | Pickle Checkpoint | Serialized feature standardization scaler (`StandardScaler`). |
-| **4** | `2_models/` | `{COUNTRY}_{ORBIT}_model_{MODE}.pkl` | Pickle Checkpoint | Serialized PyTorch Deep MLP weights + XGBoost GBDT trees + label encoder. |
-| **4** | `2_models/` | `presto_encoder.pt` | PyTorch Tensor | Pre-trained Presto transformer feature extractor weights. |
-| **5** | `3_maps/` | `{COUNTRY}_{ORBIT}_classified_{MODE}.tif` | `UInt16`, 1 b. | Raw pixel crop classification raster (pixel value = numeric `crop_id`). |
-| **5** | `3_maps/` | `{COUNTRY}_{ORBIT}_confidence_{MODE}.tif` | `Float32`, 1 b. | Softmax ensemble probability confidence map ($0.0\text{ to }1.0$). |
-| **6** | `3_maps/` | `*_classified_masked_{MODE}.tif` | `UInt16`, 1 b. | **Final Single-Orbit Crop Map**: Cropland-masked & footprint-clipped GeoTIFF. |
-| **6** | `3_maps/` | `*_confidence_masked_{MODE}.tif` | `Float32`, 1 b. | **Final Single-Orbit Confidence Map**: Cropland-masked confidence GeoTIFF. |
-| **7** | `4_reports/` | `report_{COUNTRY}_{ORBIT}_metrics_{MODE}.xlsx` | Styled Excel | Accuracy workbook: Overall Accuracy, $\kappa$, Confusion Matrix, F1-scores. |
+| **1** | `0_segmentation/` | `{COUNTRY}_{ORBIT}_s1_composite.tif` | `Float32`, 1 b. | Multi-temporal mean SAR amplitude composite for segmentation. |
+| **1** | `0_segmentation/` | `{COUNTRY}_{ORBIT}_data_footprint.tif` | `Byte`, 1 b. | Binary mask ($1=\text{valid}, 0=\text{nodata}$) of S1, S2, and NUTS intersection. |
+| **2** | `0_segmentation/` | `{COUNTRY}_{ORBIT}_segmentation_{MODE}.tif` | `UInt32`, 1 b. | Object segmentation raster with unique integer `segment_id` per parcel. |
+| **3** | `1_samples_and_features/` | `learn_{MODE}.shp` | Vector Points | Stratified 70% training points with spatial attributes. |
+| **3** | `1_samples_and_features/` | `control_{MODE}.shp` | Vector Points | Stratified 30% independent validation points. |
+| **4** | `1_samples_and_features/` | `{COUNTRY}_{ORBIT}_features_{MODE}.csv` | Tabular CSV | Extracted S1 temporal statistics, S2 reflectances, and 128d Presto tokens. |
+| **4** | `1_samples_and_features/` | `features_scaler.pkl` | Pickle Checkpoint | Serialized feature standardization scaler (`StandardScaler`). |
+| **5** | `2_models/` | `{COUNTRY}_{ORBIT}_model_{MODE}.pkl` | Pickle Checkpoint | Serialized PyTorch Deep MLP weights + XGBoost GBDT trees + label encoder. |
+| **5** | `2_models/` | `presto_encoder.pt` | PyTorch Tensor | Pre-trained Presto transformer feature extractor weights. |
+| **6** | `3_maps/` | `{COUNTRY}_{ORBIT}_classified_{MODE}.tif` | `UInt16`, 1 b. | Raw pixel crop classification raster (pixel value = numeric `crop_id`). |
+| **6** | `3_maps/` | `{COUNTRY}_{ORBIT}_confidence_{MODE}.tif` | `Float32`, 1 b. | Softmax ensemble probability confidence map ($0.0\text{ to }1.0$). |
+| **7** | `3_maps/` | `*_classified_masked_{MODE}.tif` | `UInt16`, 1 b. | **Final Single-Orbit Crop Map**: Cropland-masked & footprint-clipped GeoTIFF. |
+| **7** | `3_maps/` | `*_confidence_masked_{MODE}.tif` | `Float32`, 1 b. | **Final Single-Orbit Confidence Map**: Cropland-masked confidence GeoTIFF. |
+| **8** | `4_reports/` | `report_{COUNTRY}_{ORBIT}_metrics_{MODE}.xlsx` | Styled Excel | Accuracy workbook: Overall Accuracy, $\kappa$, Confusion Matrix, F1-scores. |
 | **Merge** | `national_products/` | `{COUNTRY}_national_crop_map_{MODE}.tif` | `UInt16`, 1 b. | **Seamless National Crop Map**: Confidence-blended multi-orbit BigTIFF. |
 | **Merge** | `national_products/` | `{COUNTRY}_national_confidence_{MODE}.tif` | `Float32`, 1 b. | **Seamless National Confidence Map**: Multi-orbit confidence raster. |
 | **Merge** | `national_products/` | `{COUNTRY}_national_accuracy_report_{MODE}.xlsx` | Styled Excel | Aggregated nationwide statistical validation report. |
