@@ -1967,6 +1967,50 @@ class ProcessingPipelineS1S2:
 
         precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, labels=all_classes, zero_division=0)
 
+        # Resolve English crop names mapping
+        crop_name_map = {}
+        id_cols = [c for c in ['crop_id', 'crop_ids', 'code', 'id', 'class_id'] if c in gdf_val.columns]
+        name_cols = [c for c in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom'] if c in gdf_val.columns]
+        if id_cols and name_cols:
+            for _, row in gdf_val[[id_cols[0], name_cols[0]]].drop_duplicates().iterrows():
+                try:
+                    cid = int(row[id_cols[0]])
+                    cname = str(row[name_cols[0]]).strip()
+                    if cname and cname.lower() not in ['none', 'nan', '']:
+                        crop_name_map[cid] = cname
+                except Exception:
+                    pass
+
+        # Fallback to master sample_shp if any crop name missing
+        if self.sample_shp and self.sample_shp.exists():
+            try:
+                gdf_samp = gpd.read_file(str(self.sample_shp), engine="pyogrio")
+                id_cols_s = [c for c in ['crop_id', 'crop_ids', 'code', 'id', 'class_id'] if c in gdf_samp.columns]
+                name_cols_s = [c for c in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom'] if c in gdf_samp.columns]
+                if id_cols_s and name_cols_s:
+                    for _, row in gdf_samp[[id_cols_s[0], name_cols_s[0]]].drop_duplicates().iterrows():
+                        try:
+                            cid = int(row[id_cols_s[0]])
+                            cname = str(row[name_cols_s[0]]).strip()
+                            if cid not in crop_name_map and cname and cname.lower() not in ['none', 'nan', '']:
+                                crop_name_map[cid] = cname
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # Fallback to country priors.json if available
+        country_priors_file = self.aux_dir / "shapefiles_samples" / self.country / "priors.json"
+        if country_priors_file.exists():
+            try:
+                with open(country_priors_file, 'r', encoding='utf-8') as pf:
+                    priors_data = json.load(pf)
+                    for p_idx, p_name in enumerate(priors_data.keys(), start=1):
+                        if p_idx not in crop_name_map:
+                            crop_name_map[p_idx] = p_name.title()
+            except Exception:
+                pass
+
         # Excel Export
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -1997,19 +2041,27 @@ class ProcessingPipelineS1S2:
         r = 10
         ws.cell(row=r, column=1, value="Class ID").fill = header_fill
         ws.cell(row=r, column=1).font = header_font
-        ws.cell(row=r, column=2, value="Precision (User Acc)").fill = header_fill
+        ws.cell(row=r, column=2, value="Crop Name").fill = header_fill
         ws.cell(row=r, column=2).font = header_font
-        ws.cell(row=r, column=3, value="Recall (Prod Acc)").fill = header_fill
+        ws.cell(row=r, column=3, value="Precision (User Acc)").fill = header_fill
         ws.cell(row=r, column=3).font = header_font
-        ws.cell(row=r, column=4, value="F1-Score").fill = header_fill
+        ws.cell(row=r, column=4, value="Recall (Prod Acc)").fill = header_fill
         ws.cell(row=r, column=4).font = header_font
+        ws.cell(row=r, column=5, value="F1-Score").fill = header_fill
+        ws.cell(row=r, column=5).font = header_font
+        ws.cell(row=r, column=6, value="Validation Samples").fill = header_fill
+        ws.cell(row=r, column=6).font = header_font
 
         for idx, cid in enumerate(all_classes):
             r += 1
+            c_name = crop_name_map.get(int(cid), f"Class {cid}")
+            sample_cnt = int(np.sum(y_true == cid))
             ws.cell(row=r, column=1, value=int(cid)).border = thin_border
-            ws.cell(row=r, column=2, value=f"{precision[idx] * 100:.2f}%").border = thin_border
-            ws.cell(row=r, column=3, value=f"{recall[idx] * 100:.2f}%").border = thin_border
-            ws.cell(row=r, column=4, value=f"{f1[idx] * 100:.2f}%").border = thin_border
+            ws.cell(row=r, column=2, value=c_name).border = thin_border
+            ws.cell(row=r, column=3, value=f"{precision[idx] * 100:.2f}%").border = thin_border
+            ws.cell(row=r, column=4, value=f"{recall[idx] * 100:.2f}%").border = thin_border
+            ws.cell(row=r, column=5, value=f"{f1[idx] * 100:.2f}%").border = thin_border
+            ws.cell(row=r, column=6, value=sample_cnt).border = thin_border
 
         # Confusion Matrix table
         r += 3
@@ -2018,24 +2070,60 @@ class ProcessingPipelineS1S2:
         ws.cell(row=r, column=1, value="True \\ Pred").fill = header_fill
         ws.cell(row=r, column=1).font = header_font
         for c_idx, cid in enumerate(all_classes):
-            cell = ws.cell(row=r, column=c_idx + 2, value=int(cid))
+            c_name = crop_name_map.get(int(cid), str(cid))
+            cell = ws.cell(row=r, column=c_idx + 2, value=f"{int(cid)}: {c_name}")
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = Alignment(horizontal='center')
 
         for row_idx, true_cid in enumerate(all_classes):
             r += 1
-            ws.cell(row=r, column=1, value=int(true_cid)).font = sub_font
+            t_name = crop_name_map.get(int(true_cid), str(true_cid))
+            ws.cell(row=r, column=1, value=f"{int(true_cid)}: {t_name}").font = sub_font
             for col_idx, pred_cid in enumerate(all_classes):
                 val = int(cm[row_idx, col_idx])
                 cell = ws.cell(row=r, column=col_idx + 2, value=val)
                 cell.border = thin_border
                 cell.alignment = Alignment(horizontal='center')
 
+        # Area estimation table
+        unique_cls, counts = np.unique(cls_arr, return_counts=True)
+        valid_cls_mask = unique_cls > 0
+        if np.any(valid_cls_mask):
+            unique_cls = unique_cls[valid_cls_mask]
+            counts = counts[valid_cls_mask]
+            
+            resx = abs(gt[1])
+            resy = abs(gt[5])
+            pixel_ha = (resx * resy) / 10000.0
+            total_ha = float(np.sum(counts) * pixel_ha)
+
+            r += 3
+            ws.cell(row=r, column=1, value="Classified Agricultural Area Statistics").font = sub_font
+            r += 1
+            ws.cell(row=r, column=1, value="Class ID").fill = header_fill
+            ws.cell(row=r, column=1).font = header_font
+            ws.cell(row=r, column=2, value="Crop Name").fill = header_fill
+            ws.cell(row=r, column=2).font = header_font
+            ws.cell(row=r, column=3, value="Area (ha)").fill = header_fill
+            ws.cell(row=r, column=3).font = header_font
+            ws.cell(row=r, column=4, value="Area (%)").fill = header_fill
+            ws.cell(row=r, column=4).font = header_font
+
+            for u_id, u_count in zip(unique_cls, counts):
+                r += 1
+                c_name = crop_name_map.get(int(u_id), f"Class {u_id}")
+                c_ha = float(u_count * pixel_ha)
+                c_pct = (c_ha / total_ha * 100.0) if total_ha > 0 else 0.0
+                ws.cell(row=r, column=1, value=int(u_id)).border = thin_border
+                ws.cell(row=r, column=2, value=c_name).border = thin_border
+                ws.cell(row=r, column=3, value=round(c_ha, 2)).border = thin_border
+                ws.cell(row=r, column=4, value=f"{c_pct:.2f}%").border = thin_border
+
         for col in ws.columns:
             max_len = max(len(str(cell.value or '')) for cell in col)
             col_letter = col[0].column_letter
-            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+            ws.column_dimensions[col_letter].width = max(max_len + 3, 14)
 
         wb.save(str(self.metrics_fp))
         print(f"    [OK] Metrics report saved to: {self.metrics_fp}")

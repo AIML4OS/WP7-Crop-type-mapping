@@ -1920,6 +1920,53 @@ class ProcessingPipeline:
         else:
             areas = [{'Class': c, 'Area_ha': 0} for c in labels]
 
+        # Resolve English crop names mapping
+        crop_name_map = {}
+        if self.control_shp and self.control_shp.exists():
+            try:
+                gdf_c = gpd.read_file(str(self.control_shp), engine="pyogrio")
+                id_cols = [c for c in ['crop_id', 'crop_ids', 'code', 'id', 'class_id'] if c in gdf_c.columns]
+                name_cols = [c for c in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom'] if c in gdf_c.columns]
+                if id_cols and name_cols:
+                    for _, row in gdf_c[[id_cols[0], name_cols[0]]].drop_duplicates().iterrows():
+                        try:
+                            cid = int(row[id_cols[0]])
+                            cname = str(row[name_cols[0]]).strip()
+                            if cname and cname.lower() not in ['none', 'nan', '']:
+                                crop_name_map[cid] = cname
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        if self.sample_shp and self.sample_shp.exists():
+            try:
+                gdf_samp = gpd.read_file(str(self.sample_shp), engine="pyogrio")
+                id_cols_s = [c for c in ['crop_id', 'crop_ids', 'code', 'id', 'class_id'] if c in gdf_samp.columns]
+                name_cols_s = [c for c in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom'] if c in gdf_samp.columns]
+                if id_cols_s and name_cols_s:
+                    for _, row in gdf_samp[[id_cols_s[0], name_cols_s[0]]].drop_duplicates().iterrows():
+                        try:
+                            cid = int(row[id_cols_s[0]])
+                            cname = str(row[name_cols_s[0]]).strip()
+                            if cid not in crop_name_map and cname and cname.lower() not in ['none', 'nan', '']:
+                                crop_name_map[cid] = cname
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        country_priors_file = self.aux_dir / "shapefiles_samples" / self.country / "priors.json"
+        if country_priors_file.exists():
+            try:
+                with open(country_priors_file, 'r', encoding='utf-8') as pf:
+                    priors_data = json.load(pf)
+                    for p_idx, p_name in enumerate(priors_data.keys(), start=1):
+                        if p_idx not in crop_name_map:
+                            crop_name_map[p_idx] = p_name.title()
+            except Exception:
+                pass
+
         wb = openpyxl.Workbook()
         sh = wb.active
         sh.title = 'Results'
@@ -1927,9 +1974,11 @@ class ProcessingPipeline:
         sh.cell(row=1, column=1, value='Confusion Matrix').font = Font(bold=True)
         sh.cell(row=2, column=1, value='True \\ Pred').font = Font(bold=True)
         for j, lbl in enumerate(labels, start=2):
-            sh.cell(row=2, column=j, value=lbl).font = Font(bold=True)
+            lbl_name = crop_name_map.get(int(lbl), str(lbl))
+            sh.cell(row=2, column=j, value=f"{int(lbl)}: {lbl_name}").font = Font(bold=True)
         for i, lbl in enumerate(labels, start=3):
-            sh.cell(row=i, column=1, value=lbl).font = Font(bold=True)
+            lbl_name = crop_name_map.get(int(lbl), str(lbl))
+            sh.cell(row=i, column=1, value=f"{int(lbl)}: {lbl_name}").font = Font(bold=True)
             for j, _ in enumerate(labels):
                 sh.cell(row=i, column=j + 2, value=int(cm[i - 3, j]))
 
@@ -1975,23 +2024,34 @@ class ProcessingPipeline:
             start = base + 4
         else:
             start = base + 3
-        headers = ['Class', 'Producer Acc (Recall)', 'User Acc (Precision)', 'F1-score']
+        headers = ['Class ID', 'Crop Name', 'Producer Acc (Recall)', 'User Acc (Precision)', 'F1-score']
         for j, h in enumerate(headers, start=1):
             sh.cell(row=start, column=j, value=h).font = Font(bold=True)
         for idx, c in enumerate(labels):
             row_idx = start + 1 + idx
+            c_name = crop_name_map.get(int(c), f"Class {c}")
             sh.cell(row=row_idx, column=1, value=c)
-            sh.cell(row=row_idx, column=2, value=round(recalls[idx], 4))
-            sh.cell(row=row_idx, column=3, value=round(precisions[idx], 4))
-            sh.cell(row=row_idx, column=4, value=round(f1s[idx], 4))
+            sh.cell(row=row_idx, column=2, value=c_name)
+            sh.cell(row=row_idx, column=3, value=round(recalls[idx], 4))
+            sh.cell(row=row_idx, column=4, value=round(precisions[idx], 4))
+            sh.cell(row=row_idx, column=5, value=round(f1s[idx], 4))
 
         ar0 = start + 1 + len(labels) + 1
         sh.cell(row=ar0, column=1, value='Areas (ha)').font = Font(bold=True)
-        sh.cell(row=ar0 + 1, column=1, value='Class').font = Font(bold=True)
-        sh.cell(row=ar0 + 1, column=2, value='Area_ha').font = Font(bold=True)
+        sh.cell(row=ar0 + 1, column=1, value='Class ID').font = Font(bold=True)
+        sh.cell(row=ar0 + 1, column=2, value='Crop Name').font = Font(bold=True)
+        sh.cell(row=ar0 + 1, column=3, value='Area_ha').font = Font(bold=True)
         for idx, a in enumerate(areas, start=ar0 + 2):
-            sh.cell(row=idx, column=1, value=a['Class'])
-            sh.cell(row=idx, column=2, value=a['Area_ha'])
+            c_id = a['Class']
+            c_name = crop_name_map.get(int(c_id), f"Class {c_id}")
+            sh.cell(row=idx, column=1, value=c_id)
+            sh.cell(row=idx, column=2, value=c_name)
+            sh.cell(row=idx, column=3, value=a['Area_ha'])
+
+        for col in sh.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = col[0].column_letter
+            sh.column_dimensions[col_letter].width = max(max_len + 3, 14)
 
         wb.save(str(self.metrics_fp))
         print(f"    Metrics successfully saved to {self.metrics_fp}")

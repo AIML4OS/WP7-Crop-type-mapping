@@ -33,12 +33,13 @@ import argparse
 import os
 from pathlib import Path
 from typing import List, Tuple
+import json
 import numpy as np
 from osgeo import gdal
 import geopandas as gpd
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 import openpyxl
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 def get_crop_aggregation(country, learn_shp_path):
     """
@@ -487,47 +488,155 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
         'Area_ha': round(areas_counts.get(c, 0) * area_ha, 2)
     } for c in labels]
 
+    # --- Resolve English crop names mapping ---------------------------------
+    crop_name_map = {}
+    id_cols = [c for c in ['crop_id', 'crop_ids', 'code', 'id', 'class_id'] if c in ctrl.columns]
+    name_cols = [c for c in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom'] if c in ctrl.columns]
+    if id_cols and name_cols:
+        for _, row in ctrl[[id_cols[0], name_cols[0]]].drop_duplicates().iterrows():
+            try:
+                cid = int(row[id_cols[0]])
+                cname = str(row[name_cols[0]]).strip()
+                if cname and cname.lower() not in ['none', 'nan', '']:
+                    crop_name_map[cid] = cname
+            except Exception:
+                pass
+
+    # Fallback to auxiliary samples shapefile
+    aux_samples = Path(r"D:/AIML_CropMapper_Cloud/auxiliary_files/shapefiles_samples") / base_country / "samples.shp"
+    if aux_samples.exists():
+        try:
+            gdf_s = gpd.read_file(str(aux_samples), engine="pyogrio")
+            id_cols_s = [c for c in ['crop_id', 'crop_ids', 'code', 'id', 'class_id'] if c in gdf_s.columns]
+            name_cols_s = [c for c in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom'] if c in gdf_s.columns]
+            if id_cols_s and name_cols_s:
+                for _, row in gdf_s[[id_cols_s[0], name_cols_s[0]]].drop_duplicates().iterrows():
+                    try:
+                        cid = int(row[id_cols_s[0]])
+                        cname = str(row[name_cols_s[0]]).strip()
+                        if cid not in crop_name_map and cname and cname.lower() not in ['none', 'nan', '']:
+                            crop_name_map[cid] = cname
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # Fallback to priors.json
+    aux_priors = Path(r"D:/AIML_CropMapper_Cloud/auxiliary_files/shapefiles_samples") / base_country / "priors.json"
+    if aux_priors.exists():
+        try:
+            with open(aux_priors, 'r', encoding='utf-8') as pf:
+                priors_data = json.load(pf)
+                for p_idx, p_name in enumerate(priors_data.keys(), start=1):
+                    if p_idx not in crop_name_map:
+                        crop_name_map[p_idx] = p_name.title()
+        except Exception:
+            pass
+
     # --- write Excel report -------------------------------------------------
     xlsx = out_dir / f"{base_country}_final_metrics{suffix}.xlsx"
     wb   = openpyxl.Workbook()
     sh   = wb.active
     sh.title = 'Results'
 
-    # Confusion matrix table
-    sh.cell(1,1,'Confusion Matrix').font = Font(bold=True)
-    for j, lbl in enumerate(labels, start=2):
-        sh.cell(2,j,lbl).font = Font(bold=True)
-    for i, lbl in enumerate(labels, start=3):
-        sh.cell(i,1,lbl).font = Font(bold=True)
-        for j in range(len(labels)):
-            sh.cell(i,j+2,int(cm[i-3,j]))
+    header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    sub_font = Font(name="Calibri", size=11, bold=True)
+    thin_border = Border(
+        left=Side(style='thin', color='D9D9D9'), right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'), bottom=Side(style='thin', color='D9D9D9')
+    )
 
-    # Overall accuracy & kappa
-    r0 = 3 + len(labels)
-    sh.cell(r0,1,'Overall Accuracy').font = Font(bold=True)
-    sh.cell(r0,2,round(oa,2))
-    sh.cell(r0+1,1,'Kappa').font          = Font(bold=True)
-    sh.cell(r0+1,2,round(kappa,2))
+    sh.cell(row=1, column=1, value=f"National Crop Classification Accuracy Report: {base_country}").font = Font(name="Calibri", size=14, bold=True, color="1F497D")
+    sh.cell(row=2, column=1, value=f"Segmentation Mode: {seg_mode.upper()} | Model: Multimodal Fusion Ensemble").font = sub_font
+
+    # Summary table
+    sh.cell(row=4, column=1, value="Metric").font = sub_font
+    sh.cell(row=4, column=2, value="Value").font = sub_font
+    sh.cell(row=5, column=1, value="Overall Accuracy (OA)").font = Font(name="Calibri", size=11)
+    sh.cell(row=5, column=2, value=f"{oa * 100:.2f}%").font = Font(name="Calibri", size=11, bold=True)
+    sh.cell(row=6, column=1, value="Cohen's Kappa").font = Font(name="Calibri", size=11)
+    sh.cell(row=6, column=2, value=f"{kappa:.4f}").font = Font(name="Calibri", size=11, bold=True)
+    sh.cell(row=7, column=1, value="Total Validation Samples").font = Font(name="Calibri", size=11)
+    sh.cell(row=7, column=2, value=int(total)).font = Font(name="Calibri", size=11)
 
     # Per‐class recall/precision/F1
-    r1 = r0 + 3
-    hdrs = ['Class','Producer Acc','User Acc','F1-score']
-    for j, h in enumerate(hdrs, start=1):
-        sh.cell(r1,j,h).font = Font(bold=True)
-    for idx, c in enumerate(labels, start=r1+1):
-        sh.cell(idx,1,c)
-        sh.cell(idx,2,round(rec[idx-r1-1],2))
-        sh.cell(idx,3,round(prec[idx-r1-1],2))
-        sh.cell(idx,4,round(f1[idx-r1-1],2))
+    r1 = 9
+    sh.cell(row=r1, column=1, value="Class ID").fill = header_fill
+    sh.cell(row=r1, column=1).font = header_font
+    sh.cell(row=r1, column=2, value="Crop Name").fill = header_fill
+    sh.cell(row=r1, column=2).font = header_font
+    sh.cell(row=r1, column=3, value="Producer Acc (Recall)").fill = header_fill
+    sh.cell(row=r1, column=3).font = header_font
+    sh.cell(row=r1, column=4, value="User Acc (Precision)").fill = header_fill
+    sh.cell(row=r1, column=4).font = header_font
+    sh.cell(row=r1, column=5, value="F1-Score").fill = header_fill
+    sh.cell(row=r1, column=5).font = header_font
+    sh.cell(row=r1, column=6, value="Validation Samples").fill = header_fill
+    sh.cell(row=r1, column=6).font = header_font
+
+    for idx, c in enumerate(labels):
+        r_curr = r1 + 1 + idx
+        c_name = crop_name_map.get(int(c), f"Class {c}")
+        c_samples = int(np.sum(np.array(true_vals) == c))
+        sh.cell(row=r_curr, column=1, value=int(c)).border = thin_border
+        sh.cell(row=r_curr, column=2, value=c_name).border = thin_border
+        sh.cell(row=r_curr, column=3, value=f"{rec[idx] * 100:.2f}%").border = thin_border
+        sh.cell(row=r_curr, column=4, value=f"{prec[idx] * 100:.2f}%").border = thin_border
+        sh.cell(row=r_curr, column=5, value=f"{f1[idx] * 100:.2f}%").border = thin_border
+        sh.cell(row=r_curr, column=6, value=c_samples).border = thin_border
+
+    # Confusion matrix table
+    rc = r1 + 1 + len(labels) + 2
+    sh.cell(row=rc, column=1, value="Confusion Matrix (Rows: Ground Truth, Cols: Prediction)").font = sub_font
+    rc += 1
+    sh.cell(row=rc, column=1, value="True \\ Pred").fill = header_fill
+    sh.cell(row=rc, column=1).font = header_font
+    for j, lbl in enumerate(labels):
+        lbl_name = crop_name_map.get(int(lbl), str(lbl))
+        cell = sh.cell(row=rc, column=j + 2, value=f"{int(lbl)}: {lbl_name}")
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center')
+
+    for i, true_lbl in enumerate(labels):
+        rc += 1
+        t_name = crop_name_map.get(int(true_lbl), str(true_lbl))
+        sh.cell(row=rc, column=1, value=f"{int(true_lbl)}: {t_name}").font = sub_font
+        for j in range(len(labels)):
+            val = int(cm[i, j])
+            cell = sh.cell(row=rc, column=j + 2, value=val)
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal='center')
 
     # Area per class
-    ra = r1 + 1 + len(labels) + 1
-    sh.cell(ra,1,'Areas (ha)').font = Font(bold=True)
-    sh.cell(ra+1,1,'Class').font   = Font(bold=True)
-    sh.cell(ra+1,2,'Area_ha').font = Font(bold=True)
-    for i, a in enumerate(areas, start=ra+2):
-        sh.cell(i,1,a['Class'])
-        sh.cell(i,2,a['Area_ha'])
+    ra = rc + 2
+    total_area_ha = sum(a['Area_ha'] for a in areas)
+    sh.cell(row=ra, column=1, value="Classified Agricultural Area Statistics").font = sub_font
+    ra += 1
+    sh.cell(row=ra, column=1, value="Class ID").fill = header_fill
+    sh.cell(row=ra, column=1).font = header_font
+    sh.cell(row=ra, column=2, value="Crop Name").fill = header_fill
+    sh.cell(row=ra, column=2).font = header_font
+    sh.cell(row=ra, column=3, value="Area (ha)").fill = header_fill
+    sh.cell(row=ra, column=3).font = header_font
+    sh.cell(row=ra, column=4, value="Area (%)").fill = header_fill
+    sh.cell(row=ra, column=4).font = header_font
+
+    for a in areas:
+        ra += 1
+        c_id = int(a['Class'])
+        c_name = crop_name_map.get(c_id, f"Class {c_id}")
+        pct = (a['Area_ha'] / total_area_ha * 100.0) if total_area_ha > 0 else 0.0
+        sh.cell(row=ra, column=1, value=c_id).border = thin_border
+        sh.cell(row=ra, column=2, value=c_name).border = thin_border
+        sh.cell(row=ra, column=3, value=round(a['Area_ha'], 2)).border = thin_border
+        sh.cell(row=ra, column=4, value=f"{pct:.2f}%").border = thin_border
+
+    for col in sh.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = col[0].column_letter
+        sh.column_dimensions[col_letter].width = max(max_len + 3, 14)
 
     wb.save(str(xlsx))
     print(f"Final metrics saved: {xlsx}")
