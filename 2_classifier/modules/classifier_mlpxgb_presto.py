@@ -749,7 +749,7 @@ class ProcessingPipelineS1S2:
         }
 
     def _ensure_directories(self):
-        for d in [self.proc_dir, self.seg_dir, self.samples_dir, self.model_dir, self.class_dir, self.reports_dir]:
+        for d in [self.seg_dir, self.samples_dir, self.model_dir, self.class_dir, self.reports_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
     def _resolve_sam_checkpoint(self) -> Optional[str]:

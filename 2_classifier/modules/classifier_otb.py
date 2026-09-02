@@ -182,7 +182,7 @@ class ProcessingPipeline:
 
     def _ensure_directories(self):
         """Helper to enforce directory existence before writing files."""
-        for d in [self.proc_dir, self.samples_dir, self.model_dir, self.seg_dir, self.class_dir, self.reports_dir]:
+        for d in [self.samples_dir, self.model_dir, self.seg_dir, self.class_dir, self.reports_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
     def _run_cmd(self, cmd, stage, desc):
