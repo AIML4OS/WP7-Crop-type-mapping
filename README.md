@@ -1,4 +1,4 @@
-# AIML CropMapper Cloud: Sentinel-1 & Sentinel-2 OBIA crop type mapping pipeline (v2.5)
+# AIML CropMapper Cloud: Sentinel-1 & Sentinel-2 OBIA crop type mapping pipeline (v3.0)
 
 An automated, cloud-optimized object-based image analysis (OBIA) pipeline designed to process **Sentinel-1 SAR** and **Sentinel-2 multispectral optical** time series for large-scale, national and regional crop type classification. Developed under the European Statistical System (ESS) **AIML4OS (One Stop Shop for Artificial Intelligence in Official Statistics - Work Package 7)** project funded by Eurostat and the European Commission, this toolbox enables National Statistical Institutes (NSIs), agricultural paying agencies, and IT practitioners to generate standardized, high-accuracy crop type statistics across Europe.
 
@@ -806,7 +806,7 @@ To process nationwide multi-temporal satellite rasters exceeding $100\text{ GB}$
 
 ### 1. Vectorized block I/O vs random access
 * **Legacy GIS approaches**: Iterate through polygon geometries or sample points one-by-one, issuing millions of micro-seek system calls (`read()` / `fseek()`) to the filesystem, causing severe disk thrashing on network/HDD storage.
-* **v2.5 Architecture**: Divides the raster into regular $2048 \times 2048$ processing blocks. All $170+$ radar and optical bands are read sequentially in a single contiguous memory operation, eliminating $99.83\%$ of filesystem I/O system calls.
+* **v3.0 Architecture**: Divides the raster into regular $2048 \times 2048$ processing blocks. All $170+$ radar and optical bands are read sequentially in a single contiguous memory operation, eliminating $99.83\%$ of filesystem I/O system calls.
 
 ### 2. $O(1)$ array indexing lookup table (LUT) reconstruction
 * Rather than performing spatial raster masking for every individual polygon, predictions and confidence values for all segment objects in a tile are stored in a 1D lookup array:
@@ -830,9 +830,9 @@ Ensuring $100\%$ linear multi-core scaling without thread over-subscription.
 
 ## High-performance vectorized inference architecture
 
-In version 2.5, Stage 5 (`stage_5_classify_vector`) has been re-architected with **vectorized block-level I/O and O(1) lookup table (LUT) raster reconstruction**:
+In version 3.0, Stage 5 (`stage_5_classify_vector`) has been re-architected with **vectorized block-level I/O and O(1) lookup table (LUT) raster reconstruction**:
 
-| Metric / feature | Legacy approach | Vectorized v2.5 architecture | Improvement |
+| Metric / feature | Legacy approach | Vectorized v3.0 architecture | Improvement |
 | :--- | :---: | :---: | :---: |
 | **Disk I/O requests per orbit** | $> 50,000,000$ random reads | **$\sim 85,000$ sequential block reads** | 🟢 **99.83% I/O reduction** |
 | **Zonal statistics aggregation** | Python per-object looping | Vectorized `np.bincount` in NumPy/C | 🟢 **$> 1000\times$ faster** |
@@ -999,14 +999,14 @@ This project builds upon, integrates, and acknowledges key open-source libraries
 If you use this software in your research or statistical production pipelines, please cite:
 
 **APA format:**
-> Slesinski, P., Kotulak, N., Roos, M., Mróz, M., Mleczko, M., Gabriel, C., Hofer, N., Belton, S., Logakrishnan, M., Kästenbauer, M., Martins, C., Pallister, I. L. M., Gonçalves, I. (2025). *Sentinel-1 & Sentinel-2 OBIA crop type mapping pipeline (v2.5)*. [AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics](https://cros.ec.europa.eu/dashboard/aiml4os), Work Package 7, European Commission / Eurostat. Available at: https://github.com/AIML4OS/WP7-Crop-type-mapping
+> Slesinski, P., Kotulak, N., Roos, M., Mróz, M., Mleczko, M., Gabriel, C., Hofer, N., Belton, S., Logakrishnan, M., Kästenbauer, M., Martins, C., Pallister, I. L. M., Gonçalves, I. (2025). *Sentinel-1 & Sentinel-2 OBIA crop type mapping pipeline (v3.0)*. [AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics](https://cros.ec.europa.eu/dashboard/aiml4os), Work Package 7, European Commission / Eurostat. Available at: https://github.com/AIML4OS/WP7-Crop-type-mapping
 
 **BibTeX:**
 ```bibtex
 @software{slesinski2025cropmapper,
   author       = {Slesinski, Przemyslaw and Kotulak, Natalia and Roos, Marko and Mróz, Marek and Mleczko, Magdalena and Gabriel, Cristina and Hofer, Nina and Belton, Sam and Logakrishnan, Mohana and Kästenbauer, Mathias and Martins, Carla and Pallister, Ivana I. L. M. and Gonçalves, Isabel},
   title        = {Sentinel-1 & Sentinel-2 OBIA crop type mapping pipeline},
-  version      = {2.5.0},
+  version      = {3.0.0},
   year         = {2025},
   url          = {https://github.com/AIML4OS/WP7-Crop-type-mapping},
   organization = {AIML4OS – One Stop Shop for Artificial Intelligence in Official Statistics, Eurostat, European Commission}
