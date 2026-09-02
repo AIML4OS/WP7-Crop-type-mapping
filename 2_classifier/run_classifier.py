@@ -15,11 +15,11 @@ Features:
       * Multimodal SAR statistics + Optical multi-temporal reflectances.
       * NASA Harvest Presto 128-d multi-temporal geospatial foundation embeddings.
   - Classification Architectures (--classifier):
-      * 'mlpxgb_presto' (Default): Soft-voting ensemble of Deep PyTorch MLP + XGBoost GBDT + Presto.
-      * 'presto_s1'              : Single-radar S1-only Presto ANN model.
-      * 'otb'                    : Orfeo ToolBox machine learning models (Random Forest / SVM).
-      * 'mlp'                    : Pure Deep PyTorch MLP classifier.
-      * 'xgb'                    : Pure XGBoost GBDT classifier.
+      * 'mlpxgb_presto' (Default): SOTA Dual-Tier Soft-Voting Ensemble (Deep PyTorch MLP + XGBoost GBDT + Presto).
+      * 'mlp'                    : Pure Deep PyTorch MLP classifier [S1 + S2].
+      * 'xgb'                    : Pure XGBoost GBDT classifier [S1 + S2].
+      * 'presto_s1' (Archived)   : Single-radar S1-only Presto ANN model.
+      * 'otb' (Archived)         : Orfeo ToolBox machine learning models.
   - Post-Processing & Assessment:
       * Bayesian prior calibration against official crop acreage statistics.
       * Morphological sieve noise removal and agricultural cropland masking.
@@ -31,7 +31,7 @@ Execution Examples:
   # 1. Interactive setup wizard (simply run with zero arguments):
   python run_classifier.py
 
-  # 2. Full automated pipeline (SLIC + Multimodal Deep MLP + XGBoost + Presto):
+  # 2. Full automated pipeline (SLIC + Multimodal Deep MLP + XGBoost + Presto [SOTA]):
   python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A
 
   # 3. Full automated pipeline using Meta AI SAM deep vision segmentation:
@@ -40,11 +40,11 @@ Execution Examples:
   # 4. Full automated pipeline using official LPIS cadastral parcel vectors:
   python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
 
-  # 5. Single-radar S1-only Presto ANN classification:
-  python run_classifier.py --track NL/orbit_88 --classifier presto_s1 --seg_mode slic --stage A
+  # 5. Pure PyTorch Deep MLP classifier:
+  python run_classifier.py --track NL/orbit_88 --classifier mlp --seg_mode slic --stage A
 
-  # 6. Orfeo ToolBox (Random Forest / SVM) machine learning classification:
-  python run_classifier.py --track NL/orbit_88 --classifier otb --seg_mode slic --stage A
+  # 6. Pure XGBoost GBDT classifier:
+  python run_classifier.py --track NL/orbit_88 --classifier xgb --seg_mode slic --stage A
 
   # 7. Sequential automated classification for all orbits in a country:
   python run_classifier.py --country NL --classifier mlpxgb_presto --seg_mode slic --stage A
@@ -60,7 +60,7 @@ Execution Examples:
   python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 7  # Accuracy assessment & Excel report export
 
   # 9. Merge all classified orbits for a country into a seamless national map (Phase 4):
-  python run_classifier.py --country NL --seg_mode slic --stage merge
+  python run_merge.py --country NL --seg_mode slic
 ================================================================================
 """
 
@@ -74,10 +74,11 @@ import sys
 from pathlib import Path
 from typing import Optional, List, Dict
 
-# Ensure local and modules imports work cleanly
+# Ensure local, modules and Archive_scripts imports work cleanly
 script_dir = Path(__file__).resolve().parent
 modules_dir = script_dir / "modules"
-for p in [script_dir, modules_dir]:
+archive_dir = script_dir / "Archive_scripts"
+for p in [script_dir, modules_dir, archive_dir]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
@@ -134,19 +135,29 @@ def run_pipeline(
     logging.info(f" Classifier Model : [{classifier_model.upper()}]")
     logging.info(f"============================================================")
 
-    # Route to specialized engines if requested
+    # Route to specialized / archived engines if requested
     if classifier_model == 'otb':
-        otb_mod = importlib.import_module("classifier_otb")
-        pipeline = otb_mod.ProcessingPipeline(track=norm_track, seg_mode=seg_mode)
-        if stage == 'A' or stage is None:
-            pipeline.run_all()
+        logging.warning("[DEPRECATED] 'otb' model has been archived to Archive_scripts/ and the standalone OTB binaries have been retired.")
+        logging.warning("[RECOMMENDED] Use 'mlpxgb_presto' for state-of-the-art multimodal deep learning classification.")
+        try:
+            otb_mod = importlib.import_module("classifier_otb")
+            pipeline = otb_mod.ProcessingPipeline(track=norm_track, seg_mode=seg_mode)
+            if stage == 'A' or stage is None:
+                pipeline.run_all()
+        except Exception as e:
+            logging.error(f"Failed to run archived OTB classifier: {e}")
         return
 
     if classifier_model == 'presto_s1':
-        s1_ann_mod = importlib.import_module("classifier_presto_s1")
-        pipeline = s1_ann_mod.ProcessingPipeline(track=norm_track, seg_mode=seg_mode)
-        if stage == 'A' or stage is None:
-            pipeline.run_all()
+        logging.warning("[DEPRECATED] 'presto_s1' SAR-only model has been archived to Archive_scripts/.")
+        logging.warning("[RECOMMENDED] Use 'mlpxgb_presto' for multimodal SAR+Optical classification.")
+        try:
+            s1_ann_mod = importlib.import_module("classifier_presto_s1")
+            pipeline = s1_ann_mod.ProcessingPipeline(track=norm_track, seg_mode=seg_mode)
+            if stage == 'A' or stage is None:
+                pipeline.run_all()
+        except Exception as e:
+            logging.error(f"Failed to run archived Presto-S1 classifier: {e}")
         return
 
     # Handle pure MLP or pure XGBoost via weight adjustment
@@ -187,54 +198,70 @@ def run_pipeline(
         elif choice == '5': pipeline.stage_5_classify_vector(True)
         elif choice == '6': pipeline.stage_6_mask_classification(True)
         elif choice == '7': pipeline.stage_7_calculate_metrics()
+        else:
+            logging.error(f"Unknown stage '{stage}'. Use 'A' (all) or '0'..'7'.")
 
 
 def interactive_setup_wizard():
-    """Interactive CLI wizard shown when run_classifier.py is called without arguments."""
     print("""
-============================================================
- AIML CropMapper Cloud - Multimodal Classification Wizard
-============================================================""")
+================================================================================
+       AIML CropMapper Cloud - Interactive Setup Wizard (Phase 3 & 4)
+================================================================================
+ Welcome! This wizard will guide you through setting up crop classification
+ and national multi-orbit merging step-by-step.
+================================================================================""")
 
-    # Step 1: Select Track
-    tracks = discover_available_tracks()
+    available_tracks = discover_available_tracks()
+    countries = sorted(list(set(t.split('/')[0] for t in available_tracks)))
+
+    # Step 1: Track / Country Discovery
+    print("\n Available Countries & Tracks:")
+    for c in countries:
+        c_tracks = [t for t in available_tracks if t.startswith(f"{c}/")]
+        print(f"   * {c}: {len(c_tracks)} orbit(s) ({', '.join(c_tracks)})")
+
     selected_track = None
     selected_country = None
 
-    if tracks:
-        print(" Discovered tracks in working directory:")
-        for idx, t in enumerate(tracks, 1):
-            print(f"  [{idx}] {t}")
-        print("  [C] Enter custom track (e.g. PL/orbit_22)")
-        print("  [N] Process entire country (e.g. NL, PL, FR)")
-        print("  [Q] Quit")
-        choice = input("\n Select track or option [1-%d/C/N/Q] (default: 1): " % len(tracks)).strip().upper()
-        if choice == 'Q': return
-        elif choice == 'C':
-            selected_track = input(" Enter track identifier (e.g. NL/orbit_88): ").strip()
-        elif choice == 'N':
-            selected_country = input(" Enter country code (e.g. NL, PL, FR): ").strip().upper()
-        elif choice.isdigit() and 1 <= int(choice) <= len(tracks):
-            selected_track = tracks[int(choice) - 1]
-        else:
-            selected_track = tracks[0]
+    print("\n Selection options:")
+    print("  [1] Select a specific satellite orbit track (e.g. PT/orbit_45, NL/orbit_88)")
+    print("  [2] Select an entire country to process all its orbits sequentially")
+    print("  [3] Merge classified tracks into national mosaic (Phase 4)")
+    mode_choice = input(" Enter choice [1-3] (default: 1): ").strip()
+
+    if mode_choice == '2':
+        selected_country = input(f" Enter country code ({'/'.join(countries)}): ").strip().upper()
+    elif mode_choice == '3':
+        sel_c = input(f" Enter country code to merge ({'/'.join(countries)}): ").strip().upper()
+        sel_s = input(" Enter segmentation mode used for classification (slic/sam/lpis) [slic]: ").strip().lower() or 'slic'
+        merger_mod = importlib.import_module("multi_orbit_merger")
+        merger = merger_mod.MultiOrbitMerger(country=sel_c, seg_mode=sel_s)
+        merger.run_national_mosaic()
+        return
     else:
-        selected_track = input(" Enter track identifier (e.g. NL/orbit_88) or country (e.g. NL): ").strip()
-        if '/' not in selected_track:
-            selected_country = selected_track.upper()
-            selected_track = None
+        print("\n Discovered Tracks:")
+        for idx, tr in enumerate(available_tracks, start=1):
+            print(f"   [{idx}] {tr}")
+        tr_choice = input(f" Enter track number [1-{len(available_tracks)}] or custom track: ").strip()
+        if tr_choice.isdigit() and 1 <= int(tr_choice) <= len(available_tracks):
+            selected_track = available_tracks[int(tr_choice) - 1]
+        elif tr_choice:
+            selected_track = tr_choice
+        else:
+            selected_track = available_tracks[0] if available_tracks else "NL/orbit_88"
 
     # Step 2: Select Segmentation Mode
     print("""
 ============================================================
- Select Segmentation Mode:
-  [1] SLIC Superpixels (Recommended SOTA, fast & scalable)
-  [2] Meta AI SAM (Segment Anything foundation model)
-  [3] Official LPIS Cadastral Parcels (.shp / .gpkg)
+ Select Segmentation Architecture:
+  [1] SLIC Superpixels (Fast, edge-constrained, default)
+  [2] Meta AI SAM (Segment Anything foundation vision model)
+  [3] LPIS Cadastral Parcels (Official agricultural vector data)
 ============================================================""")
     seg_choice = input(" Enter choice [1-3] (default: 1): ").strip()
     seg_modes = {'1': 'slic', '2': 'sam', '3': 'lpis'}
     seg_mode = seg_modes.get(seg_choice, 'slic')
+
     lpis_vector = None
     if seg_mode == 'lpis':
         lpis_vector = input(" Enter path to LPIS parcel vector file (.shp / .gpkg): ").strip()
@@ -242,15 +269,13 @@ def interactive_setup_wizard():
     # Step 3: Select Classifier Architecture
     print("""
 ============================================================
- Select Classifier Model:
-  [1] Multimodal Fusion (Deep MLP + XGBoost + Presto) [S1 + S2] [SOTA]
-  [2] Single-Radar Presto ANN (Sentinel-1 SAR only) [S1 only]
-  [3] Orfeo ToolBox Machine Learning (Random Forest / SVM) [S1 + S2]
-  [4] Pure PyTorch Deep MLP [S1 + S2]
-  [5] Pure XGBoost GBDT [S1 + S2]
+ Select Classifier Architecture:
+  [1] Multimodal Dual-Tier Fusion (Deep MLP + XGBoost + Presto) [S1 + S2] [SOTA - Recommended]
+  [2] Pure PyTorch Deep MLP [S1 + S2]
+  [3] Pure XGBoost GBDT [S1 + S2]
 ============================================================""")
-    cls_choice = input(" Enter choice [1-5] (default: 1): ").strip()
-    cls_models = {'1': 'mlpxgb_presto', '2': 'presto_s1', '3': 'otb', '4': 'mlp', '5': 'xgb'}
+    cls_choice = input(" Enter choice [1-3] (default: 1): ").strip()
+    cls_models = {'1': 'mlpxgb_presto', '2': 'mlp', '3': 'xgb'}
     classifier_model = cls_models.get(cls_choice, 'mlpxgb_presto')
 
     # Step 4: Select Execution Mode
@@ -299,12 +324,10 @@ def interactive_setup_wizard():
 
 def interactive_menu(pipeline, country: str, track: str, classifier_model: str = 'mlpxgb_presto'):
     seg_modes = ['slic', 'sam', 'lpis']
-    cls_models = ['mlpxgb_presto', 'presto_s1', 'otb', 'mlp', 'xgb']
+    cls_models = ['mlpxgb_presto', 'mlp', 'xgb']
 
     cls_labels = {
         'mlpxgb_presto': 'MLPXGB_PRESTO [S1 + S2 SOTA]',
-        'presto_s1': 'PRESTO_S1 [S1 SAR only]',
-        'otb': 'OTB [S1 + S2]',
         'mlp': 'PYTORCH_MLP [S1 + S2]',
         'xgb': 'XGBOOST [S1 + S2]'
     }
@@ -348,7 +371,7 @@ def interactive_menu(pipeline, country: str, track: str, classifier_model: str =
                 pipeline.seg_mode = seg_modes[idx]
                 print(f"\n    Segmentation mode switched to: {pipeline.seg_mode.upper()}")
             elif choice == 'C':
-                idx = (cls_models.index(classifier_model) + 1) % len(cls_models)
+                idx = (cls_models.index(classifier_model) + 1) % len(cls_models) if classifier_model in cls_models else 0
                 classifier_model = cls_models[idx]
                 print(f"\n    Classifier model switched to: {classifier_model.upper()}")
             elif choice == 'A':
@@ -384,11 +407,11 @@ Examples:
   # Cadastral Parcels Segmentation (LPIS):
   python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
 
-  # Single-radar S1-only Presto ANN:
-  python run_classifier.py --track NL/orbit_88 --classifier presto_s1 --seg_mode slic --stage A
+  # Pure PyTorch Deep MLP classifier:
+  python run_classifier.py --track NL/orbit_88 --classifier mlp --seg_mode slic --stage A
 
-  # Orfeo ToolBox Machine Learning:
-  python run_classifier.py --track NL/orbit_88 --classifier otb --seg_mode slic --stage A
+  # Pure XGBoost GBDT classifier:
+  python run_classifier.py --track NL/orbit_88 --classifier xgb --seg_mode slic --stage A
 
   # Multi-orbit National Merging (Phase 4):
   python run_merge.py --country NL --seg_mode slic
@@ -398,8 +421,8 @@ Examples:
     parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
     parser.add_argument('--stage', default=None, help="Stage to execute: 'A' (all 0-7), or single stage '0'..'7'")
     parser.add_argument('--classifier', default='mlpxgb_presto',
-                        choices=['mlpxgb_presto', 'presto_s1', 'otb', 'mlp', 'xgb'],
-                        help="Classifier model: 'mlpxgb_presto' [S1+S2 SOTA] (default), 'presto_s1' [S1 only], 'otb' [S1+S2], 'mlp' [S1+S2], 'xgb' [S1+S2]")
+                        choices=['mlpxgb_presto', 'mlp', 'xgb', 'presto_s1', 'otb'],
+                        help="Classifier model: 'mlpxgb_presto' [S1+S2 SOTA] (default), 'mlp' [S1+S2], 'xgb' [S1+S2] (archived: 'presto_s1', 'otb')")
     parser.add_argument('--seg_mode', default='slic', choices=['slic', 'sam', 'lpis'], help="Segmentation mode: 'slic' (superpixels), 'sam' (Meta AI), 'lpis' (cadastre) (default: slic)")
     parser.add_argument('--mlp_weight', type=float, default=0.65, help="Weight of MLP in fusion ensemble (0.0 to 1.0, default: 0.65)")
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 GeoTIFF raster")

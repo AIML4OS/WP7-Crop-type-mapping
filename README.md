@@ -427,9 +427,9 @@ Located in `2_classifier/`, this toolbox implements object-based image analysis 
 * **Master runner script**: `run_classifier.py`
 * **Internal engines (`modules/`)**:
   * `classifier_mlpxgb_presto.py`: Multimodal fusion ensemble combining NASA Harvest Presto transformer embeddings, PyTorch Deep MLP, and XGBoost GBDT (`[S1 + S2] [SOTA]`).
-  * `classifier_presto_s1.py`: Single-radar Presto artificial neural network for SAR-only classification (`[S1 only]`).
-  * `classifier_otb.py`: Orfeo ToolBox machine learning models (Random Forest / Support Vector Machines) (`[S1 + S2]`).
+  * `multi_orbit_merger.py`: Nationwide multi-orbit confidence merger and seamless blender.
   * `presto_model.py`: Embedded NASA Harvest Presto transformer foundation architecture.
+  *(Note: Legacy engines `classifier_otb.py` and `classifier_presto_s1.py` have been moved to `Archive_scripts/`)*
 
 ---
 
@@ -871,8 +871,6 @@ AIML_CropMapper_Cloud/
 │   ├── run_merge.py                     # Multi-orbit national mosaic & merger
 │   ├── modules/                         # Core classification engines
 │   │   ├── classifier_mlpxgb_presto.py  # S1+S2 Presto + PyTorch MLP + XGBoost SOTA
-│   │   ├── classifier_presto_s1.py      # Single-radar S1-only Presto ANN model
-│   │   ├── classifier_otb.py            # Orfeo ToolBox machine learning models
 │   │   ├── multi_orbit_merger.py        # Nationwide multi-orbit confidence merger
 │   │   └── presto_model.py              # NASA Harvest Presto foundation architecture
 │   └── Archive_scripts/                 # Frozen historical archive (read-only)
