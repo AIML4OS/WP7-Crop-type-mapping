@@ -6,19 +6,19 @@ This toolbox provides an automated processing pipeline for **Sentinel-2 multispe
 
 ## Scientific methodology & optical remote sensing
 
-### 1. Bottom-Of-Atmosphere (BOA) Surface Reflectance
+### 1. Bottom-of-atmosphere (BOA) surface reflectance
 Sentinel-2 L2A data provides physically corrected surface reflectances $\rho_{\text{BOA}}(\lambda)$ by removing Rayleigh scattering, aerosol optical depth, and ozone/water absorption:
 
 $$\rho_{\text{BOA}}(\lambda) = \frac{\pi \cdot (L_{\text{TOA}}(\lambda) - L_{\text{path}}(\lambda))}{\tau_v(\lambda) \cdot [E_0(\lambda) \cdot \cos \theta_s \cdot \tau_s(\lambda) + E_{\text{down}}(\lambda)]}$$
 
-### 2. Spectral Bands & Agricultural Bio-Physical Indicators
+### 2. Spectral bands and agricultural biophysical indicators
 The pipeline utilizes 9 spectral bands at 10 m and 20 m spatial resolutions (resampled to 10.0 m in `EPSG:3857`):
 * **Visible bands (`B02` Blue 490 nm, `B03` Green 560 nm, `B04` Red 665 nm)**: Sensitive to photosynthetic chlorophyll $a$ and $b$ absorption.
 * **RedEdge bands (`B05` 705 nm, `B06` 740 nm, `B07` 783 nm)**: Capture the steep reflectance transition edge; highly sensitive to canopy nitrogen, leaf chlorophyll concentration, and early senescence.
 * **Narrow NIR (`B8A` 865 nm)**: Measures internal leaf mesophyll cellular scattering, avoiding atmospheric water vapor absorption present in broad `B08`.
 * **Shortwave Infrared (`B11` 1610 nm, `B12` 2190 nm)**: Sensitive to foliar water content and dry matter accumulation.
 
-### 3. Narrow-Band Agricultural Indices
+### 3. Narrow-band agricultural indices
 * **Normalized Difference Vegetation Index (NDVI)**:
   $$\text{NDVI} = \frac{\text{B8A} - \text{B04}}{\text{B8A} + \text{B04}}$$
 * **Red-Edge Chlorophyll Indices (NDRE1 & NDRE2)**:
@@ -26,7 +26,7 @@ The pipeline utilizes 9 spectral bands at 10 m and 20 m spatial resolutions (res
 * **Normalized Difference Water Index (NDWI / NDII)**:
   $$\text{NDWI} = \frac{\text{B8A} - \text{B11}}{\text{B8A} + \text{B11}}$$
 
-### 4. Standardized Agricultural DOY Time-Series
+### 4. Standardized agricultural DOY time series
 Satellite observations across years and orbits have variable revisit dates due to cloud cover. The pipeline solves this by interpolating all observations into **14 standardized 10-day agricultural reference dates (Day of Year - DOY)**:
 $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
 * DOY 80 (March 21): Early spring emergence / winter crop green-up.
@@ -45,16 +45,16 @@ $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273,
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Input Data Ingestion: Shared Country S2 Pool]           |
+                     | [Input data ingestion: shared country S2 pool]           |
                      | - Destination: workingDirs/{COUNTRY}/S2/                 |
                      | - Copernicus CDSE OData API (Automated L2A download)     |
                      | - CreoDIAS Local Archive (Fast L2A SAFE extraction)      |
-                     | -> All country MGRS tiles downloaded ONCE per country    |
+                     | -> All country MGRS tiles downloaded once per country    |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 1: Granule Extraction & SCL Cloud Masking]        |
+                     | [Stage 1: Granule extraction and SCL cloud masking]      |
                      | 1. Extract 9 spectral bands (B02-B12) at 10m/20m         |
                      | 2. Query Scene Classification Layer (SCL)                |
                      | 3. Mask invalid pixels: Clouds (8,9), Cirrus (10),       |
@@ -64,17 +64,17 @@ $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273,
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 2: 14-DOY Synthetic Time-Series Interpolation]    |
+                     | [Stage 2: 14-DOY synthetic time-series interpolation]    |
                      | 1. Parallel multi-core time-series interpolation         |
                      | 2. Linear temporal spline across valid clear DOYs        |
                      | 3. Interpolate 9 bands + dynamic NDVI for 14 DOYs        |
                      | 4. Saved to workingDirs/{COUNTRY}/S2/{TILE}/_synthetic_s2|
-                     | -> Computed ONCE per country tile (eliminates redundancy)|
+                     | -> Computed once per country tile (eliminates redundancy)|
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 3: Per-Orbit SAR Grid Alignment & BigTIFF Stacking|
+                     | [Stage 3: Per-orbit SAR grid alignment & BigTIFF stacking|
                      | 1. Discovers synthetic tiles from shared country pool    |
                      | 2. Spatial alignment to Sentinel-1 SAR reference grid    |
                      |    (Exact sub-pixel match: dX = 0.000m, dY = 0.000m)     |
@@ -85,10 +85,10 @@ $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273,
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Output Product: 1_input_stacks/]                        |
+                     | [Output product: 1_input_stacks/]                        |
                      | {COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif                |
                      | (126-band multi-temporal optical BigTIFF, EPSG:3857, 10m)|
-                     +----------------------------------------------------------+
+                     +----------------------------+-----------------------------+
 ```
 
 ---
@@ -102,7 +102,7 @@ To eliminate hundreds of gigabytes of duplicate downloads and redundant time-ser
 * **Stage 1 & Stage 2 operate at the country level**: Data is ingested and interpolated into `workingDirs/{COUNTRY}/S2/` **exactly once per nation**.
 * **Stage 3 operates per orbit**: Stacking warps and clips from the shared national pool directly into each orbit track's `1_input_stacks/{COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif`.
 
-### Stage 1: Granule extraction & SCL cloud masking (`s2_download_cdse.py`, `s2_extract_creodias.py`)
+### Stage 1: Granule extraction and SCL cloud masking (`s2_download_cdse.py`, `s2_extract_creodias.py`)
 * Extracts Sentinel-2 L2A BOA surface reflectance granules directly into the shared repository `workingDirs/{COUNTRY}/S2/{TILE}_tif/`.
 * Evaluates the Scene Classification Layer (SCL) and applies strict pixel-level masking:
   * **Retained classes (valid)**: `4` (Vegetation), `5` (Bare soil), `6` (Water), `7` (Unclassified).
@@ -114,7 +114,7 @@ To eliminate hundreds of gigabytes of duplicate downloads and redundant time-ser
 * For each pixel, reconstructs missing cloud-covered observations using forward/backward temporal linear interpolation between nearest cloud-free dates across the agricultural calendar.
 * Automatically skips tiles that already have all 14 DOYs completed.
 
-### Stage 3: SAR grid matching & BigTIFF stacking (`s2_mosaic_stack.py`)
+### Stage 3: SAR grid matching and BigTIFF stacking (`s2_mosaic_stack.py`)
 * **Shared pool sourcing**: Automatically locates synthetic tiles in `workingDirs/{COUNTRY}/S2/` (with fallback to legacy track folders).
 * **Sub-pixel geometric co-registration**: Warps optical mosaics to the exact spatial extent, bounding box, and pixel grid of the target Sentinel-1 SAR stack ($\Delta X = 0.000\text{ m}, \Delta Y = 0.000\text{ m}$ at 10.0 m resolution), guaranteeing zero spatial shift during machine learning feature fusion.
 * **BigTIFF & pyramid generation**: Compiles all 126 layers into a single compressed BigTIFF (`COMPRESS=DEFLATE`, `TILED=YES`) and builds external pyramid overviews (`[2, 4, 8, 16, 32, 64]`) for smooth visualization.

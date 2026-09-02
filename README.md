@@ -294,7 +294,7 @@ $$E_{\text{S1}} \in \mathbb{R}^{128} \quad (\text{SAR dynamics}), \qquad E_{\tex
 
 #### 3. Unified concatenated feature vector
 The complete feature vector combines domain-specific physical interpretability with deep self-supervised representation learning:
-$$X_{\text{fused}} = \left[ F_{\text{S1\_stats}} \,\|\, F_{\text{S2\_spectral}} \,\|\, E_{\text{Presto\_S1}} \,\|\, E_{\text{Presto\_S2}} \right] \in \mathbb{R}^{D}$$
+$$X_{\text{fused}} = \left[ F_{\text{S1,stats}} \,\|\, F_{\text{S2,spectral}} \,\|\, E_{\text{Presto,S1}} \,\|\, E_{\text{Presto,S2}} \right] \in \mathbb{R}^{D}$$
 
 ---
 
@@ -345,7 +345,7 @@ Located in `1_Sentinel-1_preprocessor/`, this toolbox transforms raw Copernicus 
                  v
     +---------------------------+
     |  Stage 1: Calibration     |  --> Precise orbit (POEORB), TNR, BNR, Sigma0 calibration,
-    |  & slice assembly         |      and daily slice stitching into continuous orbit strips
+    |  and slice assembly       |      and daily slice stitching into continuous orbit strips
     +-------------+-------------+
                   |
                   v
@@ -356,8 +356,8 @@ Located in `1_Sentinel-1_preprocessor/`, this toolbox transforms raw Copernicus 
                   |
                   v
     +---------------------------+
-    |  Stage 3: Terrain corr.,  |  --> Range Doppler terrain correction (Copernicus 30 m DEM),
-    |  BigTIFF stack & clipping |      NUTS2 clipping (EPSG:3857, 10 m), and 6 pyramid overviews
+    |  Stage 3: Despeckling,    |  --> Multi-temporal speckle filtering, Range Doppler terrain
+    |  terrain corr. & stacking |      correction (Copernicus 30 m DEM), NUTS2 clipping (10 m), BigTIFF export
     +---------------------------+
 ```
 
@@ -366,7 +366,7 @@ Located in `1_Sentinel-1_preprocessor/`, this toolbox transforms raw Copernicus 
   * `s1_calibration_creodias.py`: Fast calibration from local CreoDIAS COG repositories.
   * `s1_calibration_cdse.py`: Automated retrieval and calibration from CDSE API.
   * `s1_coregistration.py`: Multi-temporal coregistration using ESA SNAP GPT (`CreateStack`).
-  * `s1_stack_clip.py`: Range Doppler terrain correction using Copernicus 30 m DEM, GDAL BigTIFF stacking, and GISCO NUTS2 regional boundary clipping in `EPSG:3857`.
+  * `s1_stack_clip.py`: Multi-temporal speckle filtering, Range Doppler terrain correction using Copernicus 30 m DEM, GDAL BigTIFF stacking, and GISCO NUTS2 regional boundary clipping in `EPSG:3857`.
 
 ---
 
@@ -379,20 +379,20 @@ Located in `1a_Sentinel-2_preprocessor/`, this toolbox creates cloud-free, regul
                      |
                      v
     +----------------------------------+
-    |  Stage 1: Retrieval & Masking    |  --> S2 L2A tile download/extraction to shared country pool,
-    |  (SCL Cloud & Shadow Filtering)  |      SCL filtering for clouds, shadows, snow, and invalid pixels
+    |  Stage 1: Retrieval & masking    |  --> S2 L2A tile download/extraction to shared country pool,
+    |  (SCL cloud & shadow filtering)  |      SCL filtering for clouds, shadows, snow, and invalid pixels
     +----------------+-----------------+
                      |
                      v
     +----------------------------------+
     |  Stage 2: Synthetic DOY          |  --> Multi-temporal spline interpolation across 14 standardized DOYs
-    |  Time-Series Interpolation       |      (computed ONCE per country tile, eliminating duplicate processing)
+    |  time-series interpolation       |      (computed once per country tile, eliminating duplicate processing)
     +----------------+-----------------+
                      |
                      v
     +----------------------------------+
-    |  Stage 3: Per-Orbit Stacking     |  --> Sub-pixel warping to Sentinel-1 raster bounding box,
-    |  & 126-Band BigTIFF Generation   |      126-band BigTIFF creation, and 6 pyramid overviews per orbit
+    |  Stage 3: Per-orbit stacking     |  --> Sub-pixel warping to Sentinel-1 raster bounding box,
+    |  & 126-band BigTIFF generation   |      126-band BigTIFF creation, and 6 pyramid overviews per orbit
     +----------------------------------+
 ```
 

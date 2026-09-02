@@ -58,7 +58,7 @@ $$E_{\text{S1}} \in \mathbb{R}^{128} \quad (\text{SAR dynamics}), \qquad E_{\tex
 
 #### Unified concatenated feature vector
 The complete feature vector combines domain-specific physical interpretability with deep self-supervised representation learning:
-$$X_{\text{fused}} = \left[ F_{\text{S1\_stats}} \,\|\, F_{\text{S2\_spectral}} \,\|\, E_{\text{Presto\_S1}} \,\|\, E_{\text{Presto\_S2}} \right] \in \mathbb{R}^{D}$$
+$$X_{\text{fused}} = \left[ F_{\text{S1,stats}} \,\|\, F_{\text{S2,spectral}} \,\|\, E_{\text{Presto,S1}} \,\|\, E_{\text{Presto,S2}} \right] \in \mathbb{R}^{D}$$
 
 ---
 

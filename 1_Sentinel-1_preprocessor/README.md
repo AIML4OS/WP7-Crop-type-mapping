@@ -12,7 +12,7 @@ Sentinel-1 operates at C-band microwave frequency ($f = 5.405\text{ GHz}$, wavel
 * **$VH$ polarization (vertical transmit / horizontal receive)**: Cross-polarization characterized by high sensitivity to volume scattering within the crop canopy, serving as a direct indicator of biomass accumulation, leaf density, and canopy closure.
 * **$VH/VV$ polarization ratio & cross-ratio**: Normalizes soil moisture variations, highlighting crop phenological transitions, stem elongation, and heading phases.
 
-### 2. Fundamental Radar Equations & Polarimetry
+### 2. Fundamental radar equations and polarimetry
 The received radar backscatter power $P_r$ from a distributed agricultural target is given by:
 
 $$P_r = \frac{P_t G^2 \lambda^2 \sigma^0 A_{\text{ground}}}{(4\pi)^3 R^4}$$
@@ -38,14 +38,14 @@ During freezing temperatures, water transitions to ice, causing a dramatic drop 
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Input Data Ingestion]                                   |
+                     | [Input data ingestion]                                   |
                      | - Copernicus CDSE OData API (Automated SAFE download)    |
                      | - CreoDIAS Local Archive (Fast COG / SAFE extraction)    |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 1: Radiometric Calibration & Slice Assembly]      |
+                     | [Stage 1: Radiometric calibration & slice assembly]      |
                      | 1. Apply Orbit File (Precise POEORB vectors, sub-cm acc) |
                      | 2. Thermal Noise Removal (TNR cross-talk correction)     |
                      | 3. Border Noise Removal (BNR sampling artifact mask)     |
@@ -55,7 +55,7 @@ During freezing temperatures, water transitions to ice, causing a dramatic drop 
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 2: Multi-Temporal Coregistration (CreateStack)]   |
+                     | [Stage 2: Multi-temporal coregistration (CreateStack)]   |
                      | 1. Select optimal master acquisition (mid-season)        |
                      | 2. Sub-pixel cross-correlation geometric alignment       |
                      | 3. Assemble multi-temporal wrapped stack (all DOYs)      |
@@ -63,16 +63,17 @@ During freezing temperatures, water transitions to ice, causing a dramatic drop 
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 3: Terrain Correction, Stacking & Clipping]       |
-                     | 1. Range Doppler Terrain Correction (Copernicus 30m DEM) |
-                     | 2. Linear to Decibel conversion: dB = 10 * log10(Sigma0) |
-                     | 3. Administrative boundary clipping (GISCO NUTS2, 10.0m) |
-                     | 4. Export BigTIFF with DEFLATE & 6 pyramid overview lvls |
+                     | [Stage 3: Despeckling, terrain correction & stacking]    |
+                     | 1. Multi-temporal speckle filtering across time series   |
+                     | 2. Range Doppler Terrain Correction (Copernicus 30m DEM) |
+                     | 3. Linear to Decibel conversion: dB = 10 * log10(Sigma0) |
+                     | 4. Administrative boundary clipping (GISCO NUTS2, 10.0m) |
+                     | 5. Export BigTIFF with DEFLATE & 6 pyramid overview lvls |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Output Product: 1_input_stacks/]                        |
+                     | [Output product: 1_input_stacks/]                        |
                      | {COUNTRY}_orbit_{ORBIT}_{END}_{START}_VH_VV.tif          |
                      | (Dual-pol multi-temporal BigTIFF, 10m, EPSG:3857)        |
                      +----------------------------------------------------------+
@@ -94,7 +95,8 @@ During freezing temperatures, water transitions to ice, causing a dramatic drop 
 * Utilizes ESA SNAP GPT `CreateStack` operator.
 * Selects a stable mid-season master scene and aligns all multi-temporal slave acquisitions with sub-pixel precision using coarse-to-fine cross-correlation, eliminating geometric shifts between dates.
 
-### Stage 3: Terrain correction, stacking & clipping (`s1_stack_clip.py`)
+### Stage 3: Despeckling, terrain correction, stacking & clipping (`s1_stack_clip.py`)
+* **Multi-temporal speckle filtering**: Suppresses multiplicative radar granular noise across the time series while preserving fine agricultural field boundaries, crop texture, and linear parcel features.
 * **Range Doppler terrain correction**: Orthorectifies radar geometry distortions (foreshortening, layover, shadow) using the Copernicus 30 m global DEM and Earth gravitational model (EGM96).
 * **Decibel transformation**: Converts backscatter into decibels: $\sigma^0_{\text{dB}} = 10 \log_{10}(\sigma^0)$, standardizing signal dynamic range (typically $-28\text{ dB}$ to $0\text{ dB}$).
 * **BigTIFF generation & pyramids**: Exports tiled BigTIFF (`COMPRESS=DEFLATE`, `TILED=YES`) in `EPSG:3857` at an exact $10.0\text{ m}$ pixel resolution and generates 6 pyramid overview layers (`[2, 4, 8, 16, 32, 64]`) for instant rendering.
@@ -110,7 +112,7 @@ During freezing temperatures, water transitions to ice, causing a dramatic drop 
   * `s1_calibration_creodias.py`: Fast calibration from local CreoDIAS COG repository.
   * `s1_calibration_cdse.py`: Automated retrieval and calibration from CDSE API.
   * `s1_coregistration.py`: Multi-temporal coregistration using ESA SNAP GPT (`CreateStack`).
-  * `s1_stack_clip.py`: Range Doppler terrain correction, GDAL BigTIFF stacking, and regional clipping.
+  * `s1_stack_clip.py`: Multi-temporal speckle filtering, Range Doppler terrain correction, GDAL BigTIFF stacking, and regional clipping.
 
 ---
 
