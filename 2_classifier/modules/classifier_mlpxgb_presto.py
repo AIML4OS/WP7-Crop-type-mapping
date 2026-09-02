@@ -1,28 +1,28 @@
 #!/usr/bin/env python
 """
-1_classify_MLPXGB_presto_hybrid_S1S2.py - Multimodal Sentinel-1 (Sigma0) + Sentinel-2 Crop Classification
+classifier_mlpxgb_presto.py - Multimodal Sentinel-1 (Sigma0) + Sentinel-2 Crop Classification
 using NASA Harvest Presto embeddings and a Unified PyTorch MLP + XGBoost Fusion Ensemble.
 
 Pipeline Overview:
-  Stage 0: Generate Multimodal Data Footprint (S1 + S2 valid data intersection)
-  Stage 1: Multimodal Image Segmentation (SLIC / SAM / LPIS)
-  Stage 2: Sample Point Split (70% learn / 30% control)
-  Stage 3: Multimodal Feature Extraction (S1 Sigma0 + S2 Optical + S1 Presto 128d + S2 Presto 128d)
-  Stage 4: Train Unified MLP + XGBoost Fusion Ensemble
-  Stage 5: Object-Based Tile Inference with Bayesian Prior Calibration
-  Stage 6: Apply Agricultural & Data Footprint Masks
-  Stage 7: Calculate Out-of-Bag Validation Metrics & Generate Styled Excel Report (.xlsx)
+  Stage 1: Generate Multimodal Data Footprint (S1 + S2 valid data intersection)
+  Stage 2: Multimodal Image Segmentation (SLIC / SAM / LPIS)
+  Stage 3: Sample Point Split (70% learn / 30% control)
+  Stage 4: Multimodal Feature Extraction (S1 Sigma0 + S2 Optical + S1 Presto 128d + S2 Presto 128d)
+  Stage 5: Train Unified MLP + XGBoost Fusion Ensemble
+  Stage 6: Object-Based Tile Inference with Bayesian Prior Calibration
+  Stage 7: Apply Agricultural & Data Footprint Masks
+  Stage 8: Calculate Out-of-Bag Validation Metrics & Generate Styled Excel Report (.xlsx)
 
 Execution examples:
   # Mode 1: SLIC Superpixel Segmentation (Fast, no external vector required):
-  python 1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode slic --stage A
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A
 
   # Mode 2: Official Cadastral LPIS Parcel Segmentation:
-  python 1_classify_MLPXGB_presto_hybrid_S1S2.py --track NL/orbit_88 --seg_mode lpis --lpis_vector path/to/brp.gpkg --stage A
-  python 1_classify_MLPXGB_presto_hybrid_S1S2.py --track PL/orbit_12 --seg_mode lpis --lpis_vector path/to/arimr.shp --stage A
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/brp.gpkg --stage A
+  python run_classifier.py --track PL/orbit_12 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/arimr.shp --stage A
 
   # Mode 3: Segment Anything (SAM) Deep Learning Segmentation:
-  python 1_classify_MLPXGB_presto_hybrid_S1S2.py --track PT/orbit_161 --seg_mode sam --stage A
+  python run_classifier.py --track PT/orbit_161 --classifier mlpxgb_presto --seg_mode sam --stage A
 """
 
 import os
@@ -946,7 +946,7 @@ class ProcessingPipelineS1S2:
     def stage_0_generate_footprint(self, force_recompute=False):
         stage = 0
         if self.footprint_mask.exists() and self.footprint_mask.stat().st_size > 1024 and not force_recompute:
-            print(f"[Stage {stage}] Footprint already exists ({self.footprint_mask.name}), skipping.")
+            print(f"[Stage {stage}/{self.total_stages}] Footprint already exists ({self.footprint_mask.name}), skipping.")
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Generating Multimodal Data Footprint (S1 SAR & S2 Optical Intersection)...")
@@ -1002,7 +1002,7 @@ class ProcessingPipelineS1S2:
     def stage_1_segmentation(self, force_recompute=False):
         stage = 1
         if self.seg_tif.exists() and not force_recompute:
-            print(f"[Stage {stage}] Segmentation raster exists ({self.seg_tif.name}), skipping.")
+            print(f"[Stage {stage}/{self.total_stages}] Segmentation raster exists ({self.seg_tif.name}), skipping.")
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Running Multimodal Image Segmentation ({self.seg_mode.upper()})...")
