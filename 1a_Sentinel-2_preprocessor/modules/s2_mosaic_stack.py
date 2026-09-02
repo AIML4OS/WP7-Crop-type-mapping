@@ -228,7 +228,10 @@ def mosaic_stack_clip_single_track(
         return
 
     out_final_dir = track_dir / "s2_doy_mosaics"
-    out_proc_dir = track_dir / "1_input_stacks"
+    if "/" not in norm_track and "\\" not in norm_track:
+        out_proc_dir = BASE_DIR / country_code.upper() / "S2"
+    else:
+        out_proc_dir = track_dir / "1_input_stacks"
 
     # Backward compatibility: migrate legacy deep directory if present
     old_doy_dir = track_dir / "_temp_processing" / "s2_optical" / "3_doy_mosaics" / "mosaic"
