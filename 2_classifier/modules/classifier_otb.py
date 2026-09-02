@@ -11,7 +11,7 @@ import pandas as pd
 from osgeo import gdal, ogr, osr
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 import openpyxl
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # --- Configuration (Global) ---
 
@@ -727,58 +727,191 @@ class ProcessingPipeline:
             # Write Excel
             wb = openpyxl.Workbook()
             sh = wb.active
-            sh.title = 'Results'
+            sh.title = 'Validation Metrics'
 
-            # Confusion Matrix
-            sh.cell(row=1, column=1, value='Confusion Matrix').font = Font(bold=True)
-            sh.cell(row=2, column=1, value='True \\ Pred').font = Font(bold=True)
-            for j, lbl in enumerate(labels, start=2):
-                lbl_name = crop_name_map.get(int(lbl), str(lbl))
-                sh.cell(row=2, column=j, value=f"{int(lbl)}: {lbl_name}").font = Font(bold=True)
-            for i, lbl in enumerate(labels, start=3):
-                lbl_name = crop_name_map.get(int(lbl), str(lbl))
-                sh.cell(row=i, column=1, value=f"{int(lbl)}: {lbl_name}").font = Font(bold=True)
-                for j, _ in enumerate(labels):
-                    sh.cell(row=i, column=j + 2, value=int(cm[i - 3, j]))
+            header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+            header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+            sub_font = Font(name="Calibri", size=11, bold=True, color="1F497D")
+            bold_font = Font(name="Calibri", size=11, bold=True)
+            regular_font = Font(name="Calibri", size=11)
+            align_left = Alignment(horizontal='left', vertical='center')
+            align_center = Alignment(horizontal='center', vertical='center')
+            thin_border = Border(
+                left=Side(style='thin', color='D9D9D9'), right=Side(style='thin', color='D9D9D9'),
+                top=Side(style='thin', color='D9D9D9'), bottom=Side(style='thin', color='D9D9D9')
+            )
 
-            # OA & Kappa
-            base = 4 + len(labels)
-            sh.cell(row=base, column=1, value='Overall Accuracy').font = Font(bold=True)
-            sh.cell(row=base, column=2, value=round(oa, 4))
-            sh.cell(row=base + 1, column=1, value='Kappa').font = Font(bold=True)
-            sh.cell(row=base + 1, column=2, value=round(kappa, 4))
+            sh.cell(row=1, column=1, value=f"Crop Classification Accuracy Report: {self.track}").font = Font(name="Calibri", size=14, bold=True, color="1F497D")
+            sh.cell(row=2, column=1, value=f"Track: {self.track} ({self.country}) | Model: OTB Supervised Classifier").font = bold_font
+            sh.cell(row=3, column=1, value="Data: Sentinel-1 SAR (Sigma0 VH/VV) + OTB Texture/Statistical Features").font = Font(name="Calibri", size=10, italic=True, color="595959")
 
-            # Classification metrics
-            start = base + 3
-            headers = ['Class ID', 'Crop Name', 'Producer Acc (Recall)', 'User Acc (Precision)', 'F1-score']
-            for j, h in enumerate(headers, start=1):
-                sh.cell(row=start, column=j, value=h).font = Font(bold=True)
+            # Summary table
+            sh.cell(row=5, column=1, value="Metric").fill = header_fill
+            sh.cell(row=5, column=1).font = header_font
+            sh.cell(row=5, column=1).alignment = align_left
+            sh.cell(row=5, column=2, value="Value").fill = header_fill
+            sh.cell(row=5, column=2).font = header_font
+            sh.cell(row=5, column=2).alignment = align_left
+
+            sh.cell(row=6, column=1, value="Overall Accuracy (OA)").font = regular_font
+            sh.cell(row=6, column=1).border = thin_border
+            sh.cell(row=6, column=2, value=f"{oa * 100:.1f}%").font = bold_font
+            sh.cell(row=6, column=2).alignment = align_left
+            sh.cell(row=6, column=2).border = thin_border
+
+            sh.cell(row=7, column=1, value="Cohen's Kappa").font = regular_font
+            sh.cell(row=7, column=1).border = thin_border
+            sh.cell(row=7, column=2, value=f"{kappa:.4f}").font = bold_font
+            sh.cell(row=7, column=2).alignment = align_left
+            sh.cell(row=7, column=2).border = thin_border
+
+            sh.cell(row=8, column=1, value="Validation Samples Count").font = regular_font
+            sh.cell(row=8, column=1).border = thin_border
+            sh.cell(row=8, column=2, value=f"{int(total):,}".replace(',', ' ')).font = regular_font
+            sh.cell(row=8, column=2).alignment = align_left
+            sh.cell(row=8, column=2).border = thin_border
+
+            # Per-class table
+            r = 10
+            sh.cell(row=r, column=1, value="Per-Class Classification Accuracy").font = sub_font
+            r += 1
+            headers_pc = ["Class ID", "Crop Name", "Producer Acc (Recall)", "User Acc (Precision)", "F1-Score", "Validation Samples"]
+            for c_idx, h_text in enumerate(headers_pc, start=1):
+                cell = sh.cell(row=r, column=c_idx, value=h_text)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = align_left
+
             for idx, c in enumerate(labels):
-                row_idx = start + 1 + idx
+                r += 1
                 c_name = crop_name_map.get(int(c), f"Class {c}")
-                sh.cell(row=row_idx, column=1, value=c)
-                sh.cell(row=row_idx, column=2, value=c_name)
-                sh.cell(row=row_idx, column=3, value=round(recalls[idx], 4))
-                sh.cell(row=row_idx, column=4, value=round(precisions[idx], 4))
-                sh.cell(row=row_idx, column=5, value=round(f1s[idx], 4))
+                c_samples = int(np.sum(np.array(true_vals) == c))
+                
+                c1 = sh.cell(row=r, column=1, value=int(c))
+                c1.font = regular_font
+                c1.alignment = align_left
+                c1.border = thin_border
+                
+                c2 = sh.cell(row=r, column=2, value=c_name)
+                c2.font = regular_font
+                c2.alignment = align_left
+                c2.border = thin_border
+                
+                c3 = sh.cell(row=r, column=3, value=f"{recalls[idx] * 100:.1f}%")
+                c3.font = regular_font
+                c3.alignment = align_left
+                c3.border = thin_border
+                
+                c4 = sh.cell(row=r, column=4, value=f"{precisions[idx] * 100:.1f}%")
+                c4.font = regular_font
+                c4.alignment = align_left
+                c4.border = thin_border
+                
+                c5 = sh.cell(row=r, column=5, value=f"{f1s[idx] * 100:.1f}%")
+                c5.font = regular_font
+                c5.alignment = align_left
+                c5.border = thin_border
+                
+                c6 = sh.cell(row=r, column=6, value=f"{c_samples:,}".replace(',', ' '))
+                c6.font = regular_font
+                c6.alignment = align_left
+                c6.border = thin_border
 
-            # Areas
-            ar0 = start + 1 + len(labels) + 1
-            sh.cell(row=ar0, column=1, value='Areas (ha)').font = Font(bold=True)
-            sh.cell(row=ar0 + 1, column=1, value='Class ID').font = Font(bold=True)
-            sh.cell(row=ar0 + 1, column=2, value='Crop Name').font = Font(bold=True)
-            sh.cell(row=ar0 + 1, column=3, value='Area_ha').font = Font(bold=True)
-            for idx, a in enumerate(areas, start=ar0 + 2):
+            # Confusion matrix table
+            r += 3
+            sh.cell(row=r, column=1, value="Confusion Matrix (Rows: Ground Truth, Cols: Prediction)").font = sub_font
+            r += 1
+            c_top = sh.cell(row=r, column=1, value="True \\ Pred")
+            c_top.fill = header_fill
+            c_top.font = header_font
+            c_top.alignment = align_left
+            for j, lbl in enumerate(labels):
+                lbl_name = crop_name_map.get(int(lbl), str(lbl))
+                cell = sh.cell(row=r, column=j + 2, value=f"{int(lbl)}: {lbl_name}")
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = align_center
+
+            for i, true_lbl in enumerate(labels):
+                r += 1
+                t_name = crop_name_map.get(int(true_lbl), str(true_lbl))
+                c_row_hdr = sh.cell(row=r, column=1, value=f"{int(true_lbl)}: {t_name}")
+                c_row_hdr.font = bold_font
+                c_row_hdr.alignment = align_left
+                c_row_hdr.border = thin_border
+                for j in range(len(labels)):
+                    val = int(cm[i, j])
+                    cell = sh.cell(row=r, column=j + 2, value=val)
+                    cell.font = regular_font
+                    cell.border = thin_border
+                    cell.alignment = align_center
+
+            # Area estimation table
+            r += 3
+            sh.cell(row=r, column=1, value="Classified Agricultural Area Statistics").font = sub_font
+            r += 1
+            headers_area = ["Class ID", "Crop Name", "Area (ha)", "Area (%)"]
+            for c_idx, h_text in enumerate(headers_area, start=1):
+                cell = sh.cell(row=r, column=c_idx, value=h_text)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = align_left
+
+            total_area_ha = sum(a['Area_ha'] for a in areas)
+            for a in areas:
+                r += 1
                 c_id = a['Class']
                 c_name = crop_name_map.get(int(c_id), f"Class {c_id}")
-                sh.cell(row=idx, column=1, value=c_id)
-                sh.cell(row=idx, column=2, value=c_name)
-                sh.cell(row=idx, column=3, value=a['Area_ha'])
+                c_ha = int(round(a['Area_ha']))
+                c_pct = (a['Area_ha'] / total_area_ha * 100.0) if total_area_ha > 0 else 0.0
+                
+                c1 = sh.cell(row=r, column=1, value=int(c_id))
+                c1.font = regular_font
+                c1.alignment = align_left
+                c1.border = thin_border
+                
+                c2 = sh.cell(row=r, column=2, value=c_name)
+                c2.font = regular_font
+                c2.alignment = align_left
+                c2.border = thin_border
+                
+                c3 = sh.cell(row=r, column=3, value=f"{c_ha:,}".replace(',', ' '))
+                c3.font = regular_font
+                c3.alignment = align_left
+                c3.border = thin_border
+                
+                c4 = sh.cell(row=r, column=4, value=f"{c_pct:.1f}%")
+                c4.font = regular_font
+                c4.alignment = align_left
+                c4.border = thin_border
+
+            # Total row
+            r += 1
+            tot_ha_int = int(round(total_area_ha))
+            c1 = sh.cell(row=r, column=1, value="Total")
+            c1.font = bold_font
+            c1.alignment = align_left
+            c1.border = thin_border
+            
+            c2 = sh.cell(row=r, column=2, value="All Agricultural Crops")
+            c2.font = bold_font
+            c2.alignment = align_left
+            c2.border = thin_border
+            
+            c3 = sh.cell(row=r, column=3, value=f"{tot_ha_int:,}".replace(',', ' '))
+            c3.font = bold_font
+            c3.alignment = align_left
+            c3.border = thin_border
+            
+            c4 = sh.cell(row=r, column=4, value="100.0%")
+            c4.font = bold_font
+            c4.alignment = align_left
+            c4.border = thin_border
 
             for col in sh.columns:
                 max_len = max(len(str(cell.value or '')) for cell in col)
                 col_letter = col[0].column_letter
-                sh.column_dimensions[col_letter].width = max(max_len + 3, 14)
+                sh.column_dimensions[col_letter].width = max(max_len + 4, 16)
 
             wb.save(str(self.metrics_fp))
             print(f"Metrics and Excel saved to {self.metrics_fp}\n")
