@@ -600,6 +600,80 @@ def sam_worker(tile_info, ras_path, footprint_path, params):
         return tile_info[0], tile_info[1], None, None
 
 
+def slic_worker(tile_info, ras_path, footprint_path, params):
+    """
+    Independent multi-core worker process for tiled SLIC superpixel segmentation.
+    Executes in parallel across available CPU cores.
+    """
+    try:
+        import os
+        os.environ["OMP_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+        os.environ["NUMEXPR_NUM_THREADS"] = "1"
+        from osgeo import gdal
+        import numpy as np
+        from skimage.segmentation import slic
+        from skimage.util import img_as_float
+
+        x, y, xsize_valid, ysize_valid, x_start_buf, y_start_buf, xsize_buf, ysize_buf, buffer = tile_info
+
+        ds = gdal.Open(str(ras_path), gdal.GA_ReadOnly)
+        if not ds:
+            return x, y, None, None
+        nbands = ds.RasterCount
+        img_list = []
+        for b in range(1, nbands + 1):
+            band = ds.GetRasterBand(b)
+            arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+            if arr is None:
+                return x, y, None, None
+            arr = np.nan_to_num(arr)
+            img_list.append(arr)
+        ds = None
+        img = np.dstack(img_list)
+
+        if footprint_path and os.path.exists(footprint_path):
+            ds_foot = gdal.Open(str(footprint_path), gdal.GA_ReadOnly)
+            arr_foot = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+            ds_foot = None
+            valid_mask = arr_foot > 0 if arr_foot is not None else (np.sum(np.abs(img), axis=2) > 0)
+        else:
+            valid_mask = np.sum(np.abs(img), axis=2) > 0
+
+        if not np.any(valid_mask):
+            return x, y, None, None
+
+        img_norm = img_as_float(img)
+        tile_size = params.get('tile_size', 2048)
+        max_tile_pixels = (tile_size + 2 * buffer) ** 2
+        pixels_per_segment = max_tile_pixels / params.get('n_segments', 32000)
+        active_pixels = np.sum(valid_mask)
+        n_segments_dynamic = max(1, int(active_pixels / pixels_per_segment))
+
+        segments_buf = slic(
+            img_norm,
+            n_segments=n_segments_dynamic,
+            compactness=params.get('compactness', 0.05),
+            sigma=params.get('slic_sigma', 1.5),
+            start_label=1,
+            mask=valid_mask
+        )
+        segments_buf[~valid_mask] = 0
+
+        y_offset = y - y_start_buf
+        x_offset = x - x_start_buf
+        valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+        segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
+        segments[~valid_mask_crop] = 0
+
+        return x, y, segments, valid_mask_crop
+    except Exception as e:
+        print(f"    [SLIC Worker Error x={tile_info[0]}, y={tile_info[1]}]: {e}", flush=True)
+        return tile_info[0], tile_info[1], None, None
+
+
 # =====================================================================
 # 4. MULTIMODAL PROCESSING PIPELINE (STAGES 0 - 7)
 # =====================================================================
@@ -1133,13 +1207,14 @@ class ProcessingPipelineS1S2:
             self._run_python_segmentation_tiled(comp_ras, slic_params, 'python_slic')
 
     def _run_python_segmentation_tiled(self, ras_path: Path, params: dict, method: str):
-        print(f"    Running Tiled Python Segmentation ({method})...")
+        is_sam = (method == 'python_sam')
+        method_label = "SAM" if is_sam else "SLIC"
+        print(f"    Running Tiled Python Segmentation ({method_label})...")
         ds = gdal.Open(str(ras_path))
         ds_foot = gdal.Open(str(self.footprint_mask)) if self.footprint_mask.exists() else None
 
         cols = ds.RasterXSize
         rows = ds.RasterYSize
-        nbands = ds.RasterCount
         gt = ds.GetGeoTransform()
         proj = ds.GetProjection()
 
@@ -1152,131 +1227,59 @@ class ProcessingPipelineS1S2:
         out_band.SetNoDataValue(0)
 
         tile_size = params.get('tile_size', 2048)
-        buffer = params.get('buffer', 128)
+        buffer = params.get('buffer', 64 if not is_sam else 128)
         global_seg_id = 1
 
-        if method == 'python_sam':
-            from concurrent.futures import ProcessPoolExecutor, as_completed
-            tile_tasks = []
-            for y in range(0, rows, tile_size):
-                for x in range(0, cols, tile_size):
-                    xsize_valid = min(tile_size, cols - x)
-                    ysize_valid = min(tile_size, rows - y)
-                    x_start_buf = max(0, x - buffer)
-                    y_start_buf = max(0, y - buffer)
-                    x_end_buf = min(cols, x + xsize_valid + buffer)
-                    y_end_buf = min(rows, y + ysize_valid + buffer)
-                    xsize_buf = x_end_buf - x_start_buf
-                    ysize_buf = y_end_buf - y_start_buf
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        tile_tasks = []
+        for y in range(0, rows, tile_size):
+            for x in range(0, cols, tile_size):
+                xsize_valid = min(tile_size, cols - x)
+                ysize_valid = min(tile_size, rows - y)
+                x_start_buf = max(0, x - buffer)
+                y_start_buf = max(0, y - buffer)
+                x_end_buf = min(cols, x + xsize_valid + buffer)
+                y_end_buf = min(rows, y + ysize_valid + buffer)
+                xsize_buf = x_end_buf - x_start_buf
+                ysize_buf = y_end_buf - y_start_buf
 
-                    if ds_foot:
-                        band_foot = ds_foot.GetRasterBand(1)
-                        arr_foot = band_foot.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
-                        valid_mask = arr_foot > 0 if arr_foot is not None else None
-                    else:
-                        band = ds.GetRasterBand(1)
-                        arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
-                        valid_mask = np.nan_to_num(arr) > 0 if arr is not None else None
+                if ds_foot:
+                    band_foot = ds_foot.GetRasterBand(1)
+                    arr_foot = band_foot.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                    valid_mask = arr_foot > 0 if arr_foot is not None else None
+                else:
+                    band = ds.GetRasterBand(1)
+                    arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
+                    valid_mask = np.nan_to_num(arr) > 0 if arr is not None else None
 
-                    if valid_mask is not None and np.any(valid_mask):
-                        tile_tasks.append((x, y, xsize_valid, ysize_valid, x_start_buf, y_start_buf, xsize_buf, ysize_buf, buffer))
+                if valid_mask is not None and np.any(valid_mask):
+                    tile_tasks.append((x, y, xsize_valid, ysize_valid, x_start_buf, y_start_buf, xsize_buf, ysize_buf, buffer))
 
-            total_tasks = len(tile_tasks)
-            print(f"    Total active tiles to process with SAM: {total_tasks}")
+        total_tasks = len(tile_tasks)
+        print(f"    Total active tiles to process with {method_label}: {total_tasks}")
+
+        if is_sam:
             max_workers = min(8, os.cpu_count() or 4)
-
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(sam_worker, task, str(ras_path), str(self.footprint_mask) if self.footprint_mask.exists() else None, params): task
-                    for task in tile_tasks
-                }
-                completed_count = 0
-                for future in as_completed(futures):
-                    x, y, segments, valid_mask_crop = future.result()
-                    completed_count += 1
-                    pct = (completed_count / total_tasks) * 100.0
-                    print(f"    [SAM PROGRESS] Tile {completed_count}/{total_tasks} ({pct:.1f}%) finished (x={x}, y={y}) | Total segments: {global_seg_id-1:,}", flush=True)
-
-                    if segments is not None:
-                        seg_valid_mask = segments > 0
-                        unique_segs = np.unique(segments[seg_valid_mask])
-                        if len(unique_segs) > 0:
-                            max_seg = segments.max()
-                            mapping = np.zeros(max_seg + 1, dtype=np.int32)
-                            mapping[unique_segs] = np.arange(global_seg_id, global_seg_id + len(unique_segs))
-                            segments = mapping[segments]
-                            segments[~valid_mask_crop] = 0
-                            global_seg_id += len(unique_segs)
-                        else:
-                            segments[~valid_mask_crop] = 0
-                        out_band.WriteArray(segments.astype(np.int32), x, y)
-                    else:
-                        for task in tile_tasks:
-                            if task[0] == x and task[1] == y:
-                                xsize_valid, ysize_valid = task[2], task[3]
-                                out_band.WriteArray(np.zeros((ysize_valid, xsize_valid), dtype=np.int32), x, y)
-                                break
+            worker_fn = sam_worker
         else:
-            # Tiled SLIC
-            total_tiles = math.ceil(rows / tile_size) * math.ceil(cols / tile_size)
-            tile_idx = 0
-            for y in range(0, rows, tile_size):
-                for x in range(0, cols, tile_size):
-                    tile_idx += 1
-                    xsize_valid = min(tile_size, cols - x)
-                    ysize_valid = min(tile_size, rows - y)
-                    x_start_buf = max(0, x - buffer)
-                    y_start_buf = max(0, y - buffer)
-                    x_end_buf = min(cols, x + xsize_valid + buffer)
-                    y_end_buf = min(rows, y + ysize_valid + buffer)
-                    xsize_buf = x_end_buf - x_start_buf
-                    ysize_buf = y_end_buf - y_start_buf
+            # Parallel multi-core SLIC: use available CPU cores (leaving 2 for system responsiveness)
+            max_workers = max(1, min(14, (os.cpu_count() or 4) - 2))
+            worker_fn = slic_worker
+            print(f"    [MULTI-CORE SLIC] Parallelizing across {max_workers} CPU worker processes.")
 
-                    img_list = []
-                    for b in range(1, nbands + 1):
-                        band = ds.GetRasterBand(b)
-                        arr = band.ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
-                        if arr is None:
-                            img_list = None
-                            break
-                        arr = np.nan_to_num(arr)
-                        img_list.append(arr)
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(worker_fn, task, str(ras_path), str(self.footprint_mask) if self.footprint_mask.exists() else None, params): task
+                for task in tile_tasks
+            }
+            completed_count = 0
+            for future in as_completed(futures):
+                x, y, segments, valid_mask_crop = future.result()
+                completed_count += 1
+                pct = (completed_count / total_tasks) * 100.0
+                print(f"    [{method_label} PROGRESS] Tile {completed_count}/{total_tasks} ({pct:.1f}%) finished (x={x}, y={y}) | Total segments: {global_seg_id-1:,}", flush=True)
 
-                    if img_list is None:
-                        continue
-
-                    img = np.dstack(img_list)
-                    if ds_foot:
-                        valid_mask_buf = ds_foot.GetRasterBand(1).ReadAsArray(x_start_buf, y_start_buf, xsize_buf, ysize_buf)
-                        if valid_mask_buf is not None:
-                            valid_mask = valid_mask_buf > 0
-                        else:
-                            valid_mask = np.sum(np.abs(img), axis=2) > 0
-                    else:
-                        valid_mask = np.sum(np.abs(img), axis=2) > 0
-
-                    if not np.any(valid_mask):
-                        pct = (tile_idx / total_tiles) * 100.0
-                        if tile_idx % 10 == 0 or tile_idx == total_tiles:
-                            print(f"    [SLIC PROGRESS] Tile {tile_idx}/{total_tiles} ({pct:.1f}%) [NoData tile skipped] | Total segments: {global_seg_id-1:,}", flush=True)
-                        continue
-
-                    img_norm = img_as_float(img)
-                    from skimage.segmentation import slic
-                    max_tile_pixels = (tile_size + 2 * buffer) ** 2
-                    pixels_per_segment = max_tile_pixels / params.get('n_segments', 32000)
-                    active_pixels = np.sum(valid_mask)
-                    n_segments_dynamic = max(1, int(active_pixels / pixels_per_segment))
-                    segments_buf = slic(img_norm, n_segments=n_segments_dynamic, compactness=params.get('compactness', 0.05),
-                                        sigma=params.get('slic_sigma', 1.5), start_label=1, mask=valid_mask)
-
-                    y_offset = y - y_start_buf
-                    x_offset = x - x_start_buf
-                    segments_buf[~valid_mask] = 0
-
-                    valid_mask_crop = valid_mask[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
-                    segments = segments_buf[y_offset : y_offset + ysize_valid, x_offset : x_offset + xsize_valid]
-
+                if segments is not None:
                     seg_valid_mask = segments > 0
                     unique_segs = np.unique(segments[seg_valid_mask])
                     if len(unique_segs) > 0:
@@ -1288,14 +1291,18 @@ class ProcessingPipelineS1S2:
                         global_seg_id += len(unique_segs)
                     else:
                         segments[~valid_mask_crop] = 0
-
                     out_band.WriteArray(segments.astype(np.int32), x, y)
-                    pct = (tile_idx / total_tiles) * 100.0
-                    print(f"    [SLIC PROGRESS] Tile {tile_idx}/{total_tiles} ({pct:.1f}%) completed | Total segments: {global_seg_id-1:,}", flush=True)
+                else:
+                    for task in tile_tasks:
+                        if task[0] == x and task[1] == y:
+                            xsize_valid, ysize_valid = task[2], task[3]
+                            out_band.WriteArray(np.zeros((ysize_valid, xsize_valid), dtype=np.int32), x, y)
+                            break
 
         out_band.FlushCache()
         out_ds = None
         ds = None
+        ds_foot = None
         print(f"    Segmentation completed: {self.seg_tif}")
 
     # --- Stage 3: Sample Point Split (70/30) ---
