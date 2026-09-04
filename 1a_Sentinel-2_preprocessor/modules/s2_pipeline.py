@@ -170,7 +170,7 @@ def run_s2_pipeline_for_orbit(
     end_date: Optional[datetime.date] = None,
     source: str = "creodias",
     mode: str = "all",
-    cloud_cover: float = 60.0,
+    cloud_cover: float = 80.0,
     doys: list = time_series.DEFAULT_DOYS,
     threads: int = 4,
     all_scenes_cache: Optional[list] = None,
@@ -247,7 +247,7 @@ def run_s2_pipeline_for_track(
     end_date: Optional[datetime.date] = None,
     source: str = "creodias",
     mode: str = "all",
-    cloud_cover: float = 60.0,
+    cloud_cover: float = 80.0,
     doys: list = time_series.DEFAULT_DOYS,
     threads: int = 4,
     all_scenes_cache: Optional[list] = None,
@@ -278,7 +278,7 @@ def run_s2_master_pipeline(
     track: Optional[str] = None,
     source: str = "creodias",
     mode: str = "all",
-    cloud_cover: float = 60.0,
+    cloud_cover: float = 80.0,
     doys: list = time_series.DEFAULT_DOYS,
     threads: int = 8,
     repo_path: Optional[str] = None,
@@ -381,7 +381,7 @@ def main():
     parser.add_argument('-t', '--track', default=None, help="Optional track relative path (e.g. NL/orbit_88)")
     parser.add_argument('--source', choices=['creodias', 'cdse'], default='creodias', help="Data source: 'creodias' (Y: drive) or 'cdse' (Copernicus API)")
     parser.add_argument('-m', '--mode', choices=['all', 'download', 'process', 'download_only', 'process_only'], default='all', help="Execution mode")
-    parser.add_argument('--cloud_cover', type=float, default=60.0, help="Maximum cloud cover (0-100, default: 60)")
+    parser.add_argument('--cloud_cover', type=float, default=80.0, help="Maximum cloud cover (0-100, default: 80)")
     parser.add_argument('--doys', nargs='+', type=int, default=time_series.DEFAULT_DOYS, help="List of target DOY integers")
     parser.add_argument('--threads', type=int, default=8, help="Worker threads (default: 8)")
     parser.add_argument('--repo_path', type=str, default=None, help="Override CREODIAS repository path")

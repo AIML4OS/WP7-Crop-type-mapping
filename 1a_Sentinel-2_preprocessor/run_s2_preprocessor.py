@@ -145,7 +145,7 @@ class Sentinel2Pipeline:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         source: str = "auto",
-        cloud_cover: float = 60.0,
+        cloud_cover: float = 80.0,
         doys: List[int] = DEFAULT_DOYS,
         threads: int = 8,
         overwrite: bool = False
@@ -456,7 +456,7 @@ Examples:
     parser.add_argument('--source', default='auto', choices=['auto', 'creodias', 'cdse'], help="Data source: 'auto' (detect local), 'creodias', 'cdse' (default: auto)")
     parser.add_argument('-s', '--start_date', default=None, help="Acquisition start date (YYYY-MM-DD, required for Stage 1/A)")
     parser.add_argument('-e', '--end_date', default=None, help="Acquisition end date (YYYY-MM-DD, required for Stage 1/A)")
-    parser.add_argument('--cloud_cover', type=float, default=60.0, help="Max scene cloud cover percentage (default: 60.0)")
+    parser.add_argument('--cloud_cover', type=float, default=80.0, help="Max scene cloud cover percentage (default: 80.0)")
     parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="Target DOYs list (default: 14 dates)")
     parser.add_argument('--threads', type=int, default=8, help="Worker threads for parallel processing (default: 8)")
     parser.add_argument('--overwrite', action='store_true', help="Force re-generation of existing intermediate and final stacks")

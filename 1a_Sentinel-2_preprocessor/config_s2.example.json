@@ -10,6 +10,6 @@
   },
   "spectral_bands": ["B02", "B03", "B04", "B05", "B06", "B07", "B8A", "B11", "B12"],
   "default_doys": [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287],
-  "max_cloud_cover": 60.0,
+  "max_cloud_cover": 80.0,
   "threads": 4
 }
