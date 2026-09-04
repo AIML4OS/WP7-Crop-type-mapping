@@ -79,6 +79,35 @@ logging.basicConfig(
 )
 
 
+def extract_orbit_from_filepath(filepath: Path) -> str:
+    """Extract relative orbit number (e.g. '022', '065', '122') from Sentinel-2 product filepath."""
+    match = re.search(r'_R(\d{3})_', str(filepath))
+    return match.group(1) if match else 'ALL'
+
+
+def get_quick_cloud_pct(scl_path: Optional[Path]) -> float:
+    """Quickly compute cloud percentage of an acquisition over this tile using a 50x50 low-res overview."""
+    if not scl_path or not scl_path.exists():
+        return 0.0
+    try:
+        ds = gdal.Open(str(scl_path), gdal.GA_ReadOnly)
+        if ds is None:
+            return 0.0
+        # Read low-resolution 50x50 overview for instant evaluation
+        arr = ds.GetRasterBand(1).ReadAsArray(buf_xsize=50, buf_ysize=50)
+        ds = None
+        if arr is None:
+            return 0.0
+        val = arr[arr > 0]
+        if len(val) == 0:
+            return 100.0
+        # SCL classes: 3 (cloud shadows), 8 (cloud med), 9 (cloud high), 10 (thin cirrus), 11 (snow)
+        cloud_cnt = np.sum(np.isin(val, [3, 8, 9, 10, 11]))
+        return float(100.0 * cloud_cnt / len(val))
+    except Exception:
+        return 0.0
+
+
 def extract_date_and_doy_from_filepath(filepath: Path) -> Tuple[datetime.date, int]:
     fname = filepath.name
     match = re.search(r'20\d{6}', fname)
@@ -158,10 +187,15 @@ def generate_s2_time_series_for_tile(
     acquisitions = []
     for b02_p in b02_paths:
         dt, doy = extract_date_and_doy_from_filepath(b02_p)
+        orb = extract_orbit_from_filepath(b02_p)
+        scl_p = get_scl_path_for_acq(b02_p)
+        cloud_pct = get_quick_cloud_pct(scl_p)
         acquisitions.append({
             'date': dt,
             'doy': doy,
-            'b02_path': b02_p
+            'orb': orb,
+            'b02_path': b02_p,
+            'cloud_pct': cloud_pct
         })
 
     acquisitions.sort(key=lambda x: (x['date'].year, x['doy']))
@@ -178,18 +212,61 @@ def generate_s2_time_series_for_tile(
     proj_wkt = ds0.GetProjection()
     ds0 = None
 
+    # Group acquisitions by relative orbit for orbit-aware blending
+    acquisitions_by_orbit: Dict[str, List[dict]] = {}
+    for acq in acquisitions:
+        acquisitions_by_orbit.setdefault(acq['orb'], []).append(acq)
+    for orb in acquisitions_by_orbit:
+        acquisitions_by_orbit[orb].sort(key=lambda x: x['doy'])
+
+    def _sort_candidates(cands: List[dict], target: int, is_before: bool) -> List[dict]:
+        # Prioritize low cloud acquisitions (cloud_pct <= 60%) closest to target DOY
+        clear_c = [a for a in cands if a.get('cloud_pct', 0.0) <= 60.0]
+        cloudy_c = [a for a in cands if a.get('cloud_pct', 0.0) > 60.0]
+        if is_before:
+            clear_c.sort(key=lambda a: abs(target - a['doy']))
+            cloudy_c.sort(key=lambda a: (a.get('cloud_pct', 100.0), abs(target - a['doy'])))
+        else:
+            clear_c.sort(key=lambda a: abs(a['doy'] - target))
+            cloudy_c.sort(key=lambda a: (a.get('cloud_pct', 100.0), abs(a['doy'] - target)))
+        return clear_c + cloudy_c
+
     for target_doy in doys:
         day_folder = result_synthetic_dir / f"day{target_doy}_{year}"
         day_folder.mkdir(parents=True, exist_ok=True)
 
-        before_cands = [a for a in acquisitions if a['doy'] <= target_doy]
-        before_cands.sort(key=lambda x: x['doy'], reverse=True)
+        # Check if all bands already exist when overwrite=False
+        if not overwrite and all(
+            (day_folder / f"{b}.tif").exists() and (day_folder / f"{b}.tif").stat().st_size > 1024
+            for b in S2_SPECTRAL_BANDS
+        ):
+            continue
 
-        after_cands = [a for a in acquisitions if a['doy'] >= target_doy]
-        after_cands.sort(key=lambda x: x['doy'])
+        # Prepare orbit configurations
+        orbit_configs = []
+        for orb, orb_acqs in acquisitions_by_orbit.items():
+            cand_b = [a for a in orb_acqs if a['doy'] <= target_doy]
+            cand_a = [a for a in orb_acqs if a['doy'] >= target_doy]
 
-        if not before_cands: before_cands = list(after_cands)
-        if not after_cands: after_cands = list(before_cands)
+            if not cand_b: cand_b = list(cand_a)
+            if not cand_a: cand_a = list(cand_b)
+            if not cand_b and not cand_a:
+                continue
+
+            sorted_b = _sort_candidates(cand_b, target_doy, is_before=True)
+            sorted_a = _sort_candidates(cand_a, target_doy, is_before=False)
+
+            d1 = sorted_b[0]['doy']
+            d2 = sorted_a[0]['doy']
+            dist = min(abs(target_doy - d1), abs(target_doy - d2))
+            orb_w = 1.0 / (dist + 1.0)
+
+            orbit_configs.append({
+                'orb': orb,
+                'before_cands': sorted_b,
+                'after_cands': sorted_a,
+                'orb_weight': orb_w
+            })
 
         # Cache SCL clear masks per DOY so they are read only once across all 9 spectral bands
         scl_cache: Dict[str, Optional[np.ndarray]] = {}
@@ -220,28 +297,19 @@ def generate_s2_time_series_for_tile(
             if not overwrite and out_band_file.exists() and out_band_file.stat().st_size > 1024:
                 continue
 
-            # 1. Build seamless composite before target_doy with SCL cloud/shadow filtering
-            arr_before = np.zeros((raster_h, raster_w), dtype=np.float32)
-            doy_before = np.zeros((raster_h, raster_w), dtype=np.float32)
+            accum_clear_num = np.zeros((raster_h, raster_w), dtype=np.float32)
+            accum_clear_den = np.zeros((raster_h, raster_w), dtype=np.float32)
+            accum_fallback_num = np.zeros((raster_h, raster_w), dtype=np.float32)
+            accum_fallback_den = np.zeros((raster_h, raster_w), dtype=np.float32)
 
-            # Pass 1: Clear pixels only (SCL validated)
-            for acq in before_cands[:10]:
-                p = get_band_path_for_acq(acq['b02_path'], band)
-                if p.exists():
-                    ds = gdal.Open(str(p))
-                    if ds:
-                        arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
-                        ds = None
-                        clear_m = _load_scl_mask(acq['b02_path'])
-                        valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
-                        mask_fill = (arr_before == 0) & valid
-                        arr_before[mask_fill] = arr_i[mask_fill]
-                        doy_before[mask_fill] = acq['doy']
-                        if np.all(arr_before > 0):
-                            break
+            for cfg in orbit_configs:
+                orb_w = cfg['orb_weight']
+                before_cands = cfg['before_cands']
+                after_cands = cfg['after_cands']
 
-            # Pass 2: Fallback for persistent cloud cover (best available data)
-            if not np.all(arr_before > 0):
+                # 1. Build seamless composite before target_doy with SCL filtering
+                arr_before = np.zeros((raster_h, raster_w), dtype=np.float32)
+                doy_before = np.zeros((raster_h, raster_w), dtype=np.float32)
                 for acq in before_cands[:10]:
                     p = get_band_path_for_acq(acq['b02_path'], band)
                     if p.exists():
@@ -249,34 +317,36 @@ def generate_s2_time_series_for_tile(
                         if ds:
                             arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
                             ds = None
-                            mask_fill = (arr_before == 0) & (arr_i > 0)
+                            clear_m = _load_scl_mask(acq['b02_path'])
+                            valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
+                            mask_fill = (arr_before == 0) & valid
                             arr_before[mask_fill] = arr_i[mask_fill]
                             doy_before[mask_fill] = acq['doy']
                             if np.all(arr_before > 0):
                                 break
 
-            # 2. Build seamless composite after target_doy with SCL cloud/shadow filtering
-            arr_after = np.zeros((raster_h, raster_w), dtype=np.float32)
-            doy_after = np.zeros((raster_h, raster_w), dtype=np.float32)
+                # Fallback before target_doy if persistent clouds
+                arr_before_fb = np.zeros((raster_h, raster_w), dtype=np.float32)
+                doy_before_fb = np.zeros((raster_h, raster_w), dtype=np.float32)
+                arr_before_fb[:] = arr_before
+                doy_before_fb[:] = doy_before
+                if not np.all(arr_before > 0):
+                    for acq in before_cands[:10]:
+                        p = get_band_path_for_acq(acq['b02_path'], band)
+                        if p.exists():
+                            ds = gdal.Open(str(p))
+                            if ds:
+                                arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                                ds = None
+                                mask_fill = (arr_before_fb == 0) & (arr_i > 0)
+                                arr_before_fb[mask_fill] = arr_i[mask_fill]
+                                doy_before_fb[mask_fill] = acq['doy']
+                                if np.all(arr_before_fb > 0):
+                                    break
 
-            # Pass 1: Clear pixels only (SCL validated)
-            for acq in after_cands[:10]:
-                p = get_band_path_for_acq(acq['b02_path'], band)
-                if p.exists():
-                    ds = gdal.Open(str(p))
-                    if ds:
-                        arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
-                        ds = None
-                        clear_m = _load_scl_mask(acq['b02_path'])
-                        valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
-                        mask_fill = (arr_after == 0) & valid
-                        arr_after[mask_fill] = arr_i[mask_fill]
-                        doy_after[mask_fill] = acq['doy']
-                        if np.all(arr_after > 0):
-                            break
-
-            # Pass 2: Fallback for persistent cloud cover
-            if not np.all(arr_after > 0):
+                # 2. Build seamless composite after target_doy with SCL filtering
+                arr_after = np.zeros((raster_h, raster_w), dtype=np.float32)
+                doy_after = np.zeros((raster_h, raster_w), dtype=np.float32)
                 for acq in after_cands[:10]:
                     p = get_band_path_for_acq(acq['b02_path'], band)
                     if p.exists():
@@ -284,26 +354,73 @@ def generate_s2_time_series_for_tile(
                         if ds:
                             arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
                             ds = None
-                            mask_fill = (arr_after == 0) & (arr_i > 0)
+                            clear_m = _load_scl_mask(acq['b02_path'])
+                            valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
+                            mask_fill = (arr_after == 0) & valid
                             arr_after[mask_fill] = arr_i[mask_fill]
                             doy_after[mask_fill] = acq['doy']
                             if np.all(arr_after > 0):
                                 break
 
-            # 3. Seamless pixel-wise interpolation
-            interp_arr = np.zeros((raster_h, raster_w), dtype=np.float32)
-            both_mask = (arr_before > 0) & (arr_after > 0)
-            only_b = (arr_before > 0) & (arr_after == 0)
-            only_a = (arr_before == 0) & (arr_after > 0)
+                # Fallback after target_doy if persistent clouds
+                arr_after_fb = np.zeros((raster_h, raster_w), dtype=np.float32)
+                doy_after_fb = np.zeros((raster_h, raster_w), dtype=np.float32)
+                arr_after_fb[:] = arr_after
+                doy_after_fb[:] = doy_after
+                if not np.all(arr_after > 0):
+                    for acq in after_cands[:10]:
+                        p = get_band_path_for_acq(acq['b02_path'], band)
+                        if p.exists():
+                            ds = gdal.Open(str(p))
+                            if ds:
+                                arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                                ds = None
+                                mask_fill = (arr_after_fb == 0) & (arr_i > 0)
+                                arr_after_fb[mask_fill] = arr_i[mask_fill]
+                                doy_after_fb[mask_fill] = acq['doy']
+                                if np.all(arr_after_fb > 0):
+                                    break
 
-            denom = np.maximum(doy_after - doy_before, 1.0)
-            weight = np.clip((target_doy - doy_before) / denom, 0.0, 1.0)
-            interp_arr[both_mask] = (1.0 - weight[both_mask]) * arr_before[both_mask] + weight[both_mask] * arr_after[both_mask]
-            interp_arr[only_b] = arr_before[only_b]
-            interp_arr[only_a] = arr_after[only_a]
+                # Interpolate clear pixels
+                interp_clear = np.zeros((raster_h, raster_w), dtype=np.float32)
+                both_c = (arr_before > 0) & (arr_after > 0)
+                only_bc = (arr_before > 0) & (arr_after == 0)
+                only_ac = (arr_before == 0) & (arr_after > 0)
+                denom_c = np.maximum(doy_after - doy_before, 1.0)
+                w_c = np.clip((target_doy - doy_before) / denom_c, 0.0, 1.0)
+                interp_clear[both_c] = (1.0 - w_c[both_c]) * arr_before[both_c] + w_c[both_c] * arr_after[both_c]
+                interp_clear[only_bc] = arr_before[only_bc]
+                interp_clear[only_ac] = arr_after[only_ac]
 
-            # 4. Fallback for any remaining unpopulated pixels across all acquisitions
-            zero_mask = (interp_arr == 0)
+                valid_clear = (interp_clear > 0)
+                accum_clear_num[valid_clear] += orb_w * interp_clear[valid_clear]
+                accum_clear_den[valid_clear] += orb_w
+
+                # Interpolate fallback pixels
+                interp_fb = np.zeros((raster_h, raster_w), dtype=np.float32)
+                both_fb = (arr_before_fb > 0) & (arr_after_fb > 0)
+                only_bfb = (arr_before_fb > 0) & (arr_after_fb == 0)
+                only_afb = (arr_before_fb == 0) & (arr_after_fb > 0)
+                denom_fb = np.maximum(doy_after_fb - doy_before_fb, 1.0)
+                w_fb = np.clip((target_doy - doy_before_fb) / denom_fb, 0.0, 1.0)
+                interp_fb[both_fb] = (1.0 - w_fb[both_fb]) * arr_before_fb[both_fb] + w_fb[both_fb] * arr_after_fb[both_fb]
+                interp_fb[only_bfb] = arr_before_fb[only_bfb]
+                interp_fb[only_afb] = arr_after_fb[only_afb]
+
+                valid_fb = (interp_fb > 0)
+                accum_fallback_num[valid_fb] += orb_w * interp_fb[valid_fb]
+                accum_fallback_den[valid_fb] += orb_w
+
+            # Combine multi-orbit clear observations, or fallback if all clouded
+            final_interp = np.zeros((raster_h, raster_w), dtype=np.float32)
+            has_clear = (accum_clear_den > 0)
+            has_fb = (accum_fallback_den > 0) & (~has_clear)
+
+            final_interp[has_clear] = accum_clear_num[has_clear] / accum_clear_den[has_clear]
+            final_interp[has_fb] = accum_fallback_num[has_fb] / accum_fallback_den[has_fb]
+
+            # Global safety fallback for any remaining zero pixels
+            zero_mask = (final_interp == 0)
             if np.any(zero_mask):
                 for acq in acquisitions:
                     p = get_band_path_for_acq(acq['b02_path'], band)
@@ -315,8 +432,8 @@ def generate_s2_time_series_for_tile(
                             clear_m = _load_scl_mask(acq['b02_path'])
                             valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
                             fill_m = zero_mask & valid
-                            interp_arr[fill_m] = arr_i[fill_m]
-                            zero_mask = (interp_arr == 0)
+                            final_interp[fill_m] = arr_i[fill_m]
+                            zero_mask = (final_interp == 0)
                             if not np.any(zero_mask):
                                 break
                 if np.any(zero_mask):
@@ -328,12 +445,12 @@ def generate_s2_time_series_for_tile(
                                 arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
                                 ds = None
                                 fill_m = zero_mask & (arr_i > 0)
-                                interp_arr[fill_m] = arr_i[fill_m]
-                                zero_mask = (interp_arr == 0)
+                                final_interp[fill_m] = arr_i[fill_m]
+                                zero_mask = (final_interp == 0)
                                 if not np.any(zero_mask):
                                     break
 
-            final_arr = np.clip(interp_arr, 0, 65535).astype(np.uint16)
+            final_arr = np.clip(final_interp, 0, 65535).astype(np.uint16)
 
             driver = gdal.GetDriverByName('GTiff')
             out_ds = driver.Create(
