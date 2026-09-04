@@ -96,6 +96,51 @@ def extract_date_and_doy_from_filepath(filepath: Path) -> Tuple[datetime.date, i
     return mtime, mtime.timetuple().tm_yday
 
 
+def get_scl_path_for_acq(b02_path: Path) -> Optional[Path]:
+    """Find corresponding Sen2Cor SCL (Scene Classification Layer) 20m raster."""
+    s = str(b02_path)
+    for cand in [
+        s.replace('_B02_20m.tif', '_SCL_20m.tif'),
+        s.replace('_B02_10m.tif', '_SCL_20m.tif'),
+        s.replace('B02_20m', 'SCL_20m'),
+        s.replace('B02_10m', 'SCL_20m'),
+        s.replace('B02', 'SCL')
+    ]:
+        p = Path(cand)
+        if p.exists() and p.is_file():
+            return p
+    parent = b02_path.parent
+    scl_files = list(parent.glob("*SCL*.tif"))
+    if scl_files:
+        return scl_files[0]
+    return None
+
+
+def get_band_path_for_acq(b02_path: Path, band: str) -> Path:
+    """Resolve filepath for specific spectral band given B02 acquisition path."""
+    s = str(b02_path)
+    for cand in [
+        s.replace('_B02_20m', f'_{band}_20m'),
+        s.replace('_B02_10m', f'_{band}_20m'),
+        s.replace('B02_20m', f'{band}_20m'),
+        s.replace('B02', band)
+    ]:
+        p = Path(cand)
+        if p.exists() and p.is_file():
+            return p
+    return Path(s.replace('B02', band))
+
+
+# Valid Sen2Cor Scene Classification Layer (SCL) land/water classes:
+# 2 = Dark area pixels
+# 4 = Vegetation
+# 5 = Not-vegetated (soils)
+# 6 = Water
+# 7 = Unclassified
+# (Filtered out: 0=NoData, 1=Defective, 3=Cloud shadows, 8=Cloud medium, 9=Cloud high, 10=Thin cirrus, 11=Snow)
+VALID_SCL_CLASSES = [2, 4, 5, 6, 7]
+
+
 def generate_s2_time_series_for_tile(
     tile_name: str,
     tile_tif_dir: Path,
@@ -146,44 +191,106 @@ def generate_s2_time_series_for_tile(
         if not before_cands: before_cands = list(after_cands)
         if not after_cands: after_cands = list(before_cands)
 
+        # Cache SCL clear masks per DOY so they are read only once across all 9 spectral bands
+        scl_cache: Dict[str, Optional[np.ndarray]] = {}
+
+        def _load_scl_mask(b02_p: Path) -> Optional[np.ndarray]:
+            k = str(b02_p)
+            if k in scl_cache:
+                return scl_cache[k]
+            scl_p = get_scl_path_for_acq(b02_p)
+            if not scl_p:
+                scl_cache[k] = None
+                return None
+            ds_scl = gdal.Open(str(scl_p))
+            if not ds_scl:
+                scl_cache[k] = None
+                return None
+            scl_arr = ds_scl.GetRasterBand(1).ReadAsArray()
+            ds_scl = None
+            if scl_arr is None:
+                scl_cache[k] = None
+                return None
+            m = np.isin(scl_arr, VALID_SCL_CLASSES)
+            scl_cache[k] = m
+            return m
+
         for band in S2_SPECTRAL_BANDS:
             out_band_file = day_folder / f"{band}.tif"
             if not overwrite and out_band_file.exists() and out_band_file.stat().st_size > 1024:
                 continue
 
-            # Build seamless composite before target_doy
+            # 1. Build seamless composite before target_doy with SCL cloud/shadow filtering
             arr_before = np.zeros((raster_h, raster_w), dtype=np.float32)
             doy_before = np.zeros((raster_h, raster_w), dtype=np.float32)
-            for acq in before_cands[:6]:
-                p = Path(str(acq['b02_path']).replace('B02', band))
+
+            # Pass 1: Clear pixels only (SCL validated)
+            for acq in before_cands[:10]:
+                p = get_band_path_for_acq(acq['b02_path'], band)
                 if p.exists():
                     ds = gdal.Open(str(p))
                     if ds:
                         arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
                         ds = None
-                        mask_fill = (arr_before == 0) & (arr_i > 0)
+                        clear_m = _load_scl_mask(acq['b02_path'])
+                        valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
+                        mask_fill = (arr_before == 0) & valid
                         arr_before[mask_fill] = arr_i[mask_fill]
                         doy_before[mask_fill] = acq['doy']
                         if np.all(arr_before > 0):
                             break
 
-            # Build seamless composite after target_doy
+            # Pass 2: Fallback for persistent cloud cover (best available data)
+            if not np.all(arr_before > 0):
+                for acq in before_cands[:10]:
+                    p = get_band_path_for_acq(acq['b02_path'], band)
+                    if p.exists():
+                        ds = gdal.Open(str(p))
+                        if ds:
+                            arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                            ds = None
+                            mask_fill = (arr_before == 0) & (arr_i > 0)
+                            arr_before[mask_fill] = arr_i[mask_fill]
+                            doy_before[mask_fill] = acq['doy']
+                            if np.all(arr_before > 0):
+                                break
+
+            # 2. Build seamless composite after target_doy with SCL cloud/shadow filtering
             arr_after = np.zeros((raster_h, raster_w), dtype=np.float32)
             doy_after = np.zeros((raster_h, raster_w), dtype=np.float32)
-            for acq in after_cands[:6]:
-                p = Path(str(acq['b02_path']).replace('B02', band))
+
+            # Pass 1: Clear pixels only (SCL validated)
+            for acq in after_cands[:10]:
+                p = get_band_path_for_acq(acq['b02_path'], band)
                 if p.exists():
                     ds = gdal.Open(str(p))
                     if ds:
                         arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
                         ds = None
-                        mask_fill = (arr_after == 0) & (arr_i > 0)
+                        clear_m = _load_scl_mask(acq['b02_path'])
+                        valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
+                        mask_fill = (arr_after == 0) & valid
                         arr_after[mask_fill] = arr_i[mask_fill]
                         doy_after[mask_fill] = acq['doy']
                         if np.all(arr_after > 0):
                             break
 
-            # Seamless pixel-wise interpolation
+            # Pass 2: Fallback for persistent cloud cover
+            if not np.all(arr_after > 0):
+                for acq in after_cands[:10]:
+                    p = get_band_path_for_acq(acq['b02_path'], band)
+                    if p.exists():
+                        ds = gdal.Open(str(p))
+                        if ds:
+                            arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                            ds = None
+                            mask_fill = (arr_after == 0) & (arr_i > 0)
+                            arr_after[mask_fill] = arr_i[mask_fill]
+                            doy_after[mask_fill] = acq['doy']
+                            if np.all(arr_after > 0):
+                                break
+
+            # 3. Seamless pixel-wise interpolation
             interp_arr = np.zeros((raster_h, raster_w), dtype=np.float32)
             both_mask = (arr_before > 0) & (arr_after > 0)
             only_b = (arr_before > 0) & (arr_after == 0)
@@ -195,21 +302,36 @@ def generate_s2_time_series_for_tile(
             interp_arr[only_b] = arr_before[only_b]
             interp_arr[only_a] = arr_after[only_a]
 
-            # Fallback for any unpopulated pixels: check all remaining acquisitions
+            # 4. Fallback for any remaining unpopulated pixels across all acquisitions
             zero_mask = (interp_arr == 0)
             if np.any(zero_mask):
                 for acq in acquisitions:
-                    p = Path(str(acq['b02_path']).replace('B02', band))
+                    p = get_band_path_for_acq(acq['b02_path'], band)
                     if p.exists():
                         ds = gdal.Open(str(p))
                         if ds:
                             arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
                             ds = None
-                            fill_m = zero_mask & (arr_i > 0)
+                            clear_m = _load_scl_mask(acq['b02_path'])
+                            valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
+                            fill_m = zero_mask & valid
                             interp_arr[fill_m] = arr_i[fill_m]
                             zero_mask = (interp_arr == 0)
                             if not np.any(zero_mask):
                                 break
+                if np.any(zero_mask):
+                    for acq in acquisitions:
+                        p = get_band_path_for_acq(acq['b02_path'], band)
+                        if p.exists():
+                            ds = gdal.Open(str(p))
+                            if ds:
+                                arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                                ds = None
+                                fill_m = zero_mask & (arr_i > 0)
+                                interp_arr[fill_m] = arr_i[fill_m]
+                                zero_mask = (interp_arr == 0)
+                                if not np.any(zero_mask):
+                                    break
 
             final_arr = np.clip(interp_arr, 0, 65535).astype(np.uint16)
 
