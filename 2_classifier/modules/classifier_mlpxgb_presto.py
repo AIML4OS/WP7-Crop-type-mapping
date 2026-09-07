@@ -119,76 +119,250 @@ def get_crop_aggregation(country: str, learn_shp_path: Optional[Path]) -> dict:
     return {}
 
 
-def _get_priors_for_country(country: str, learn_shp_path: Optional[Path], classes: np.ndarray, class_counts: dict, total_samples: int, priors_file_override: Optional[Path] = None) -> np.ndarray:
-    """Calculates true prior probabilities using shapefile names, custom JSONs, or physical field area priors."""
-    priors_json_path = None
-    if priors_file_override and os.path.exists(priors_file_override):
-        priors_json_path = Path(priors_file_override)
-    else:
-        if learn_shp_path:
-            p = Path(learn_shp_path).resolve()
-            for parent in p.parents:
-                aux_dir_path = parent / 'auxiliary_files'
-                if aux_dir_path.exists():
-                    aux_priors = aux_dir_path / 'shapefiles_samples' / country / 'priors.json'
-                    if aux_priors.exists():
-                        priors_json_path = aux_priors
-                        break
-            if not priors_json_path:
-                track_dir = Path(learn_shp_path).parent.parent
-                track_priors = track_dir / f"priors_{country}.json"
-                if not track_priors.exists():
-                    track_priors = track_dir / "priors.json"
-                if track_priors.exists():
-                    priors_json_path = track_priors
+def _match_crop_keyword(keywords: list, text: str) -> bool:
+    """Case-insensitive token/keyword matcher with word-boundary protection for short tokens."""
+    import re
+    text_lower = text.lower()
+    for kw in keywords:
+        kw_lower = kw.lower()
+        if len(kw_lower) <= 4:
+            # Word boundary with optional plural 's'
+            pat = r'\b' + re.escape(kw_lower) + r's?\b'
+            if re.search(pat, text_lower):
+                return True
+        else:
+            if kw_lower in text_lower:
+                return True
+    return False
 
-    if priors_json_path and priors_json_path.exists():
-        try:
-            with open(priors_json_path, 'r') as f:
-                custom_priors = json.load(f)
-            
-            id_to_name = {}
-            if learn_shp_path and os.path.exists(learn_shp_path):
-                try:
-                    gdf = gpd.read_file(str(learn_shp_path), engine="pyogrio")
-                    if 'crop_id' in gdf.columns and 'crop_name' in gdf.columns:
-                        id_to_name = dict(zip(gdf['crop_id'].astype(int), gdf['crop_name'].astype(str).str.lower()))
-                except Exception:
-                    pass
 
-            raw_priors = {}
-            sorted_keys = sorted(custom_priors.keys(), key=len, reverse=True)
-            for cid, name in id_to_name.items():
-                matched_val = 1e-5
-                for key in sorted_keys:
-                    if key.lower() in name or name in key.lower():
-                        matched_val = float(custom_priors[key])
-                        break
-                raw_priors[cid] = matched_val
+def get_crop_area_multiplier(cid: int, crop_name: str = "", expected_classes: int = 16) -> float:
+    """
+    Returns the typical physical parcel size in square meters (m^2) for a given crop.
+    Directly incorporates the multi-crop area table from FullImageClassification.py,
+    supporting multi-lingual keywords (Polish, English, Portuguese, Dutch, French, German, Spanish, Italian),
+    broad aggregated classes, and adaptive default fallbacks based on classification taxonomy depth.
+    """
+    name = (crop_name or "").lower().strip()
 
-            for key, val in custom_priors.items():
-                try:
-                    cid = int(key)
-                    raw_priors[cid] = float(val)
-                except ValueError:
-                    pass
+    # 1. Broad aggregated classes (from FullImageClassification.py MR / WOSU configs)
+    if _match_crop_keyword(['zboza ozime', 'uprawy ozime', 'oleiste', 'gorczycowate'], name):
+        return 70000.0
+    if _match_crop_keyword(['zboza jare', 'uprawy jare', 'straczkowe', 'warzywa i okopowe', 'warzywa_okopowe'], name):
+        return 40000.0
+    if _match_crop_keyword(['owoce i krzewy', 'owoce_krzewy'], name):
+        return 20000.0
+    if _match_crop_keyword(['zboza'], name):
+        return 100000.0
 
-            p_true = np.array([raw_priors.get(c, 1e-5) for c in classes])
-            p_true = p_true / np.sum(p_true)
-            return p_true
-        except Exception as e:
-            print(f"    [WARNING] Failed to load name-based priors: {e}")
+    # 2. Multi-lingual Keyword Matching across EN, PT, PL, NL, FR, DE, ES, IT
+    # Tier 1: Large broadacre & grasslands (50,000 - 70,000 m^2)
+    if _match_crop_keyword([
+        'grass', 'pasture', 'pastagem', 'prado', 'fallow', 'pousio', 'trawa', 'trawiast',
+        'ugor', 'braak', 'blijvend', 'tijdelijk', 'prairie', 'weide', 'clover', 'trevo',
+        'koniczyna', 'klaver', 'lucerne', 'luzerna', 'lucerna', 'luzerne', 'pastos', 'barbecho', 'tiuz'
+    ], name):
+        return 70000.0
+    if _match_crop_keyword(['maize', 'milho', 'kukurydza', 'corn', 'mais', 'maiz'], name):
+        return 70000.0
+    if _match_crop_keyword(['wheat', 'trigo', 'pszenica', 'tarwe', 'ble', 'weizen'], name):
+        return 70000.0
+    if _match_crop_keyword(['rapeseed', 'canola', 'colza', 'rzepak', 'koolzaad', 'raps'], name):
+        return 60000.0
+    if _match_crop_keyword(['triticale', 'pszenzyto', 'koorn'], name):
+        return 50000.0
+    if _match_crop_keyword(['rice', 'arroz', 'ryz', 'riz', 'reis', 'riso'], name):
+        return 50000.0
+    if _match_crop_keyword(['sunflower', 'girassol', 'slonecznik', 'tournesol', 'zonnebloem', 'sonnenblume', 'girasole'], name):
+        return 50000.0
 
-    # Fallback to field size heuristics
-    area_multipliers_default = {
-        'grassland': 70000, 'maize': 70000, 'wheat': 70000, 'barley': 40000,
-        'rye': 40000, 'triticale': 50000, 'oats': 40000, 'rapeseed': 60000,
-        'sugar beet': 40000, 'potato': 20000, 'orchard': 20000, 'pea': 30000,
-        'bean': 10000, 'vegetables': 5000, 'other': 10000
+    # Tier 2: Standard cereals & field crops (30,000 - 40,000 m^2)
+    if _match_crop_keyword(['barley', 'cevada', 'jeczmien', 'gerst', 'orge', 'gerste', 'cebada', 'orzo'], name):
+        return 40000.0
+    if _match_crop_keyword(['rye', 'centeio', 'zyto', 'rogge', 'seigle', 'roggen', 'centeno', 'segale'], name):
+        return 40000.0
+    if _match_crop_keyword(['oats', 'aveia', 'owies', 'haver', 'avoine', 'hafer', 'avena'], name):
+        return 40000.0
+    if _match_crop_keyword(['sorghum', 'sorgo'], name):
+        return 40000.0
+    if _match_crop_keyword(['sugar beet', 'beet', 'beterraba', 'burak', 'suikerbiet', 'betterave', 'zuckerruebe', 'remolacha', 'barbabietola'], name):
+        return 40000.0
+    if _match_crop_keyword(['mieszanki zbozowe'], name):
+        return 40000.0
+    if _match_crop_keyword(['cotton', 'algodao', 'algodon', 'coton'], name):
+        return 40000.0
+    if _match_crop_keyword(['olive', 'olival', 'oliva', 'oliven', 'olivier', 'olivo'], name):
+        return 30000.0
+    if _match_crop_keyword(['lubin', 'lupin', 'tremo'], name):
+        return 30000.0
+    if _match_crop_keyword(['pea', 'ervilha', 'groch', 'erwt', 'pois', 'erbse', 'guisante', 'pisello'], name):
+        return 30000.0
+
+    # Tier 3: Orchards, vineyards & tubers (20,000 - 25,000 m^2)
+    if _match_crop_keyword(['vineyard', 'vine', 'vinha', 'vinhedo', 'winnica', 'wijngaard', 'vigne', 'weinberg', 'vinedo', 'vigneto'], name):
+        return 25000.0
+    if _match_crop_keyword(['citrus', 'citrinos', 'orange', 'lemon', 'laranja', 'limao', 'citricos'], name):
+        return 25000.0
+    if _match_crop_keyword(['orchard', 'fruit', 'nut', 'pomar', 'fruto', 'sad', 'jablon', 'sliwa', 'wisnia', 'appel', 'peer', 'verger', 'obst', 'frutales', 'arvores'], name):
+        return 25000.0
+    if _match_crop_keyword(['potato', 'batata', 'ziemniak', 'aardappel', 'pomme de terre', 'kartoffel', 'patata'], name):
+        return 20000.0
+
+    # Tier 4: Medium & niche field crops (10,000 - 15,000 m^2)
+    if _match_crop_keyword(['soybean', 'soja', 'soya'], name):
+        return 15000.0
+    if _match_crop_keyword(['gryka', 'buckwheat', 'sarrasin', 'buchweizen'], name):
+        return 15000.0
+    if _match_crop_keyword(['hemp', 'konopie', 'cannabis', 'chanvre', 'canamo'], name):
+        return 15000.0
+    if _match_crop_keyword(['flax', 'linseed', 'vlas', 'lin', 'len', 'lino'], name):
+        return 10000.0
+    if _match_crop_keyword(['bean', 'feijao', 'fasola', 'boon', 'haricot', 'bohne', 'alubia', 'fagiolo'], name):
+        return 10000.0
+    if _match_crop_keyword(['porzeczka', 'currant'], name):
+        return 10000.0
+    if _match_crop_keyword(['nursery', 'ornamental', 'viveiro', 'szkolka', 'sier', 'boomkwekerij', 'pepiniere', 'baumschule', 'vivero'], name):
+        return 10000.0
+    if _match_crop_keyword(['vegetable', 'hortalica', 'legume', 'leguminosa', 'warzyw', 'groente', 'maraichage', 'gemuese', 'hortalizas', 'verdura'], name):
+        return 10000.0
+
+    # Tier 5: Horticultural, vegetable & intensive crops (2,000 - 5,000 m^2)
+    if _match_crop_keyword(['onion', 'cebola', 'cebula', 'ui', 'uien', 'oignon', 'zwiebel', 'cebolla', 'cipolla'], name):
+        return 5000.0
+    if _match_crop_keyword(['strawberry', 'morango', 'truskawka', 'aardbei', 'fraise', 'erdbeere', 'fresa', 'fragola'], name):
+        return 5000.0
+    if _match_crop_keyword(['cabbage', 'brassica', 'couve', 'kapusta', 'kool', 'chou', 'kohl', 'col', 'cavolo'], name):
+        return 5000.0
+    if _match_crop_keyword(['flower bulbs', 'bloembollen', 'tulpen', 'tulipan', 'bulb', 'bulbos'], name):
+        return 5000.0
+    if _match_crop_keyword(['chicory', 'witlof', 'cichorei', 'cykoria', 'endive'], name):
+        return 5000.0
+    if _match_crop_keyword(['gorczyca', 'mustard', 'moutarde', 'senf'], name):
+        return 5000.0
+    if _match_crop_keyword(['bob', 'bobik', 'faba'], name):
+        return 5000.0
+    if _match_crop_keyword(['melon', 'sandia', 'melancia', 'arbuz'], name):
+        return 5000.0
+    if _match_crop_keyword(['pumpkin', 'squash', 'dynia', 'abobora'], name):
+        return 5000.0
+    if _match_crop_keyword(['asparagus', 'asperge', 'szparagi', 'esparrago'], name):
+        return 3000.0
+    if _match_crop_keyword(['carrot', 'cenoura', 'marchew', 'peen', 'carotte', 'moehre', 'zanahoria', 'carota'], name):
+        return 3000.0
+    if _match_crop_keyword(['tobacco', 'tabaco', 'tyton', 'tabak', 'tabac'], name):
+        return 3000.0
+    if _match_crop_keyword(['garlic', 'czosnek', 'alho', 'ail', 'knoblauch', 'ajo'], name):
+        return 3000.0
+    if _match_crop_keyword(['berry', 'aronia', 'blueberry', 'raspberry', 'mirtilo', 'framboesa', 'amora', 'borowka', 'malina', 'beere', 'arandano'], name):
+        return 3000.0
+    if _match_crop_keyword(['tomato', 'tomate', 'pomidor', 'tomaat'], name):
+        return 2000.0
+    if _match_crop_keyword(['cucumber', 'pepino', 'ogorek', 'komkommer', 'concombre', 'gurke', 'cetriolo'], name):
+        return 2000.0
+    if _match_crop_keyword(['pepper', 'papryka', 'pimento', 'poivron', 'pimiento'], name):
+        return 2000.0
+    if _match_crop_keyword(['leszczyna', 'hazelnut'], name):
+        return 2000.0
+
+    # 3. Country-Specific Class ID Fallbacks (e.g. Standard 37 Classes in Poland)
+    area_thresholds_pl = {
+        1: 3000, 2: 5000, 3: 5000, 4: 40000, 5: 5000, 6: 10000, 7: 5000, 8: 30000, 9: 15000,
+        10: 20000, 11: 30000, 12: 40000, 13: 5000, 14: 70000, 15: 2000, 16: 30000, 17: 5000,
+        18: 3000, 19: 40000, 20: 2000, 21: 40000, 22: 2000, 23: 10000, 24: 25000, 25: 70000,
+        26: 10000, 27: 50000, 28: 2000, 29: 60000, 30: 3000, 31: 15000, 32: 70000, 33: 5000,
+        34: 3000, 35: 5000, 36: 20000, 37: 40000
     }
-    counts_arr = np.array([class_counts.get(c, 1) for c in classes])
-    p_true = counts_arr / np.sum(counts_arr)
-    return p_true
+    if cid in area_thresholds_pl:
+        return float(area_thresholds_pl[cid])
+
+    # 4. Adaptive default agricultural fallback based on taxonomy depth (from FullImageClassification.py line 120)
+    return 50000.0 if expected_classes < 10 else 10000.0
+
+
+def compute_dynamic_bayesian_priors(
+    classes: np.ndarray,
+    class_counts: dict,
+    total_samples: int,
+    id_to_name: Optional[dict] = None
+) -> np.ndarray:
+    """
+    Computes intelligent dynamic Bayesian priors combining:
+      1. Physical parcel area distribution P_true = Count_c * Area_threshold_c.
+      2. Inversion of training loss bias P_train = sqrt(Total / (N * Count_c)).
+      3. Power 0.7 exponential smoothing.
+      4. Strict zeroing of non-existent classes in the orbit (Count_c == 0 -> 0.0).
+    """
+    if id_to_name is None:
+        id_to_name = {}
+
+    n_classes = len(classes)
+    if n_classes == 0 or total_samples == 0:
+        return np.ones(n_classes, dtype=np.float32) / max(n_classes, 1)
+
+    # 1. P_true: physical parcel surface area distribution
+    area_multipliers = np.array([
+        get_crop_area_multiplier(int(c), id_to_name.get(int(c), ""), expected_classes=n_classes)
+        for c in classes
+    ], dtype=np.float64)
+
+    counts_arr = np.array([float(class_counts.get(c, 0)) for c in classes], dtype=np.float64)
+    true_area = counts_arr * area_multipliers
+    sum_true_area = np.sum(true_area)
+    if sum_true_area > 0:
+        p_true = true_area / sum_true_area
+    else:
+        p_true = np.ones(n_classes, dtype=np.float64) / n_classes
+
+    # 2. P_train: exact training bias injected by square-root class loss weights
+    train_bias = np.zeros(n_classes, dtype=np.float64)
+    for i, c in enumerate(classes):
+        cnt = float(class_counts.get(c, 0))
+        if cnt > 0:
+            train_bias[i] = math.sqrt(total_samples / (n_classes * cnt))
+        else:
+            train_bias[i] = 0.0
+
+    sum_train_bias = np.sum(train_bias)
+    if sum_train_bias > 0:
+        p_train = train_bias / sum_train_bias
+    else:
+        p_train = np.ones(n_classes, dtype=np.float64) / n_classes
+
+    # 3. Bayesian Correction Factor with SATMIROL 0.7 smoothing
+    w_bayes = np.zeros(n_classes, dtype=np.float64)
+    for i, c in enumerate(classes):
+        if class_counts.get(c, 0) == 0:
+            w_bayes[i] = 0.0
+        else:
+            ratio = p_true[i] / (p_train[i] + 1e-9)
+            w_bayes[i] = math.pow(ratio, 0.7)
+
+    # 4. Clipping and strict zeroing
+    w_bayes = np.clip(w_bayes, 0.01, 10.0)
+    for i, c in enumerate(classes):
+        if class_counts.get(c, 0) == 0:
+            w_bayes[i] = 0.0
+
+    sum_w = np.sum(w_bayes)
+    if sum_w > 0:
+        priors_arr = (w_bayes / sum_w).astype(np.float32)
+    else:
+        priors_arr = (np.ones(n_classes, dtype=np.float32) / n_classes)
+
+    return priors_arr
+
+
+def _get_priors_for_country(country: str, learn_shp_path: Optional[Path], classes: np.ndarray, class_counts: dict, total_samples: int, priors_file_override: Optional[Path] = None) -> np.ndarray:
+    """Backward compatibility wrapper redirecting to compute_dynamic_bayesian_priors."""
+    id_to_name = {}
+    if learn_shp_path and os.path.exists(learn_shp_path):
+        try:
+            gdf = gpd.read_file(str(learn_shp_path), engine="pyogrio")
+            if 'crop_id' in gdf.columns and 'crop_name' in gdf.columns:
+                id_to_name = dict(zip(gdf['crop_id'].astype(int), gdf['crop_name'].astype(str)))
+        except Exception:
+            pass
+    return compute_dynamic_bayesian_priors(classes, class_counts, total_samples, id_to_name)
 
 
 def _calculate_class_weights(y_data: np.ndarray, all_classes: np.ndarray) -> np.ndarray:
@@ -1597,14 +1771,45 @@ class ProcessingPipelineS1S2:
         df_learn = pd.read_csv(self.sel_csv)
         classes = clf.classes_
         class_counts = df_learn['crop_id'].value_counts().to_dict()
-        p_true = _get_priors_for_country(self.country, self.learn_shp, classes, class_counts, len(df_learn))
-        
-        balanced_counts = {c: max(class_counts.get(c, 0), 1000) for c in classes}
-        tot_b = sum(balanced_counts.values())
-        p_train = np.array([balanced_counts[c] / tot_b for c in classes])
 
-        correction = np.clip(np.power(p_true / (p_train + 1e-9), 0.7), 0.01, 10.0)
-        priors_arr = correction / np.sum(correction)
+        # Resolve crop names mapping for dynamic Bayesian area thresholds
+        id_to_name = {}
+        shp_to_check = self.learn_shp if (hasattr(self, 'learn_shp') and self.learn_shp and self.learn_shp.exists()) else self.sample_shp
+        if shp_to_check and shp_to_check.exists():
+            try:
+                gdf_n = gpd.read_file(str(shp_to_check), engine="pyogrio")
+                col_map = {c.lower(): c for c in gdf_n.columns}
+                id_col_key = next((k for k in ['crop_id', 'crop_ids', 'code', 'id', 'class_id'] if k in col_map), None)
+                name_col_key = next((k for k in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom'] if k in col_map), None)
+                if id_col_key and name_col_key:
+                    id_to_name = dict(zip(gdf_n[col_map[id_col_key]].astype(int), gdf_n[col_map[name_col_key]].astype(str)))
+            except Exception as e:
+                print(f"    [WARNING] Could not read crop names from shapefile: {e}")
+
+        # Fallback to auxiliary country priors.json if any names are missing
+        country_priors_file = self.aux_dir / "shapefiles_samples" / self.country / "priors.json"
+        if country_priors_file.exists():
+            try:
+                with open(country_priors_file, 'r', encoding='utf-8') as pf:
+                    priors_data = json.load(pf)
+                    for p_idx, p_name in enumerate(priors_data.keys(), start=1):
+                        if p_idx not in id_to_name:
+                            id_to_name[p_idx] = p_name.title()
+            except Exception:
+                pass
+
+        # Compute intelligent dynamic Bayesian priors completely automatically
+        priors_arr = compute_dynamic_bayesian_priors(
+            classes=classes,
+            class_counts=class_counts,
+            total_samples=len(df_learn),
+            id_to_name=id_to_name
+        )
+        print("    Dynamic Bayesian class priors calculated:")
+        for c_val, p_val in zip(classes, priors_arr):
+            c_name = id_to_name.get(int(c_val), f"Class {c_val}")
+            c_cnt = class_counts.get(c_val, 0)
+            print(f"      - Class {int(c_val):>2} ({c_name:<26}): samples={c_cnt:>5} -> prior={p_val * 100:5.2f}%")
 
         seg_ds = gdal.Open(str(self.seg_tif))
         foot_ds = gdal.Open(str(self.footprint_mask))

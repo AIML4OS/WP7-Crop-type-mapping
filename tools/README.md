@@ -71,7 +71,7 @@ python tools/3_prepare_classification_samples.py -c PT --input path/to/isip.gpkg
 
 ## 4. Compute Bayesian crop acreage priors (`tools/4_generate_crop_priors.py`)
 
-Calculates real-world statistical crop area proportions from national parcel registries and exports `auxiliary_files/shapefiles_samples/{COUNTRY}/priors.json`. Used in Stage 5 to calibrate machine learning posterior probabilities against real agricultural acreage.
+Calculates real-world statistical crop area proportions from national parcel registries and exports `auxiliary_files/shapefiles_samples/{COUNTRY}/priors.json`. Serves as auxiliary statistical baseline and crop name mapping fallback during Stage 6 object-based inference and Bayesian calibration.
 
 ### Execution examples:
 ```powershell

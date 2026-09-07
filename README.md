@@ -30,7 +30,7 @@ An automated, cloud-optimized object-based image analysis (OBIA) pipeline design
 10. [Detailed step-by-step execution guide](#detailed-step-by-step-execution-guide)
     - [Phase 1: Sentinel-1 SAR preprocessing](#phase-1-sentinel-1-sar-preprocessing)
     - [Phase 2: Sentinel-2 optical preprocessing](#phase-2-sentinel-2-optical-preprocessing)
-    - [Phase 3: Multimodal crop classification (stages 0 to 7)](#phase-3-multimodal-crop-classification-stages-0-to-7)
+    - [Phase 3: Multimodal crop classification (stages 1 to 8)](#phase-3-multimodal-crop-classification-stages-1-to-8)
     - [Phase 4: Multi-orbit nationwide merge](#phase-4-multi-orbit-nationwide-merge)
 11. [High-performance vectorized inference architecture](#high-performance-vectorized-inference-architecture)
 12. [National orbit coverage and geographic territory definitions](#national-orbit-coverage-and-geographic-territory-definitions)
@@ -83,7 +83,7 @@ If you are an IT administrator or data engineer running this pipeline for the fi
 | **CDSE credentials** | **User-provided** (Required) | Free email and password entered in `config_s1.json` / `config_s2.json`. |
 | **Training point samples** | **User-provided** (Required) | Vector shapefile (`samples.shp`) with field crop labels. |
 | **LPIS cadastral parcel vector** | **User-provided** (Optional) | National agricultural parcel database (`.gpkg` / `.shp`). |
-| **Crop acreage priors (`priors.json`)**| **User-provided** (Optional) | Statistical crop area distribution for Bayesian calibration. |
+| **Dynamic Bayesian acreage calibration** | **Automated** (Intelligent dynamic Bayesian) | 100% automated calibration combining physical field area multi-lingual taxonomy and training loss bias inversion (no external JSON required). |
 
 ---
 
@@ -307,8 +307,9 @@ Why combine Deep Neural Networks (PyTorch MLP) with Gradient Boosted Decision Tr
 
 #### 1. PyTorch Deep MLP architecture & regularization
 * **Network Topology**: Input Layer ($D$ dims) $\rightarrow$ `Dense(512)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(p=0.3)` $\rightarrow$ `Dense(256)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(p=0.3)` $\rightarrow$ `Dense(128)` $\rightarrow$ Output ($K$ classes).
-* **Class-Weighted Cross-Entropy Loss**: Corrects for class imbalance between dominant cereals and minor specialty crops:
-  $$\mathcal{L} = -\frac{1}{N}\sum_{i=1}^N \sum_{c=1}^K w_c \cdot y_{i,c} \cdot \log\left(\frac{\exp(z_{i,c})}{\sum_{j=1}^K \exp(z_{i,j})}\right), \quad \text{where } w_c = \frac{N}{K \cdot N_c}$$
+* **Square-root balanced class loss weights**: Corrects for class imbalance between dominant broadacre crops and minor specialty crops without gradient explosion:
+  $$\mathcal{L}_{\text{MLP}} = -\frac{1}{N}\sum_{i=1}^N \sum_{c=1}^K w_c \cdot y_{i,c} \cdot \log\left(\frac{\exp(z_{i,c})}{\sum_{j=1}^K \exp(z_{i,j})}\right), \quad \text{where } w_c = \sqrt{\frac{N}{K \cdot N_c}}$$
+  This square-root formulation (derived from `IterativeFeatureReduction.py`) smooths extreme sample disparities, ensuring rare specialty crops (e.g., tomatoes, orchards, pulses) generate sufficient gradient updates without destabilizing backpropagation on dominant classes.
 * **Cosine Annealing Learning Rate Schedule**: Smoothly decays learning rate to escape local minima:
   $$\eta_t = \eta_{\min} + \frac{1}{2}(\eta_{\max} - \eta_{\min})\left(1 + \cos\left(\frac{t}{T_{\max}}\pi\right)\right)$$
 
@@ -320,16 +321,30 @@ Combines posterior probability distributions from both models:
 $$\hat{P}(C_k | X) = \alpha \cdot P_{\text{MLP}}(C_k | X) + (1 - \alpha) \cdot P_{\text{XGB}}(C_k | X)$$
 Where $\alpha = 0.65$ (MLP ensemble weight) and $1 - \alpha = 0.35$ (XGBoost ensemble weight).
 
-#### 4. Bayesian prior probability calibration
-Machine learning models trained on balanced samples overestimate rare crops and underestimate dominant crops. The pipeline applies Bayesian calibration to align raw model probabilities with official agricultural registry crop acreages (`priors.json`):
+#### 4. Dynamic geographic Bayesian prior calibration
+Supervised neural models trained with weighted loss functions inject artificial bias toward rare classes during spatial inference, while models trained on raw unweighted samples can overpredict dominant classes. Rather than relying on static external JSON files (which can assign disproportionate weight to vast nationwide grassland classes and penalize localized arable crops by $50\times$), the classifier implements a fully automated, dynamic two-stage Bayesian calibration:
 
-$$P_{\text{calibrated}}(C_k | X) = \frac{\hat{P}(C_k | X) \cdot \left(\frac{P_{\text{true}}(C_k)}{P_{\text{train}}(C_k)}\right)^\gamma}{\sum_{j=1}^K \hat{P}(C_j | X) \cdot \left(\frac{P_{\text{true}}(C_j)}{P_{\text{train}}(C_j)}\right)^\gamma}$$
+$$P_{\text{calibrated}}(C_k | X) = \frac{\hat{P}(C_k | X) \cdot W_k}{\sum_{j=1}^K \hat{P}(C_j | X) \cdot W_j}$$
 
-Where:
-* $\hat{P}(C_k | X)$ is the soft-voting ensemble probability.
-* $P_{\text{true}}(C_k)$ is the true statistical crop area proportion obtained from paying agency declarations.
-* $P_{\text{train}}(C_k)$ is the training sample proportion.
-* $\gamma = 0.7$ is the calibration damping exponent preventing extreme boundary distortion.
+Where the Bayesian weight vector $W$ is calculated dynamically per orbit footprint:
+1. **Physical geographic parcel area distribution $P_{\text{true}}$**:
+   $$P_{\text{true}}(C_k) = \frac{\text{Count}_k \cdot \text{Area}_k}{\sum_{j=1}^K (\text{Count}_j \cdot \text{Area}_j)}$$
+   Where $\text{Area}_k$ represents typical physical parcel surface area ($m^2$) resolved automatically from an agronomic multi-lingual taxonomy (supporting Polish, English, Portuguese, Dutch, French, German, Spanish, and Italian) spanning 5 agronomic scale tiers:
+   * **Tier 1 ($70\,000\text{ m}^2$)**: Broadacre cereals & grasslands (maize, wheat, rapeseed, permanent pastures, meadows, fallow, TiUZ).
+   * **Tier 2 ($30\,000 - 40\,000\text{ m}^2$)**: Standard field & industrial crops (barley, rye, oats, triticale, sorghum, sugar beets, peas, lupins, olive groves, cotton).
+   * **Tier 3 ($20\,000 - 25\,000\text{ m}^2$)**: Orchards, vineyards & tubers (vineyards, fruit/nut orchards, citrus, potatoes).
+   * **Tier 4 ($10\,000 - 15\,000\text{ m}^2$)**: Medium & niche field crops (soybeans, buckwheat, field beans, vegetables & legumes, nurseries, flax, hemp).
+   * **Tier 5 ($2\,000 - 5\,000\text{ m}^2$)**: Intensive horticulture & specialty vegetables (tomatoes, onions, carrots, cucumbers, cabbage, strawberries, tobacco, asparagus, flower bulbs / tulips).
+   * **Adaptive fallback**: $50\,000\text{ m}^2$ for macro-class taxonomies ($< 10$ classes) and $10\,000\text{ m}^2$ for detailed species taxonomies ($\ge 10$ classes).
+   * **Word-boundary protection (`_match_crop_keyword`)**: Employs token-boundary matching (`\bkw\b`) and plural stem expansion to eliminate substring collisions (e.g., preventing French `ble` from colliding with `vegetables`).
+
+2. **Inversion of training loss bias $P_{\text{train}}$**:
+   $$P_{\text{train}}(C_k) = \frac{\text{bias}_k}{\sum_{j=1}^K \text{bias}_j}, \quad \text{where } \text{bias}_k = \sqrt{\frac{N}{K \cdot \text{Count}_k}}$$
+
+3. **Power-law exponential damping & clipping**:
+   $$W_k = \left( \frac{P_{\text{true}}(C_k)}{P_{\text{train}}(C_k) + \varepsilon} \right)^{\gamma}, \quad \text{clipped to } [0.01, 10.0], \quad \gamma = 0.7$$
+
+4. **Strict zeroing of non-existent classes**: If $\text{Count}_k = 0$ in the orbit footprint, $W_k = 0.0$ strictly, preventing false positive ghost predictions for crops absent in that latitude.
 
 ---
 
@@ -414,14 +429,14 @@ Located in `2_classifier/`, this toolbox implements object-based image analysis 
 +----------------------------------------------------------------------------------------------------+
 |                                      MULTIMODAL CLASSIFICATION SUITE                               |
 +----------------------------------------------------------------------------------------------------+
-|  [0] Footprint Gen.     --> Intersection of valid S1 SAR and S2 Optical coverage                   |
-|  [1] Segmentation       --> Object delineation: SLIC superpixels / Meta AI SAM / LPIS parcels      |
-|  [2] Sample Partition   --> Stratified split: 70% Learn (train) / 30% Control (validation)         |
-|  [3] Feature Extraction --> S1 Stats + S2 Reflectances + Presto 128d S1/S2 Token Embeddings        |
-|  [4] Model Training     --> Class-weighted PyTorch Deep MLP + XGBoost GBDT Fusion Ensemble         |
-|  [5] Vectorized Infer.  --> High-performance tile inference with Bayesian Prior Calibration        |
-|  [6] Cropland Masking   --> Agricultural mask application & non-cropland suppression               |
-|  [7] Accuracy Reporting --> Out-of-bag validation metrics, F1-scores, and styled Excel report      |
+|  [1] Footprint Gen.     --> Intersection of valid S1 SAR and S2 Optical coverage                   |
+|  [2] Segmentation       --> Object delineation: SLIC superpixels / Meta AI SAM / LPIS parcels      |
+|  [3] Sample Partition   --> Stratified split: 70% Learn (train) / 30% Control (validation)         |
+|  [4] Feature Extraction --> S1 Stats + S2 Reflectances + Presto 128d S1/S2 Token Embeddings        |
+|  [5] Model Training     --> Class-weighted PyTorch Deep MLP + XGBoost GBDT Fusion Ensemble         |
+|  [6] Vectorized Infer.  --> High-performance tile inference with dynamic Bayesian calibration       |
+|  [7] Cropland Masking   --> Agricultural mask application & non-cropland suppression               |
+|  [8] Accuracy Reporting --> Out-of-bag validation metrics, F1-scores, and styled Excel report      |
 +----------------------------------------------------------------------------------------------------+
 ```
 
@@ -691,18 +706,18 @@ python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py
 
 ### Phase 3: Multimodal machine learning classifier (`run_classifier.py`)
 
-#### What happens in each classification stage (Stages 0 to 7):
+#### What happens in each classification stage (stages 1 to 8):
 
 | Stage | Name | Action & scientific description | Generated output file |
 | :---: | :--- | :--- | :--- |
-| **0** | **Data Footprint & SAR Composite** | Generates multi-temporal mean amplitude SAR composite ($\bar{\sigma}^0$) to suppress speckle. Computes binary spatial intersection of valid S1, S2, and NUTS2 boundaries. | `0_segmentation/*_s1_composite.tif`<br>`0_segmentation/*_data_footprint.tif` |
-| **1** | **OBIA Segmentation** | Delineates homogeneous agricultural parcels using SLIC superpixels (with 64px halo buffer), Meta AI SAM foundation vision transformers, or official LPIS vector cadastre. | `0_segmentation/*_segmentation_{MODE}.tif` |
-| **2** | **Stratified Sample Split** | Spatially intersects `samples.shp` with segment parcels. Partitions points into **70% training (`learn.shp`)** and **30% independent validation (`control.shp`)** with balanced class stratification. | `1_samples_and_features/learn_{MODE}.shp`<br>`1_samples_and_features/control_{MODE}.shp` |
-| **3** | **Feature Extraction** | Extracts temporal backscatter statistics (mean, min, max, std of VH, VV, VH/VV), 14-DOY optical reflectances (`B02`–`B12`), dynamic NDVI, and **128d S1 + 128d S2 NASA Harvest Presto token embeddings**. | `1_samples_and_features/*_features_{MODE}.csv`<br>`1_samples_and_features/features_scaler.pkl` |
-| **4** | **Model Training** | Fits class-weighted PyTorch Deep MLP (`BatchNorm1d`, `Dropout`, Cosine Annealing) and XGBoost GBDT (250 trees, histogram split). Combines models via soft-voting ensemble blend ($0.65\text{ MLP} + 0.35\text{ XGB}$). | `2_models/*_model_{MODE}.pkl`<br>`2_models/presto_encoder.pt` |
-| **5** | **Vectorized Tile Inference** | Reads input rasters in $2048 \times 2048$ blocks. Uses fast `np.bincount` zonal aggregation, batched Presto embedding forward passes, Bayesian prior calibration, and $O(1)$ LUT raster reconstruction. | `3_maps/*_classified_{MODE}.tif`<br>`3_maps/*_confidence_{MODE}.tif` |
-| **6** | **Cropland Masking** | Applies high-resolution agricultural mask (`AgriMasks/{COUNTRY}/`) and data footprint, suppressing non-agricultural surfaces (forests, urban, water bodies). | `3_maps/*_classified_masked_{MODE}.tif`<br>`3_maps/*_confidence_masked_{MODE}.tif` |
-| **7** | **Accuracy Assessment** | Evaluates predictions against the independent 30% control dataset. Computes full confusion matrix, Overall Accuracy (OA), Cohen's Kappa ($\kappa$), User's Accuracy (Precision), Producer's Accuracy (Recall), and F1-scores. | `4_reports/report_*_metrics_{MODE}.xlsx` |
+| **1** | **Data Footprint & SAR Composite** | Generates multi-temporal mean amplitude SAR composite ($\bar{\sigma}^0$) to suppress speckle. Computes binary spatial intersection of valid S1, S2, and NUTS2 boundaries. | `0_segmentation/*_s1_composite.tif`<br>`0_segmentation/*_data_footprint.tif` |
+| **2** | **OBIA Segmentation** | Delineates homogeneous agricultural parcels using SLIC superpixels (with 64px halo buffer), Meta AI SAM foundation vision transformers, or official LPIS vector cadastre. | `0_segmentation/*_segmentation_{MODE}.tif` |
+| **3** | **Stratified Sample Split** | Spatially intersects `samples.shp` with segment parcels. Partitions points into **70% training (`learn_{MODE}.shp`)** and **30% independent validation (`control_{MODE}.shp`)** with balanced class stratification. | `1_samples_and_features/learn_{MODE}.shp`<br>`1_samples_and_features/control_{MODE}.shp` |
+| **4** | **Feature Extraction** | Extracts temporal backscatter statistics (mean, min, max, std of VH, VV, VH/VV), 14-DOY optical reflectances (`B02`–`B12`), dynamic NDVI, and **128d S1 + 128d S2 NASA Harvest Presto token embeddings**. | `1_samples_and_features/*_features_{MODE}.csv`<br>`1_samples_and_features/features_scaler.pkl` |
+| **5** | **Model Training** | Fits class-weighted PyTorch Deep MLP (`BatchNorm1d`, `Dropout`, Cosine Annealing) and XGBoost GBDT (250 trees, histogram split). Combines models via soft-voting ensemble blend ($0.65\text{ MLP} + 0.35\text{ XGB}$). | `2_models/*_model_{MODE}.pkl`<br>`2_models/presto_encoder.pt` |
+| **6** | **Vectorized Tile Inference** | Reads input rasters in $2048 \times 2048$ blocks. Uses fast `np.bincount` zonal aggregation, batched Presto embedding forward passes, dynamic Bayesian prior calibration, and $O(1)$ LUT raster reconstruction. | `3_maps/*_classified_{MODE}.tif`<br>`3_maps/*_confidence_{MODE}.tif` |
+| **7** | **Cropland Masking** | Applies high-resolution agricultural mask (`AgriMasks/{COUNTRY}/`) and data footprint, suppressing non-agricultural surfaces (forests, urban, water bodies). | `3_maps/*_classified_masked_{MODE}.tif`<br>`3_maps/*_confidence_masked_{MODE}.tif` |
+| **8** | **Accuracy Assessment** | Evaluates predictions against the independent 30% control dataset. Computes full confusion matrix, Overall Accuracy (OA), Cohen's Kappa ($\kappa$), User's Accuracy (Precision), Producer's Accuracy (Recall), and F1-scores. | `4_reports/report_*_metrics_{MODE}.xlsx` |
 
 #### How to execute:
 ```powershell
@@ -711,6 +726,10 @@ python 2_classifier/run_classifier.py --country PT --classifier mlpxgb_presto --
 
 # Run single orbit track:
 python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode slic --stage A
+
+# Run specific single stages (e.g. Stage 4 Feature Extraction or Stage 6 Inference):
+python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 4
+python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 6
 
 # Run with official cadastral LPIS parcel vectors:
 python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector auxiliary_files/raster_files/AgriMasks/PT/parcels.gpkg --stage A

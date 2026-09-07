@@ -71,8 +71,9 @@ Why combine Deep Neural Networks (PyTorch MLP) with Gradient Boosted Decision Tr
 
 #### PyTorch Deep MLP architecture & regularization
 * **Network Topology**: Input Layer ($D$ dims) $\rightarrow$ `Dense(512)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(p=0.3)` $\rightarrow$ `Dense(256)` $\rightarrow$ `BatchNorm1d` $\rightarrow$ `ReLU` $\rightarrow$ `Dropout(p=0.3)` $\rightarrow$ `Dense(128)` $\rightarrow$ Output ($K$ classes).
-* **Class-Weighted Cross-Entropy Loss**: Corrects for class imbalance between dominant cereals and minor specialty crops:
-  $$\mathcal{L}_{\text{MLP}} = -\frac{1}{N}\sum_{i=1}^N \sum_{c=1}^K w_c \cdot y_{i,c} \cdot \log\left(\frac{\exp(z_{i,c})}{\sum_{j=1}^K \exp(z_{i,j})}\right), \quad \text{where } w_c = \frac{N}{K \cdot N_c}$$
+* **Square-root balanced class loss weights**: Corrects for class imbalance between dominant broadacre crops and minor specialty crops without gradient explosion:
+  $$\mathcal{L}_{\text{MLP}} = -\frac{1}{N}\sum_{i=1}^N \sum_{c=1}^K w_c \cdot y_{i,c} \cdot \log\left(\frac{\exp(z_{i,c})}{\sum_{j=1}^K \exp(z_{i,j})}\right), \quad \text{where } w_c = \sqrt{\frac{N}{K \cdot N_c}}$$
+  This square-root formulation (derived from `IterativeFeatureReduction.py`) smooths extreme sample disparities, ensuring rare specialty crops (e.g., tomatoes, orchards, pulses) generate sufficient gradient updates without destabilizing backpropagation on dominant classes.
 * **Cosine Annealing Learning Rate Schedule**: Smoothly decays learning rate to escape local minima:
   $$\eta_t = \eta_{\min} + \frac{1}{2}(\eta_{\max} - \eta_{\min})\left(1 + \cos\left(\frac{t}{T_{\max}}\pi\right)\right)$$
 
@@ -84,16 +85,30 @@ Combines posterior probability distributions from both models:
 $$\hat{P}(C_k | X) = \alpha \cdot P_{\text{MLP}}(C_k | X) + (1 - \alpha) \cdot P_{\text{XGB}}(C_k | X)$$
 Where $\alpha = 0.65$ (MLP ensemble weight) and $1 - \alpha = 0.35$ (XGBoost ensemble weight).
 
-#### Bayesian prior probability calibration
-Machine learning models trained on balanced samples overestimate rare crops and underestimate dominant crops. The pipeline applies Bayesian calibration to align raw model probabilities with official agricultural registry crop acreages (`priors.json`):
+#### Dynamic geographic Bayesian prior calibration
+Supervised neural models trained with weighted loss functions inject artificial bias toward rare classes during spatial inference, while models trained on raw unweighted samples can overpredict dominant classes. Rather than relying on static external JSON files (which can assign disproportionate weight to vast nationwide grassland classes and penalize localized arable crops by $50\times$), the classifier implements a fully automated, dynamic two-stage Bayesian calibration:
 
-$$P_{\text{calibrated}}(C_k | X) = \frac{\hat{P}(C_k | X) \cdot \left(\frac{P_{\text{true}}(C_k)}{P_{\text{train}}(C_k)}\right)^\gamma}{\sum_{j=1}^K \hat{P}(C_j | X) \cdot \left(\frac{P_{\text{true}}(C_j)}{P_{\text{train}}(C_j)}\right)^\gamma}$$
+$$P_{\text{calibrated}}(C_k | X) = \frac{\hat{P}(C_k | X) \cdot W_k}{\sum_{j=1}^K \hat{P}(C_j | X) \cdot W_j}$$
 
-Where:
-* $\hat{P}(C_k | X)$ is the soft-voting ensemble probability.
-* $P_{\text{true}}(C_k)$ is the true statistical crop area proportion obtained from paying agency declarations.
-* $P_{\text{train}}(C_k)$ is the training sample proportion.
-* $\gamma = 0.7$ is the calibration damping exponent preventing extreme boundary distortion.
+Where the Bayesian weight vector $W$ is calculated dynamically per orbit footprint:
+1. **Physical geographic parcel area distribution $P_{\text{true}}$**:
+   $$P_{\text{true}}(C_k) = \frac{\text{Count}_k \cdot \text{Area}_k}{\sum_{j=1}^K (\text{Count}_j \cdot \text{Area}_j)}$$
+   Where $\text{Area}_k$ represents typical physical parcel surface area ($m^2$) resolved automatically from an agronomic multi-lingual taxonomy (supporting Polish, English, Portuguese, Dutch, French, German, Spanish, and Italian) spanning 5 agronomic scale tiers:
+   * **Tier 1 ($70\,000\text{ m}^2$)**: Broadacre cereals & grasslands (maize, wheat, rapeseed, permanent pastures, meadows, fallow, TiUZ).
+   * **Tier 2 ($30\,000 - 40\,000\text{ m}^2$)**: Standard field & industrial crops (barley, rye, oats, triticale, sorghum, sugar beets, peas, lupins, olive groves, cotton).
+   * **Tier 3 ($20\,000 - 25\,000\text{ m}^2$)**: Orchards, vineyards & tubers (vineyards, fruit/nut orchards, citrus, potatoes).
+   * **Tier 4 ($10\,000 - 15\,000\text{ m}^2$)**: Medium & niche field crops (soybeans, buckwheat, field beans, vegetables & legumes, nurseries, flax, hemp).
+   * **Tier 5 ($2\,000 - 5\,000\text{ m}^2$)**: Intensive horticulture & specialty vegetables (tomatoes, onions, carrots, cucumbers, cabbage, strawberries, tobacco, asparagus, flower bulbs / tulips).
+   * **Adaptive fallback**: $50\,000\text{ m}^2$ for macro-class taxonomies ($< 10$ classes) and $10\,000\text{ m}^2$ for detailed species taxonomies ($\ge 10$ classes).
+   * **Word-boundary protection (`_match_crop_keyword`)**: Employs token-boundary matching (`\bkw\b`) and plural stem expansion to eliminate substring collisions (e.g., preventing French `ble` from colliding with `vegetables`).
+
+2. **Inversion of training loss bias $P_{\text{train}}$**:
+   $$P_{\text{train}}(C_k) = \frac{\text{bias}_k}{\sum_{j=1}^K \text{bias}_j}, \quad \text{where } \text{bias}_k = \sqrt{\frac{N}{K \cdot \text{Count}_k}}$$
+
+3. **Power-law exponential damping & clipping**:
+   $$W_k = \left( \frac{P_{\text{true}}(C_k)}{P_{\text{train}}(C_k) + \varepsilon} \right)^{\gamma}, \quad \text{clipped to } [0.01, 10.0], \quad \gamma = 0.7$$
+
+4. **Strict zeroing of non-existent classes**: If $\text{Count}_k = 0$ in the orbit footprint, $W_k = 0.0$ strictly, preventing false positive ghost predictions for crops absent in that latitude.
 
 ---
 
