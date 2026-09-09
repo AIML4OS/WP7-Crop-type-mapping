@@ -56,6 +56,7 @@ def prepare_samples(
     max_samples_per_class: int = 2500,
     min_samples_per_class: int = 20,
     sampling_method: str = "representative",
+    negative_buffer_m: float = 10.0,
     mapping_json_path: Optional[str] = None,
     target_crs: str = "EPSG:4326"
 ):
@@ -129,13 +130,28 @@ def prepare_samples(
     balanced_gdf = pd.concat(sampled_dfs, ignore_index=True)
     balanced_gdf = gpd.GeoDataFrame(balanced_gdf, geometry='geometry', crs=gdf.crs)
 
-    # 6. Generate interior point geometry (guaranteed inside polygon)
-    logging.info(f"Generating interior sampling points ({sampling_method})...")
-    if sampling_method == "centroid":
-        point_geoms = balanced_gdf.geometry.centroid
+    # 6. Generate interior point geometry with negative buffer to avoid boundary contamination
+    logging.info(f"Generating interior sampling points ({sampling_method}, negative buffer = {negative_buffer_m}m)...")
+    metric_gdf = balanced_gdf.to_crs(epsg=3857)
+    if negative_buffer_m > 0:
+        buffered_geoms = metric_gdf.geometry.buffer(-negative_buffer_m)
+        collapsed = buffered_geoms.is_empty
+        if collapsed.any():
+            logging.info(f"  Adaptive buffer: {collapsed.sum()}/{len(metric_gdf)} parcels collapsed at -{negative_buffer_m}m, applying -5m / raw fallback.")
+            half_buf = metric_gdf.loc[collapsed, 'geometry'].buffer(-negative_buffer_m * 0.5)
+            buffered_geoms[collapsed] = half_buf
+            still_collapsed = buffered_geoms.is_empty
+            if still_collapsed.any():
+                buffered_geoms[still_collapsed] = metric_gdf.loc[still_collapsed, 'geometry']
     else:
-        # representative_point is guaranteed to be strictly inside the polygon
-        point_geoms = balanced_gdf.geometry.representative_point()
+        buffered_geoms = metric_gdf.geometry
+
+    if sampling_method == "centroid":
+        point_geoms_metric = buffered_geoms.centroid
+    else:
+        point_geoms_metric = buffered_geoms.representative_point()
+
+    point_geoms = gpd.GeoSeries(point_geoms_metric, crs="EPSG:3857").to_crs(gdf.crs)
 
     # 7. Build integer crop_id mapping
     sorted_unique_crops = sorted(balanced_gdf['standard_crop'].unique().tolist())
@@ -180,6 +196,7 @@ def main():
     parser.add_argument('--max_samples_per_class', type=int, default=2500, help="Maximum samples per crop class (default: 2500)")
     parser.add_argument('--min_samples_per_class', type=int, default=20, help="Minimum samples threshold per class (default: 20)")
     parser.add_argument('--sampling_method', choices=['representative', 'centroid'], default='representative', help="Point placement method")
+    parser.add_argument('--negative_buffer_m', type=float, default=10.0, help="Negative buffer in meters to avoid boundary/mixed pixels (default: 10.0m)")
     parser.add_argument('--mapping_json', default=None, help="Optional JSON dictionary file for merging subcategories")
     parser.add_argument('--target_crs', default='EPSG:4326', help="Target CRS (default: EPSG:4326)")
 
@@ -194,6 +211,7 @@ def main():
         max_samples_per_class=args.max_samples_per_class,
         min_samples_per_class=args.min_samples_per_class,
         sampling_method=args.sampling_method,
+        negative_buffer_m=args.negative_buffer_m,
         mapping_json_path=args.mapping_json,
         target_crs=args.target_crs
     )
