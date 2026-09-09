@@ -130,12 +130,14 @@ def discover_available_tracks() -> List[str]:
 def run_pipeline(
     track: str,
     seg_mode: str = 'slic',
-    classifier_model: str = 'mlpxgb_presto',
+    classifier_model: str = 'mlpxgb_presto_s1s2',
     stage: Optional[str] = None,
     mlp_weight: float = 0.65,
     s1_override: Optional[str] = None,
     s2_override: Optional[str] = None,
-    lpis_vector: Optional[str] = None
+    lpis_vector: Optional[str] = None,
+    slic_segment_ha: Optional[float] = None,
+    slic_compactness: float = 0.08
 ):
     norm_track = track.replace('\\', '/')
     country = norm_track.split('/')[0].upper() if '/' in norm_track else track.upper()
@@ -181,17 +183,26 @@ def run_pipeline(
     # Primary multimodal SOTA engine (S1 + S2 + Presto + MLP + XGBoost)
     if classifier_model in ['mlpxgb_presto_s1s2', 's1s2']:
         s1s2_mod = importlib.import_module("classifier_mlpxgb_presto_S1S2")
+        pipeline = s1s2_mod.ProcessingPipelineS1S2(
+            track=norm_track,
+            seg_mode=seg_mode,
+            mlp_weight=mlp_weight,
+            s1_override=s1_override,
+            s2_override=s2_override,
+            lpis_vector=lpis_vector,
+            slic_segment_ha=slic_segment_ha,
+            slic_compactness=slic_compactness
+        )
     else:
         s1s2_mod = importlib.import_module("classifier_mlpxgb_presto")
-
-    pipeline = s1s2_mod.ProcessingPipelineS1S2(
-        track=norm_track,
-        seg_mode=seg_mode,
-        mlp_weight=mlp_weight,
-        s1_override=s1_override,
-        s2_override=s2_override,
-        lpis_vector=lpis_vector
-    )
+        pipeline = s1s2_mod.ProcessingPipelineS1S2(
+            track=norm_track,
+            seg_mode=seg_mode,
+            mlp_weight=mlp_weight,
+            s1_override=s1_override,
+            s2_override=s2_override,
+            lpis_vector=lpis_vector
+        )
 
     if stage is None:
         interactive_menu(pipeline, country, norm_track, classifier_model)
@@ -452,6 +463,8 @@ Examples:
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 GeoTIFF raster")
     parser.add_argument('--s2_raster', default=None, help="Override path to Sentinel-2 Multi-temporal GeoTIFF raster")
     parser.add_argument('--lpis_vector', default=None, help="Path to official LPIS parcel vector file (.shp, .gpkg)")
+    parser.add_argument('--slic_segment_ha', type=float, default=None, help="Target superpixel parcel area in hectares for SLIC (default: adaptive, 0.35 ha for PT/ES/PL, 0.75 ha for NL/FR/DE)")
+    parser.add_argument('--slic_compactness', type=float, default=0.08, help="SLIC superpixel boundary compactness (default: 0.08)")
 
     args = parser.parse_args()
 
@@ -476,7 +489,9 @@ Examples:
                         mlp_weight=args.mlp_weight,
                         s1_override=args.s1_raster,
                         s2_override=args.s2_raster,
-                        lpis_vector=args.lpis_vector
+                        lpis_vector=args.lpis_vector,
+                        slic_segment_ha=args.slic_segment_ha,
+                        slic_compactness=args.slic_compactness
                     )
                 return
         parser.error("Either --track (-t) or --country (-c) must be specified.")
@@ -489,7 +504,9 @@ Examples:
         mlp_weight=args.mlp_weight,
         s1_override=args.s1_raster,
         s2_override=args.s2_raster,
-        lpis_vector=args.lpis_vector
+        lpis_vector=args.lpis_vector,
+        slic_segment_ha=args.slic_segment_ha,
+        slic_compactness=args.slic_compactness
     )
 
 

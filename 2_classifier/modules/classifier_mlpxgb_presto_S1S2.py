@@ -996,20 +996,37 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
         if not np.any(valid_mask):
             return x, y, None, None
 
-        img_norm = img_as_float(img)
+        # Multi-band robust 2-98% percentile min-max scaling per channel
+        norm_bands = []
+        for b_arr in img_list:
+            v_pix = b_arr[valid_mask]
+            if len(v_pix) > 0:
+                p2 = float(np.percentile(v_pix, 2.0))
+                p98 = float(np.percentile(v_pix, 98.0))
+                if (p98 - p2) > 1e-6:
+                    scaled = np.clip((b_arr - p2) / (p98 - p2), 0.0, 1.0)
+                else:
+                    scaled = np.zeros_like(b_arr, dtype=np.float64)
+            else:
+                scaled = np.zeros_like(b_arr, dtype=np.float64)
+            norm_bands.append(scaled.astype(np.float64))
+
+        img_norm = np.dstack(norm_bands)
         tile_size = params.get('tile_size', 2048)
         max_tile_pixels = (tile_size + 2 * buffer) ** 2
-        pixels_per_segment = max_tile_pixels / params.get('n_segments', 32000)
+        pixels_per_segment = params.get('pixels_per_segment', max_tile_pixels / params.get('n_segments', 32000))
         active_pixels = np.sum(valid_mask)
         n_segments_dynamic = max(1, int(active_pixels / pixels_per_segment))
 
         segments_buf = slic(
             img_norm,
             n_segments=n_segments_dynamic,
-            compactness=params.get('compactness', 0.05),
-            sigma=params.get('slic_sigma', 1.5),
+            compactness=params.get('compactness', 0.08),
+            sigma=params.get('slic_sigma', 1.2),
             start_label=1,
-            mask=valid_mask
+            mask=valid_mask,
+            enforce_connectivity=True,
+            min_size_factor=0.25
         )
         segments_buf[~valid_mask] = 0
 
@@ -1030,7 +1047,17 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
 # =====================================================================
 
 class ProcessingPipelineS1S2:
-    def __init__(self, track: str, seg_mode: str = 'slic', mlp_weight: float = 0.65, s1_override: Optional[str] = None, s2_override: Optional[str] = None, lpis_vector: Optional[str] = None):
+    def __init__(
+        self,
+        track: str,
+        seg_mode: str = 'slic',
+        mlp_weight: float = 0.65,
+        s1_override: Optional[str] = None,
+        s2_override: Optional[str] = None,
+        lpis_vector: Optional[str] = None,
+        slic_segment_ha: Optional[float] = None,
+        slic_compactness: float = 0.08
+    ):
         self.track = track
         self.seg_mode = seg_mode.lower()
         self.mlp_weight = mlp_weight
@@ -1039,6 +1066,16 @@ class ProcessingPipelineS1S2:
         norm_track = track.replace('\\', '/')
         self.country = norm_track.split('/')[0].upper() if '/' in norm_track else track.upper()
         self.total_stages = TOTAL_STAGES
+
+        # Regional adaptive scale: fragmented parcel landscapes (PT, ES, IT, GR, PL) require finer superpixels
+        if slic_segment_ha is not None:
+            self.slic_segment_ha = float(slic_segment_ha)
+        else:
+            if self.country in ['PT', 'ES', 'IT', 'GR', 'PL']:
+                self.slic_segment_ha = 0.35  # ~35 pixels at 10m (~60m x 60m)
+            else:
+                self.slic_segment_ha = 0.75  # ~75 pixels at 10m (~87m x 87m) for NL/FR/DE
+        self.slic_compactness = float(slic_compactness)
 
         self.sanitized_track = norm_track.replace('/', '_')
         if not self.sanitized_track.startswith(self.country + "_"):
@@ -1321,6 +1358,125 @@ class ProcessingPipelineS1S2:
             if shps: return shps[0]
         return None
 
+    def _create_multimodal_pheno_composite(self) -> Path:
+        """
+        Creates a high-discriminative 5-channel multimodal phenological and polarimetric composite
+        specifically optimized for superpixel segmentation (SLIC/SAM).
+        Channels:
+          1: Max NDVI across Sentinel-2 multi-temporal series (vegetation/non-vegetation boundary).
+          2: NDVI Amplitude (max NDVI - min NDVI, separates annual crop phenology from permanent grassland/forest).
+          3: Peak-season Narrow NIR (B8A) reflectance (canopy structure and density).
+          4: Temporal mean Sentinel-1 VH backscatter in linear scale sigma0 (structural field boundaries, hedges, ditches).
+          5: Temporal mean SAR Cross-Ratio (VH_dB - VV_dB, volumetric vs surface scattering).
+        Gracefully handles optical-only or SAR-only inputs if one modality is absent.
+        """
+        composite_tif = self.seg_dir / f"{self.file_prefix}_pheno_slic_composite.tif"
+        if composite_tif.exists() and composite_tif.stat().st_size > 1024:
+            return composite_tif
+
+        print("    [INFO] Generating 5-channel multimodal phenological & SAR composite for SLIC...")
+        ds_s1 = gdal.Open(str(self.s1_ras)) if (self.s1_ras and self.s1_ras.exists()) else None
+        ds_s2 = gdal.Open(str(self.s2_ras)) if (self.s2_ras and self.s2_ras.exists()) else None
+        ref_ds = ds_s2 if ds_s2 else ds_s1
+        if not ref_ds:
+            raise FileNotFoundError("Neither Sentinel-1 nor Sentinel-2 raster is available for composite creation.")
+
+        cols = ref_ds.RasterXSize
+        rows = ref_ds.RasterYSize
+        gt = ref_ds.GetGeoTransform()
+        proj = ref_ds.GetProjection()
+
+        nbands_s1 = ds_s1.RasterCount if ds_s1 else 0
+        nbands_s2 = ds_s2.RasterCount if ds_s2 else 0
+        num_dates_s1 = nbands_s1 // 2 if nbands_s1 >= 2 else 0
+        num_dates_s2 = nbands_s2 // 9 if nbands_s2 >= 9 else 0
+
+        driver = gdal.GetDriverByName('GTiff')
+        out_ds = driver.Create(
+            str(composite_tif), cols, rows, 5, gdal.GDT_Float32,
+            options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
+        )
+        out_ds.SetGeoTransform(gt)
+        out_ds.SetProjection(proj)
+
+        tile_size = 2048
+        for y in range(0, rows, tile_size):
+            for x in range(0, cols, tile_size):
+                xsize = min(tile_size, cols - x)
+                ysize = min(tile_size, rows - y)
+
+                c1_max_ndvi = np.zeros((ysize, xsize), dtype=np.float32)
+                c2_amp_ndvi = np.zeros((ysize, xsize), dtype=np.float32)
+                c3_nir_mean = np.zeros((ysize, xsize), dtype=np.float32)
+                c4_sar_vh   = np.zeros((ysize, xsize), dtype=np.float32)
+                c5_sar_cr   = np.zeros((ysize, xsize), dtype=np.float32)
+
+                # 1. Optical Sentinel-2 Processing
+                if ds_s2 and num_dates_s2 > 0:
+                    ndvi_dates = []
+                    b8a_dates = []
+                    for d in range(num_dates_s2):
+                        b4_arr = ds_s2.GetRasterBand(d * 9 + 3).ReadAsArray(x, y, xsize, ysize).astype(np.float32) / 10000.0
+                        b8a_arr = ds_s2.GetRasterBand(d * 9 + 7).ReadAsArray(x, y, xsize, ysize).astype(np.float32) / 10000.0
+                        b4_arr = np.nan_to_num(b4_arr, nan=0.0)
+                        b8a_arr = np.nan_to_num(b8a_arr, nan=0.0)
+                        ndvi = (b8a_arr - b4_arr) / (b8a_arr + b4_arr + 1e-6)
+                        ndvi = np.clip(ndvi, -1.0, 1.0)
+                        ndvi_dates.append(ndvi)
+                        b8a_dates.append(b8a_arr)
+
+                    ndvi_stack = np.stack(ndvi_dates, axis=0)
+                    b8a_stack = np.stack(b8a_dates, axis=0)
+
+                    c1_max_ndvi = np.max(ndvi_stack, axis=0)
+                    c2_amp_ndvi = c1_max_ndvi - np.min(ndvi_stack, axis=0)
+                    c3_nir_mean = np.mean(b8a_stack, axis=0)
+
+                # 2. Radar Sentinel-1 Processing
+                if ds_s1 and num_dates_s1 > 0:
+                    vh_lin_dates = []
+                    cr_dates = []
+                    for d in range(num_dates_s1):
+                        vh_db = ds_s1.GetRasterBand(d + 1).ReadAsArray(x, y, xsize, ysize).astype(np.float32)
+                        vv_db = ds_s1.GetRasterBand(num_dates_s1 + d + 1).ReadAsArray(x, y, xsize, ysize).astype(np.float32)
+                        vh_db = np.nan_to_num(vh_db, nan=-30.0)
+                        vv_db = np.nan_to_num(vv_db, nan=-30.0)
+
+                        vh_lin = np.power(10.0, np.clip(vh_db, -35.0, 5.0) / 10.0)
+                        cr = np.clip(vh_db - vv_db, -20.0, 5.0)
+                        vh_lin_dates.append(vh_lin)
+                        cr_dates.append(cr)
+
+                    c4_sar_vh = np.mean(np.stack(vh_lin_dates, axis=0), axis=0)
+                    c5_sar_cr = np.mean(np.stack(cr_dates, axis=0), axis=0)
+                elif ds_s2 and num_dates_s2 > 0:
+                    # Optical fallback for bands 4 and 5 if S1 absent: B3 (Green) & B11 (SWIR)
+                    b3_dates, b11_dates = [], []
+                    for d in range(num_dates_s2):
+                        b3_dates.append(ds_s2.GetRasterBand(d * 9 + 2).ReadAsArray(x, y, xsize, ysize).astype(np.float32) / 10000.0)
+                        b11_dates.append(ds_s2.GetRasterBand(d * 9 + 8).ReadAsArray(x, y, xsize, ysize).astype(np.float32) / 10000.0)
+                    c4_sar_vh = np.mean(np.stack(b3_dates, axis=0), axis=0)
+                    c5_sar_cr = np.mean(np.stack(b11_dates, axis=0), axis=0)
+                else:
+                    # SAR only fallback for bands 1-3 if S2 absent
+                    c1_max_ndvi = c4_sar_vh
+                    c2_amp_ndvi = c5_sar_cr
+                    c3_nir_mean = c4_sar_vh
+
+                out_ds.GetRasterBand(1).WriteArray(c1_max_ndvi, x, y)
+                out_ds.GetRasterBand(2).WriteArray(c2_amp_ndvi, x, y)
+                out_ds.GetRasterBand(3).WriteArray(c3_nir_mean, x, y)
+                out_ds.GetRasterBand(4).WriteArray(c4_sar_vh, x, y)
+                out_ds.GetRasterBand(5).WriteArray(c5_sar_cr, x, y)
+
+        out_ds.FlushCache()
+        out_ds = None
+        ds_s1 = None
+        ds_s2 = None
+        ref_ds = None
+        print(f"    [OK] Multimodal phenological composite created: {composite_tif.name}")
+        return composite_tif
+
     def _create_summed_composite(self, ref_ras: Path) -> Path:
         print("    [INFO] Creating high-SNR summed composite for segmentation...")
         composite_tif = self.seg_dir / f"{self.file_prefix}_summed_composite.tif"
@@ -1369,6 +1525,116 @@ class ProcessingPipelineS1S2:
         out_ds = None
         ds = None
         return composite_tif
+
+    def _stitch_tile_seams(self, seg_ds, tile_size: int, cols: int, rows: int, comp_path: Path):
+        """
+        Fast Disjoint Set Union (Union-Find) boundary stitching pass across tile borders.
+        Merges adjacent segment labels on vertical (x=2048, 4096...) and horizontal (y=2048, 4096...)
+        tile seams if they belong to the same continuous field with consistent spectral NDVI.
+        """
+        print("    [TILE STITCHING] Eliminating tile seam artifacts across block boundaries...")
+        seg_band = seg_ds.GetRasterBand(1)
+        ds_comp = gdal.Open(str(comp_path), gdal.GA_ReadOnly) if comp_path.exists() else None
+        ndvi_band = ds_comp.GetRasterBand(1) if ds_comp else None
+
+        parent = {}
+
+        def find(i):
+            path = []
+            while parent.get(i, i) != i:
+                path.append(i)
+                i = parent[i]
+            for node in path:
+                parent[node] = i
+            return i
+
+        def union(i, j):
+            root_i = find(i)
+            root_j = find(j)
+            if root_i != root_j:
+                parent[root_j] = root_i
+
+        merges_count = 0
+
+        # 1. Check vertical boundaries (along x = tile_size, 2*tile_size, ...)
+        for x in range(tile_size, cols, tile_size):
+            seg_col = seg_band.ReadAsArray(x - 1, 0, 2, rows)
+            if seg_col is None:
+                continue
+            left_ids = seg_col[:, 0]
+            right_ids = seg_col[:, 1]
+            valid = (left_ids > 0) & (right_ids > 0) & (left_ids != right_ids)
+
+            if np.any(valid):
+                if ndvi_band:
+                    ndvi_col = ndvi_band.ReadAsArray(x - 1, 0, 2, rows)
+                    ndvi_diff = np.abs(ndvi_col[:, 0] - ndvi_col[:, 1])
+                    valid = valid & (ndvi_diff < 0.12)
+
+                cand_left = left_ids[valid]
+                cand_right = right_ids[valid]
+                pairs, counts = np.unique(np.column_stack([cand_left, cand_right]), axis=0, return_counts=True)
+                for (lid, rid), cnt in zip(pairs, counts):
+                    if cnt >= 2:
+                        union(int(lid), int(rid))
+                        merges_count += 1
+
+        # 2. Check horizontal boundaries (along y = tile_size, 2*tile_size, ...)
+        for y in range(tile_size, rows, tile_size):
+            seg_row = seg_band.ReadAsArray(0, y - 1, cols, 2)
+            if seg_row is None:
+                continue
+            top_ids = seg_row[0, :]
+            bot_ids = seg_row[1, :]
+            valid = (top_ids > 0) & (bot_ids > 0) & (top_ids != bot_ids)
+
+            if np.any(valid):
+                if ndvi_band:
+                    ndvi_row = ndvi_band.ReadAsArray(0, y - 1, cols, 2)
+                    ndvi_diff = np.abs(ndvi_row[0, :] - ndvi_row[1, :])
+                    valid = valid & (ndvi_diff < 0.12)
+
+                cand_top = top_ids[valid]
+                cand_bot = bot_ids[valid]
+                pairs, counts = np.unique(np.column_stack([cand_top, cand_bot]), axis=0, return_counts=True)
+                for (tid, bid), cnt in zip(pairs, counts):
+                    if cnt >= 2:
+                        union(int(tid), int(bid))
+                        merges_count += 1
+
+        if ds_comp:
+            ds_comp = None
+
+        if merges_count == 0 or not parent:
+            print("    [TILE STITCHING] No boundary seam merges required.")
+            return
+
+        # Flatten parent mappings
+        remap = {}
+        for k in parent.keys():
+            root = find(k)
+            if root != k:
+                remap[int(k)] = int(root)
+
+        print(f"    [TILE STITCHING] Merging {len(remap):,} boundary-fractured segment halves into unified parcels...")
+        chunk_sz = 4096
+        remap_keys_set = set(remap.keys())
+        for y in range(0, rows, chunk_sz):
+            for x in range(0, cols, chunk_sz):
+                xs = min(chunk_sz, cols - x)
+                ys = min(chunk_sz, rows - y)
+                block = seg_band.ReadAsArray(x, y, xs, ys)
+                if block is None:
+                    continue
+                u_ids = np.unique(block)
+                intersect_keys = [k for k in u_ids if k in remap_keys_set]
+                if intersect_keys:
+                    for old_id in intersect_keys:
+                        block[block == old_id] = remap[old_id]
+                    seg_band.WriteArray(block, x, y)
+
+        seg_band.FlushCache()
+        print(f"    [TILE STITCHING COMPLETE] Tile seams successfully stitched.")
 
     # --- Stage 1: Footprint ---
     def stage_1_generate_footprint(self, force_recompute=False):
@@ -1542,21 +1808,29 @@ class ProcessingPipelineS1S2:
             else:
                 print(f"    [WARNING] LPIS vector dataset not found. Falling back to SLIC.")
 
-        # Create composite if needed for SLIC/SAM
+        # Create multimodal composite for SLIC/SAM (5-channel pheno-SAR composite)
         try:
-            comp_ras = self._create_summed_composite(ref_ras)
-        except Exception:
-            comp_ras = ref_ras
+            comp_ras = self._create_multimodal_pheno_composite()
+        except Exception as e:
+            print(f"    [WARNING] Multimodal phenological composite failed ({e}), falling back to summed composite.")
+            try:
+                comp_ras = self._create_summed_composite(ref_ras)
+            except Exception:
+                comp_ras = ref_ras
 
         if self.seg_mode == 'sam':
             self._run_python_segmentation_tiled(comp_ras, self.stage1_params, 'python_sam')
         else:
+            pixels_per_seg = max(10, int((self.slic_segment_ha * 10000.0) / 100.0))
+            n_segments_tile = max(500, int(((2048 + 128) ** 2) / pixels_per_seg))
+            print(f"    [SLIC TUNING] Target parcel size: {self.slic_segment_ha:.2f} ha (~{pixels_per_seg} px) | Compactness: {self.slic_compactness:.2f}")
             slic_params = {
                 'tile_size': 2048,
                 'buffer': 64,
-                'n_segments': 32000,
-                'compactness': 0.05,
-                'slic_sigma': 1.5
+                'n_segments': n_segments_tile,
+                'pixels_per_segment': pixels_per_seg,
+                'compactness': self.slic_compactness,
+                'slic_sigma': 1.2
             }
             self._run_python_segmentation_tiled(comp_ras, slic_params, 'python_slic')
 
@@ -1652,6 +1926,10 @@ class ProcessingPipelineS1S2:
                             xsize_valid, ysize_valid = task[2], task[3]
                             out_band.WriteArray(np.zeros((ysize_valid, xsize_valid), dtype=np.int32), x, y)
                             break
+
+        # Stitch tile seams to eliminate boundary-cut parcel fracturing
+        if not is_sam:
+            self._stitch_tile_seams(out_ds, tile_size, cols, rows, ras_path)
 
         out_band.FlushCache()
         out_ds = None
@@ -2766,6 +3044,8 @@ def main():
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 VH/VV GeoTIFF raster")
     parser.add_argument('--s2_raster', default=None, help="Override path to Sentinel-2 Multi-temporal GeoTIFF raster")
     parser.add_argument('--lpis_vector', default=None, help="Path to official LPIS cadastral parcel vector file (.shp, .gpkg) for --seg_mode lpis")
+    parser.add_argument('--slic_segment_ha', type=float, default=None, help="Target superpixel parcel area in hectares for SLIC (default: adaptive, 0.35 ha for PT/ES/PL, 0.75 ha for NL/FR/DE)")
+    parser.add_argument('--slic_compactness', type=float, default=0.08, help="SLIC superpixel boundary compactness (default: 0.08)")
 
     args = parser.parse_args()
 
@@ -2775,7 +3055,9 @@ def main():
         mlp_weight=args.mlp_weight,
         s1_override=args.s1_raster,
         s2_override=args.s2_raster,
-        lpis_vector=args.lpis_vector
+        lpis_vector=args.lpis_vector,
+        slic_segment_ha=args.slic_segment_ha,
+        slic_compactness=args.slic_compactness
     )
 
     if args.stage is None:
