@@ -3037,7 +3037,8 @@ def main_menu(pipeline):
 
 def main():
     parser = argparse.ArgumentParser(description="Multimodal S1 (Sigma0) + S2 Crop Classification with Unified MLP + XGBoost Fusion Ensemble.")
-    parser.add_argument('--track', required=True, help="Track/orbit identifier, e.g. NL/orbit_88, PT/orbit_161, PL/orbit_12")
+    parser.add_argument('-t', '--track', default=None, help="Track/orbit identifier, e.g. NL/orbit_88, PT/orbit_147, PL/orbit_12")
+    parser.add_argument('-c', '--country', default=None, help="Country code, e.g. PT, NL, PL (processes all orbits sequentially)")
     parser.add_argument('--stage', default=None, help="Stage to run: 'A' (all 1-8), or single stage '1'..'8' (legacy '0'..'7' supported)")
     parser.add_argument('--seg_mode', default='slic', choices=['sam', 'slic', 'lpis'], help="Segmentation mode (default: slic)")
     parser.add_argument('--mlp_weight', type=float, default=0.65, help="Weight of MLP in fusion ensemble (0.0 to 1.0, default: 0.65)")
@@ -3049,31 +3050,44 @@ def main():
 
     args = parser.parse_args()
 
-    pipeline = ProcessingPipelineS1S2(
-        track=args.track,
-        seg_mode=args.seg_mode,
-        mlp_weight=args.mlp_weight,
-        s1_override=args.s1_raster,
-        s2_override=args.s2_raster,
-        lpis_vector=args.lpis_vector,
-        slic_segment_ha=args.slic_segment_ha,
-        slic_compactness=args.slic_compactness
-    )
+    def _exec_pipeline(tr):
+        pipeline = ProcessingPipelineS1S2(
+            track=tr,
+            seg_mode=args.seg_mode,
+            mlp_weight=args.mlp_weight,
+            s1_override=args.s1_raster,
+            s2_override=args.s2_raster,
+            lpis_vector=args.lpis_vector,
+            slic_segment_ha=args.slic_segment_ha,
+            slic_compactness=args.slic_compactness
+        )
 
-    if args.stage is None:
-        main_menu(pipeline)
-    else:
-        choice = args.stage.strip().upper()
-        if choice == 'A':
-            pipeline.run_all()
-        elif choice in ['1', '0']: pipeline.stage_1_generate_footprint(True)
-        elif choice == '2': pipeline.stage_2_segmentation(True)
-        elif choice == '3': pipeline.stage_3_split_samples(True)
-        elif choice == '4': pipeline.stage_4_selection(True)
-        elif choice == '5': pipeline.stage_5_train_classifier(True)
-        elif choice == '6': pipeline.stage_6_classify_vector(True)
-        elif choice == '7': pipeline.stage_7_mask_classification(True)
-        elif choice == '8': pipeline.stage_8_calculate_metrics()
+        if args.stage is None:
+            main_menu(pipeline)
+        else:
+            choice = args.stage.strip().upper()
+            if choice == 'A':
+                pipeline.run_all()
+            elif choice in ['1', '0']: pipeline.stage_1_generate_footprint(True)
+            elif choice == '2': pipeline.stage_2_segmentation(True)
+            elif choice == '3': pipeline.stage_3_split_samples(True)
+            elif choice == '4': pipeline.stage_4_selection(True)
+            elif choice == '5': pipeline.stage_5_train_classifier(True)
+            elif choice == '6': pipeline.stage_6_classify_vector(True)
+            elif choice == '7': pipeline.stage_7_mask_classification(True)
+            elif choice == '8': pipeline.stage_8_calculate_metrics()
+
+    if not args.track:
+        if args.country:
+            c_dir = base_dir / args.country.upper()
+            if c_dir.exists():
+                orbs = [d.name for d in c_dir.glob("orbit_*") if d.is_dir()]
+                for o in orbs:
+                    _exec_pipeline(f"{args.country.upper()}/{o}")
+                return
+        parser.error("Either --track (-t) or --country (-c) must be specified.")
+
+    _exec_pipeline(args.track)
 
 
 if __name__ == '__main__':
