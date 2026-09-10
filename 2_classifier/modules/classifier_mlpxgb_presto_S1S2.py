@@ -1012,19 +1012,21 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
             norm_bands.append(scaled.astype(np.float64))
 
         img_norm = np.dstack(norm_bands)
-        tile_size = params.get('tile_size', 2048)
-        max_tile_pixels = (tile_size + 2 * buffer) ** 2
-        pixels_per_segment = params.get('pixels_per_segment', max_tile_pixels / params.get('n_segments', 32000))
-        active_pixels = np.sum(valid_mask)
-        n_segments_dynamic = max(1, int(active_pixels / pixels_per_segment))
+        tile_size = params.get('tile_size', 1024)
+        total_tile_pixels = xsize_buf * ysize_buf
+        pixels_per_segment = params.get('pixels_per_segment', 50.0)
+        n_segments_tile = max(10, int(total_tile_pixels / max(10.0, pixels_per_segment)))
+        n_segments_tile = min(n_segments_tile, 40000)
 
+        # Pass mask=None to avoid scikit-image allocating an (N, N) distance matrix in _get_mask_centroids,
+        # which causes 136 GiB RAM allocations when N > 50,000. Grid centroids use O(1) RAM.
         segments_buf = slic(
             img_norm,
-            n_segments=n_segments_dynamic,
+            n_segments=n_segments_tile,
             compactness=params.get('compactness', 0.08),
             sigma=params.get('slic_sigma', 1.2),
             start_label=1,
-            mask=valid_mask,
+            mask=None,
             enforce_connectivity=True,
             min_size_factor=0.25
         )
@@ -1822,11 +1824,14 @@ class ProcessingPipelineS1S2:
             self._run_python_segmentation_tiled(comp_ras, self.stage1_params, 'python_sam')
         else:
             pixels_per_seg = max(10, int((self.slic_segment_ha * 10000.0) / 100.0))
-            n_segments_tile = max(500, int(((2048 + 128) ** 2) / pixels_per_seg))
+            tile_sz = 1024
+            buf_sz = 32
+            max_tile_pixels = (tile_sz + 2 * buf_sz) ** 2
+            n_segments_tile = max(100, int(max_tile_pixels / pixels_per_seg))
             print(f"    [SLIC TUNING] Target parcel size: {self.slic_segment_ha:.2f} ha (~{pixels_per_seg} px) | Compactness: {self.slic_compactness:.2f}")
             slic_params = {
-                'tile_size': 2048,
-                'buffer': 64,
+                'tile_size': tile_sz,
+                'buffer': buf_sz,
                 'n_segments': n_segments_tile,
                 'pixels_per_segment': pixels_per_seg,
                 'compactness': self.slic_compactness,

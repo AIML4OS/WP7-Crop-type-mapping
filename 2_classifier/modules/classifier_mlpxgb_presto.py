@@ -821,18 +821,18 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
 
         img_norm = img_as_float(img)
         tile_size = params.get('tile_size', 2048)
-        max_tile_pixels = (tile_size + 2 * buffer) ** 2
+        total_tile_pixels = xsize_buf * ysize_buf
         pixels_per_segment = max_tile_pixels / params.get('n_segments', 32000)
-        active_pixels = np.sum(valid_mask)
-        n_segments_dynamic = max(1, int(active_pixels / pixels_per_segment))
+        n_segments_tile = max(10, int(total_tile_pixels / max(10.0, pixels_per_segment)))
+        n_segments_tile = min(n_segments_tile, 40000)
 
         segments_buf = slic(
             img_norm,
-            n_segments=n_segments_dynamic,
+            n_segments=n_segments_tile,
             compactness=params.get('compactness', 0.05),
             sigma=params.get('slic_sigma', 1.5),
             start_label=1,
-            mask=valid_mask
+            mask=None
         )
         segments_buf[~valid_mask] = 0
 
