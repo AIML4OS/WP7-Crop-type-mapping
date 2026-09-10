@@ -2206,17 +2206,26 @@ class ProcessingPipelineS1S2:
         )
 
         n_jobs = int(os.environ.get("OMP_NUM_THREADS", 4))
-        xgb_clf = xgb.XGBClassifier(
-            n_estimators=350,
-            max_depth=7,
-            learning_rate=0.08,
-            subsample=0.85,
-            colsample_bytree=0.85,
-            tree_method='hist',
-            random_state=42,
-            n_jobs=n_jobs,
-            eval_metric='mlogloss'
-        )
+        if HAS_XGBOOST:
+            xgb_clf = xgb.XGBClassifier(
+                n_estimators=350,
+                max_depth=7,
+                learning_rate=0.08,
+                subsample=0.85,
+                colsample_bytree=0.85,
+                tree_method='hist',
+                random_state=42,
+                n_jobs=n_jobs,
+                eval_metric='mlogloss'
+            )
+        else:
+            print("    [INFO] XGBoost not found in environment; using sklearn.ensemble.HistGradientBoostingClassifier.")
+            xgb_clf = HistGradientBoostingClassifier(
+                max_iter=300,
+                learning_rate=0.08,
+                max_depth=7,
+                random_state=42
+            )
 
         ensemble = EnsembleClassifier(mlp_model=mlp, xgb_model=xgb_clf, weight_mlp=self.mlp_weight)
         ensemble.fit(X_scaled, y)
