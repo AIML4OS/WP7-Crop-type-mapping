@@ -1853,8 +1853,11 @@ class ProcessingPipelineS1S2:
                 sub_seg = seg_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
                 foot_arr = foot_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
 
-                u_sids = np.unique(sub_seg)
-                u_sids = u_sids[u_sids > 0]
+                u_all, inv_arr = np.unique(sub_seg, return_inverse=True)
+                has_zero = (len(u_all) > 0 and u_all[0] == 0)
+                offset = 1 if has_zero else 0
+                u_sids = u_all[offset:]
+
                 if len(u_sids) == 0:
                     if tile_cnt % 25 == 0 or tile_cnt == total_tiles:
                         elapsed = time.time() - t_infer_start
@@ -1868,16 +1871,18 @@ class ProcessingPipelineS1S2:
                         sys.stdout.flush()
                     continue
 
-                flat_labels = sub_seg.ravel()
-                counts = np.bincount(flat_labels)
-                valid_counts = np.maximum(counts[u_sids], 1)
+                flat_inv = inv_arr.ravel()
+                counts = np.bincount(flat_inv)
+                valid_counts = np.maximum(counts[offset:], 1)
 
                 feat_blocks = []
 
-                # Centroids calculation
-                centers = ndimage.center_of_mass(np.ones_like(sub_seg), labels=sub_seg, index=u_sids)
-                cy_arr = np.array([c[0] for c in centers], dtype=np.float64) + y
-                cx_arr = np.array([c[1] for c in centers], dtype=np.float64) + x
+                # Centroids vectorized via local bincount (fast O(1) memory)
+                yy, xx = np.indices((ysize, xsize), dtype=np.float32)
+                sum_y = np.bincount(flat_inv, weights=yy.ravel())[offset:]
+                sum_x = np.bincount(flat_inv, weights=xx.ravel())[offset:]
+                cy_arr = (sum_y / valid_counts) + y
+                cx_arr = (sum_x / valid_counts) + x
                 mx_arr = gt[0] + cx_arr * gt[1] + cy_arr * gt[2]
                 my_arr = gt[3] + cx_arr * gt[4] + cy_arr * gt[5]
                 lons, lats = transformer_to_wgs84.transform(mx_arr, my_arr)
@@ -1893,8 +1898,8 @@ class ProcessingPipelineS1S2:
                         s1_tile = s1_tile[np.newaxis, ...]
                     s1_means = np.zeros((len(u_sids), nbands_s1), dtype=np.float32)
                     for b in range(nbands_s1):
-                        sums = np.bincount(flat_labels, weights=s1_tile[b].ravel())
-                        s1_means[:, b] = sums[u_sids] / valid_counts
+                        sums = np.bincount(flat_inv, weights=s1_tile[b].ravel())
+                        s1_means[:, b] = sums[offset:] / valid_counts
 
                     s1_profiles = np.zeros((len(u_sids), num_dates_s1, 2), dtype=np.float32)
                     for d in range(num_dates_s1):
@@ -1913,8 +1918,8 @@ class ProcessingPipelineS1S2:
                         s2_tile = s2_tile[np.newaxis, ...]
                     s2_means = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
                     for b in range(nbands_s2):
-                        sums = np.bincount(flat_labels, weights=s2_tile[b].ravel())
-                        s2_means[:, b] = sums[u_sids] / valid_counts
+                        sums = np.bincount(flat_inv, weights=s2_tile[b].ravel())
+                        s2_means[:, b] = sums[offset:] / valid_counts
 
                     s2_profiles = np.zeros((len(u_sids), num_dates_s2, 9), dtype=np.float32)
                     for d in range(num_dates_s2):
@@ -1945,15 +1950,14 @@ class ProcessingPipelineS1S2:
                 preds = clf.classes_[np.argmax(corr_probs, axis=1)]
                 confs = np.max(corr_probs, axis=1)
 
-                # O(1) Fast Vectorized LUT Remapping
-                max_sid = int(np.max(u_sids))
-                lut_pred = np.zeros(max_sid + 1, dtype=np.int32)
-                lut_conf = np.zeros(max_sid + 1, dtype=np.float32)
-                lut_pred[u_sids] = preds
-                lut_conf[u_sids] = confs
+                # Fast O(1) Local Compact LUT Remapping
+                lut_pred = np.zeros(len(u_all), dtype=np.int32)
+                lut_conf = np.zeros(len(u_all), dtype=np.float32)
+                lut_pred[offset:] = preds
+                lut_conf[offset:] = confs
 
-                pred_arr = lut_pred[sub_seg]
-                prob_arr = lut_conf[sub_seg]
+                pred_arr = lut_pred[inv_arr]
+                prob_arr = lut_conf[inv_arr]
 
                 pred_arr[foot_arr == 0] = 0
                 prob_arr[foot_arr == 0] = 0
