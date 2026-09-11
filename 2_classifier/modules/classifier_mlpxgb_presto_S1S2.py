@@ -1013,9 +1013,11 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
 
         img_norm = np.dstack(norm_bands)
         tile_size = params.get('tile_size', 1024)
-        total_tile_pixels = xsize_buf * ysize_buf
-        pixels_per_segment = params.get('pixels_per_segment', 50.0)
-        n_segments_tile = max(10, int(total_tile_pixels / max(10.0, pixels_per_segment)))
+        active_pixels = int(np.sum(valid_mask))
+        if active_pixels < 20:
+            return x, y, None, None
+        pixels_per_segment = params.get('pixels_per_segment', 75.0)
+        n_segments_tile = max(5, int(active_pixels / max(10.0, pixels_per_segment)))
         n_segments_tile = min(n_segments_tile, 40000)
 
         # Pass mask=None to avoid scikit-image allocating an (N, N) distance matrix in _get_mask_centroids,
@@ -1074,9 +1076,9 @@ class ProcessingPipelineS1S2:
             self.slic_segment_ha = float(slic_segment_ha)
         else:
             if self.country in ['PT', 'ES', 'IT', 'GR', 'PL']:
-                self.slic_segment_ha = 0.35  # ~35 pixels at 10m (~60m x 60m)
+                self.slic_segment_ha = 0.75  # ~75 pixels at 10m (~87m x 87m parcel size)
             else:
-                self.slic_segment_ha = 0.75  # ~75 pixels at 10m (~87m x 87m) for NL/FR/DE
+                self.slic_segment_ha = 1.25  # ~125 pixels at 10m (~112m x 112m) for NL/FR/DE
         self.slic_compactness = float(slic_compactness)
 
         self.sanitized_track = norm_track.replace('/', '_')
@@ -2055,6 +2057,7 @@ class ProcessingPipelineS1S2:
         accum_counts = {sid: 0 for sid in target_sids}
         accum_s1_sums = {sid: np.zeros(nbands_s1, dtype=np.float64) for sid in target_sids} if ds_s1 else {}
         accum_s2_sums = {sid: np.zeros(nbands_s2, dtype=np.float64) for sid in target_sids} if ds_s2 else {}
+        target_sids_set = set(target_sids)
 
         for y in range(0, rows, tile_size):
             for x in range(0, cols, tile_size):
@@ -2064,31 +2067,31 @@ class ProcessingPipelineS1S2:
                 sub_seg = seg_band.ReadAsArray(x, y, xsize, ysize)
                 if sub_seg is None:
                     continue
-                u_in_tile = np.unique(sub_seg)
-                present_sids = [int(s) for s in u_in_tile if s in target_sids]
-                if not present_sids:
+                u_in_tile, inv_arr = np.unique(sub_seg, return_inverse=True)
+                present_pairs = [(int(s), idx) for idx, s in enumerate(u_in_tile) if s in target_sids_set]
+                if not present_pairs:
                     continue
 
-                flat_labels = sub_seg.ravel()
-                counts = np.bincount(flat_labels)
-                for sid in present_sids:
-                    accum_counts[sid] += int(counts[sid])
+                flat_inv = inv_arr.ravel()
+                counts = np.bincount(flat_inv)
+                for sid, idx in present_pairs:
+                    accum_counts[sid] += int(counts[idx])
 
                 if ds_s1:
                     s1_tile = np.nan_to_num(ds_s1.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
                     if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
                     for b in range(nbands_s1):
-                        sums = np.bincount(flat_labels, weights=s1_tile[b].ravel())
-                        for sid in present_sids:
-                            accum_s1_sums[sid][b] += float(sums[sid])
+                        sums = np.bincount(flat_inv, weights=s1_tile[b].ravel())
+                        for sid, idx in present_pairs:
+                            accum_s1_sums[sid][b] += float(sums[idx])
 
                 if ds_s2:
                     s2_tile = np.nan_to_num(ds_s2.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
                     if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
                     for b in range(nbands_s2):
-                        sums = np.bincount(flat_labels, weights=s2_tile[b].ravel())
-                        for sid in present_sids:
-                            accum_s2_sums[sid][b] += float(sums[sid])
+                        sums = np.bincount(flat_inv, weights=s2_tile[b].ravel())
+                        for sid, idx in present_pairs:
+                            accum_s2_sums[sid][b] += float(sums[idx])
 
         print(f"    Vectorized chunk I/O completed in {time.time() - t_io_start:.1f}s.")
 
@@ -2362,8 +2365,11 @@ class ProcessingPipelineS1S2:
                 sub_seg = seg_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
                 foot_arr = foot_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
 
-                u_sids = np.unique(sub_seg)
-                u_sids = u_sids[u_sids > 0]
+                u_all, inv_arr = np.unique(sub_seg, return_inverse=True)
+                has_zero = (len(u_all) > 0 and u_all[0] == 0)
+                offset = 1 if has_zero else 0
+                u_sids = u_all[offset:]
+
                 if len(u_sids) == 0:
                     if tile_cnt % 25 == 0 or tile_cnt == total_tiles:
                         elapsed = time.time() - t_infer_start
@@ -2377,13 +2383,16 @@ class ProcessingPipelineS1S2:
                         sys.stdout.flush()
                     continue
 
-                flat_labels = sub_seg.ravel()
-                counts = np.bincount(flat_labels)
-                valid_counts = np.maximum(counts[u_sids], 1)
+                flat_inv = inv_arr.ravel()
+                counts = np.bincount(flat_inv)
+                valid_counts = np.maximum(counts[offset:], 1)
 
-                centers = ndimage.center_of_mass(np.ones_like(sub_seg), labels=sub_seg, index=u_sids)
-                cy_arr = np.array([c[0] for c in centers], dtype=np.float64) + y
-                cx_arr = np.array([c[1] for c in centers], dtype=np.float64) + x
+                # Vectorized centroids via local bincount (orders of magnitude faster than ndimage.center_of_mass)
+                yy, xx = np.indices((ysize, xsize), dtype=np.float32)
+                sum_y = np.bincount(flat_inv, weights=yy.ravel())[offset:]
+                sum_x = np.bincount(flat_inv, weights=xx.ravel())[offset:]
+                cy_arr = (sum_y / valid_counts) + y
+                cx_arr = (sum_x / valid_counts) + x
                 mx_arr = gt[0] + cx_arr * gt[1] + cy_arr * gt[2]
                 my_arr = gt[3] + cx_arr * gt[4] + cy_arr * gt[5]
                 lons, lats = transformer_to_wgs84.transform(mx_arr, my_arr)
@@ -2398,8 +2407,8 @@ class ProcessingPipelineS1S2:
                     if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
                     s1_means = np.zeros((len(u_sids), nbands_s1), dtype=np.float32)
                     for b in range(nbands_s1):
-                        sums = np.bincount(flat_labels, weights=s1_tile[b].ravel())
-                        s1_means[:, b] = sums[u_sids] / valid_counts
+                        sums = np.bincount(flat_inv, weights=s1_tile[b].ravel())
+                        s1_means[:, b] = sums[offset:] / valid_counts
 
                     s1_profiles = np.zeros((len(u_sids), num_dates_s1, 2), dtype=np.float32)
                     for d in range(num_dates_s1):
@@ -2417,8 +2426,8 @@ class ProcessingPipelineS1S2:
                     if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
                     s2_means = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
                     for b in range(nbands_s2):
-                        sums = np.bincount(flat_labels, weights=s2_tile[b].ravel())
-                        s2_means[:, b] = sums[u_sids] / valid_counts
+                        sums = np.bincount(flat_inv, weights=s2_tile[b].ravel())
+                        s2_means[:, b] = sums[offset:] / valid_counts
 
                     s2_profiles = np.zeros((len(u_sids), num_dates_s2, 9), dtype=np.float32)
                     for d in range(num_dates_s2):
@@ -2466,22 +2475,21 @@ class ProcessingPipelineS1S2:
                 else:
                     margins = np.ones_like(confs)
 
-                # Fast O(1) LUT Remapping
-                max_sid = int(np.max(u_sids))
-                lut_pred = np.zeros(max_sid + 1, dtype=np.int32)
-                lut_conf = np.zeros(max_sid + 1, dtype=np.float32)
-                lut_ent = np.zeros(max_sid + 1, dtype=np.float32)
-                lut_mar = np.zeros(max_sid + 1, dtype=np.float32)
+                # Fast O(1) Local Compact LUT Remapping (strictly len(u_all) elements)
+                lut_pred = np.zeros(len(u_all), dtype=np.int32)
+                lut_conf = np.zeros(len(u_all), dtype=np.float32)
+                lut_ent = np.zeros(len(u_all), dtype=np.float32)
+                lut_mar = np.zeros(len(u_all), dtype=np.float32)
 
-                lut_pred[u_sids] = preds
-                lut_conf[u_sids] = confs
-                lut_ent[u_sids] = entropies
-                lut_mar[u_sids] = margins
+                lut_pred[offset:] = preds
+                lut_conf[offset:] = confs
+                lut_ent[offset:] = entropies
+                lut_mar[offset:] = margins
 
-                pred_arr = lut_pred[sub_seg]
-                prob_arr = lut_conf[sub_seg]
-                ent_arr = lut_ent[sub_seg]
-                mar_arr = lut_mar[sub_seg]
+                pred_arr = lut_pred[inv_arr]
+                prob_arr = lut_conf[inv_arr]
+                ent_arr = lut_ent[inv_arr]
+                mar_arr = lut_mar[inv_arr]
 
                 pred_arr[foot_arr == 0] = 0
                 prob_arr[foot_arr == 0] = 0
