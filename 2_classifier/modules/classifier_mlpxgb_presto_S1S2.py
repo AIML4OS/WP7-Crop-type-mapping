@@ -1429,124 +1429,89 @@ class ProcessingPipelineS1S2:
             if shps: return shps[0]
         return None
 
-    def _create_multimodal_pheno_composite(self) -> Path:
+    def _create_seasonal_sar_composite(self) -> Path:
         """
-        Creates a high-discriminative 5-channel multimodal phenological and polarimetric composite
-        specifically optimized for superpixel segmentation (SLIC/SAM).
-        Channels:
-          1: Max NDVI across Sentinel-2 multi-temporal series (vegetation/non-vegetation boundary).
-          2: NDVI Amplitude (max NDVI - min NDVI, separates annual crop phenology from permanent grassland/forest).
-          3: Peak-season Narrow NIR (B8A) reflectance (canopy structure and density).
-          4: Temporal mean Sentinel-1 VH backscatter in linear scale sigma0 (structural field boundaries, hedges, ditches).
-          5: Temporal mean SAR Cross-Ratio (VH_dB - VV_dB, volumetric vs surface scattering).
-        Gracefully handles optical-only or SAR-only inputs if one modality is absent.
+        Creates a high-SNR 1-channel seasonal SAR composite for SLIC superpixel segmentation.
+        Focuses on peak crop growing months (April to August) where canopy structural contrast
+        between agricultural fields is maximal and permanent cadastral boundaries are sharpest.
+        Averages across multi-temporal Sentinel-1 acquisitions to eliminate radar speckle noise.
         """
-        composite_tif = self.seg_dir / f"{self.file_prefix}_pheno_slic_composite.tif"
+        composite_tif = self.seg_dir / f"{self.file_prefix}_sar_seasonal_composite.tif"
         if composite_tif.exists() and composite_tif.stat().st_size > 1024:
             return composite_tif
 
-        print("    [INFO] Generating 5-channel multimodal phenological & SAR composite for SLIC...")
-        ds_s1 = gdal.Open(str(self.s1_ras)) if (self.s1_ras and self.s1_ras.exists()) else None
-        ds_s2 = gdal.Open(str(self.s2_ras)) if (self.s2_ras and self.s2_ras.exists()) else None
-        ref_ds = ds_s2 if ds_s2 else ds_s1
-        if not ref_ds:
-            raise FileNotFoundError("Neither Sentinel-1 nor Sentinel-2 raster is available for composite creation.")
+        ref_ras = self.s1_ras if (self.s1_ras and self.s1_ras.exists()) else self.s2_ras
+        if not ref_ras or not ref_ras.exists():
+            raise FileNotFoundError("Neither Sentinel-1 nor Sentinel-2 raster is available for segmentation composite.")
 
-        cols = ref_ds.RasterXSize
-        rows = ref_ds.RasterYSize
-        gt = ref_ds.GetGeoTransform()
-        proj = ref_ds.GetProjection()
+        ds = gdal.Open(str(ref_ras), gdal.GA_ReadOnly)
+        cols = ds.RasterXSize
+        rows = ds.RasterYSize
+        nbands = ds.RasterCount
+        gt = ds.GetGeoTransform()
+        proj = ds.GetProjection()
 
-        nbands_s1 = ds_s1.RasterCount if ds_s1 else 0
-        nbands_s2 = ds_s2.RasterCount if ds_s2 else 0
-        num_dates_s1 = nbands_s1 // 2 if nbands_s1 >= 2 else 0
-        num_dates_s2 = nbands_s2 // 9 if nbands_s2 >= 9 else 0
+        # Identify target bands for seasonal peak growth (April to August)
+        target_months = ['apr', 'may', 'jun', 'jul', 'aug']
+        matched_bands = []
+        if self.s1_ras and ref_ras == self.s1_ras:
+            for b in range(1, nbands + 1):
+                desc = str(ds.GetRasterBand(b).GetDescription()).lower()
+                if any(m in desc for m in target_months):
+                    matched_bands.append(b)
+
+        if len(matched_bands) >= 4:
+            selected_bands = matched_bands
+            print(f"    [INFO] Generating seasonal SAR composite using {len(selected_bands)} April-August bands...")
+        else:
+            selected_bands = list(range(1, nbands + 1))
+            print(f"    [INFO] Generating temporal SAR composite using all {len(selected_bands)} bands...")
 
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(
-            str(composite_tif), cols, rows, 5, gdal.GDT_Float32,
+            str(composite_tif), cols, rows, 1, gdal.GDT_Float32,
             options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
         )
         out_ds.SetGeoTransform(gt)
         out_ds.SetProjection(proj)
+        out_band = out_ds.GetRasterBand(1)
+        out_band.SetNoDataValue(0.0)
 
-        tile_size = 2048
+        tile_size = 4096
         for y in range(0, rows, tile_size):
             for x in range(0, cols, tile_size):
                 xsize = min(tile_size, cols - x)
                 ysize = min(tile_size, rows - y)
 
-                c1_max_ndvi = np.zeros((ysize, xsize), dtype=np.float32)
-                c2_amp_ndvi = np.zeros((ysize, xsize), dtype=np.float32)
-                c3_nir_mean = np.zeros((ysize, xsize), dtype=np.float32)
-                c4_sar_vh   = np.zeros((ysize, xsize), dtype=np.float32)
-                c5_sar_cr   = np.zeros((ysize, xsize), dtype=np.float32)
+                sum_arr = np.zeros((ysize, xsize), dtype=np.float32)
+                cnt_arr = np.zeros((ysize, xsize), dtype=np.int16)
 
-                # 1. Optical Sentinel-2 Processing
-                if ds_s2 and num_dates_s2 > 0:
-                    ndvi_dates = []
-                    b8a_dates = []
-                    for d in range(num_dates_s2):
-                        b4_arr = ds_s2.GetRasterBand(d * 9 + 3).ReadAsArray(x, y, xsize, ysize).astype(np.float32) / 10000.0
-                        b8a_arr = ds_s2.GetRasterBand(d * 9 + 7).ReadAsArray(x, y, xsize, ysize).astype(np.float32) / 10000.0
-                        b4_arr = np.nan_to_num(b4_arr, nan=0.0)
-                        b8a_arr = np.nan_to_num(b8a_arr, nan=0.0)
-                        ndvi = (b8a_arr - b4_arr) / (b8a_arr + b4_arr + 1e-6)
-                        ndvi = np.clip(ndvi, -1.0, 1.0)
-                        ndvi_dates.append(ndvi)
-                        b8a_dates.append(b8a_arr)
+                for b in selected_bands:
+                    band = ds.GetRasterBand(b)
+                    arr = band.ReadAsArray(x, y, xsize, ysize)
+                    if arr is None:
+                        continue
+                    nodata = band.GetNoDataValue()
+                    if nodata is not None:
+                        valid = (arr != nodata) & (~np.isnan(arr)) & (arr != 0)
+                    else:
+                        valid = (~np.isnan(arr)) & (arr != 0)
+                    sum_arr[valid] += arr[valid]
+                    cnt_arr[valid] += 1
 
-                    ndvi_stack = np.stack(ndvi_dates, axis=0)
-                    b8a_stack = np.stack(b8a_dates, axis=0)
-
-                    c1_max_ndvi = np.max(ndvi_stack, axis=0)
-                    c2_amp_ndvi = c1_max_ndvi - np.min(ndvi_stack, axis=0)
-                    c3_nir_mean = np.mean(b8a_stack, axis=0)
-
-                # 2. Radar Sentinel-1 Processing
-                if ds_s1 and num_dates_s1 > 0:
-                    vh_lin_dates = []
-                    cr_dates = []
-                    for d in range(num_dates_s1):
-                        vh_db = ds_s1.GetRasterBand(d + 1).ReadAsArray(x, y, xsize, ysize).astype(np.float32)
-                        vv_db = ds_s1.GetRasterBand(num_dates_s1 + d + 1).ReadAsArray(x, y, xsize, ysize).astype(np.float32)
-                        vh_db = np.nan_to_num(vh_db, nan=-30.0)
-                        vv_db = np.nan_to_num(vv_db, nan=-30.0)
-
-                        vh_lin = np.power(10.0, np.clip(vh_db, -35.0, 5.0) / 10.0)
-                        cr = np.clip(vh_db - vv_db, -20.0, 5.0)
-                        vh_lin_dates.append(vh_lin)
-                        cr_dates.append(cr)
-
-                    c4_sar_vh = np.mean(np.stack(vh_lin_dates, axis=0), axis=0)
-                    c5_sar_cr = np.mean(np.stack(cr_dates, axis=0), axis=0)
-                elif ds_s2 and num_dates_s2 > 0:
-                    # Optical fallback for bands 4 and 5 if S1 absent: B3 (Green) & B11 (SWIR)
-                    b3_dates, b11_dates = [], []
-                    for d in range(num_dates_s2):
-                        b3_dates.append(ds_s2.GetRasterBand(d * 9 + 2).ReadAsArray(x, y, xsize, ysize).astype(np.float32) / 10000.0)
-                        b11_dates.append(ds_s2.GetRasterBand(d * 9 + 8).ReadAsArray(x, y, xsize, ysize).astype(np.float32) / 10000.0)
-                    c4_sar_vh = np.mean(np.stack(b3_dates, axis=0), axis=0)
-                    c5_sar_cr = np.mean(np.stack(b11_dates, axis=0), axis=0)
-                else:
-                    # SAR only fallback for bands 1-3 if S2 absent
-                    c1_max_ndvi = c4_sar_vh
-                    c2_amp_ndvi = c5_sar_cr
-                    c3_nir_mean = c4_sar_vh
-
-                out_ds.GetRasterBand(1).WriteArray(c1_max_ndvi, x, y)
-                out_ds.GetRasterBand(2).WriteArray(c2_amp_ndvi, x, y)
-                out_ds.GetRasterBand(3).WriteArray(c3_nir_mean, x, y)
-                out_ds.GetRasterBand(4).WriteArray(c4_sar_vh, x, y)
-                out_ds.GetRasterBand(5).WriteArray(c5_sar_cr, x, y)
+                mask = cnt_arr > 0
+                out_block = np.zeros((ysize, xsize), dtype=np.float32)
+                out_block[mask] = sum_arr[mask] / cnt_arr[mask]
+                out_band.WriteArray(out_block, x, y)
 
         out_ds.FlushCache()
         out_ds = None
-        ds_s1 = None
-        ds_s2 = None
-        ref_ds = None
-        print(f"    [OK] Multimodal phenological composite created: {composite_tif.name}")
+        ds = None
+        print(f"    [OK] Seasonal SAR composite created successfully: {composite_tif.name}")
         return composite_tif
+
+    # Backward compatibility alias
+    _create_multimodal_pheno_composite = _create_seasonal_sar_composite
 
     def _create_summed_composite(self, ref_ras: Path) -> Path:
         print("    [INFO] Creating high-SNR summed composite for segmentation...")
@@ -1638,9 +1603,10 @@ class ProcessingPipelineS1S2:
 
             if np.any(valid):
                 if ndvi_band:
-                    ndvi_col = ndvi_band.ReadAsArray(x - 1, 0, 2, rows)
-                    ndvi_diff = np.abs(ndvi_col[:, 0] - ndvi_col[:, 1])
-                    valid = valid & (ndvi_diff < 0.12)
+                    comp_col = ndvi_band.ReadAsArray(x - 1, 0, 2, rows)
+                    diff = np.abs(comp_col[:, 0] - comp_col[:, 1])
+                    thresh = 1.8 if np.nanmean(comp_col[valid]) < 0 else 0.12
+                    valid = valid & (diff < thresh)
 
                 cand_left = left_ids[valid]
                 cand_right = right_ids[valid]
@@ -1661,9 +1627,10 @@ class ProcessingPipelineS1S2:
 
             if np.any(valid):
                 if ndvi_band:
-                    ndvi_row = ndvi_band.ReadAsArray(0, y - 1, cols, 2)
-                    ndvi_diff = np.abs(ndvi_row[0, :] - ndvi_row[1, :])
-                    valid = valid & (ndvi_diff < 0.12)
+                    comp_row = ndvi_band.ReadAsArray(0, y - 1, cols, 2)
+                    diff = np.abs(comp_row[0, :] - comp_row[1, :])
+                    thresh = 1.8 if np.nanmean(comp_row[valid]) < 0 else 0.12
+                    valid = valid & (diff < thresh)
 
                 cand_top = top_ids[valid]
                 cand_bot = bot_ids[valid]
@@ -1879,11 +1846,11 @@ class ProcessingPipelineS1S2:
             else:
                 print(f"    [WARNING] LPIS vector dataset not found. Falling back to SLIC.")
 
-        # Create multimodal composite for SLIC/SAM (5-channel pheno-SAR composite)
+        # Create high-SNR seasonal SAR composite (April-August peak crop growth)
         try:
-            comp_ras = self._create_multimodal_pheno_composite()
+            comp_ras = self._create_seasonal_sar_composite()
         except Exception as e:
-            print(f"    [WARNING] Multimodal phenological composite failed ({e}), falling back to summed composite.")
+            print(f"    [WARNING] Seasonal SAR composite failed ({e}), falling back to summed composite.")
             try:
                 comp_ras = self._create_summed_composite(ref_ras)
             except Exception:
