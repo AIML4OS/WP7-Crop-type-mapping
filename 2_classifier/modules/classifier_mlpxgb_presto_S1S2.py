@@ -1012,11 +1012,11 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
             norm_bands.append(scaled.astype(np.float64))
 
         img_norm = np.dstack(norm_bands)
-        tile_size = params.get('tile_size', 1024)
+        tile_size = params.get('tile_size', 2048)
         active_pixels = int(np.sum(valid_mask))
         if active_pixels < 20:
             return x, y, None, None
-        pixels_per_segment = params.get('pixels_per_segment', 75.0)
+        pixels_per_segment = params.get('pixels_per_segment', 250.0)
         n_segments_tile = max(5, int(active_pixels / max(10.0, pixels_per_segment)))
         n_segments_tile = min(n_segments_tile, 40000)
 
@@ -1025,14 +1025,77 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
         segments_buf = slic(
             img_norm,
             n_segments=n_segments_tile,
-            compactness=params.get('compactness', 0.08),
-            sigma=params.get('slic_sigma', 1.2),
+            compactness=params.get('compactness', 3.0),
+            sigma=params.get('slic_sigma', 2.0),
             start_label=1,
             mask=None,
             enforce_connectivity=True,
-            min_size_factor=0.25
+            min_size_factor=0.4
         )
         segments_buf[~valid_mask] = 0
+
+        # Vectorized Region Adjacency Graph (RAG) spectral fusion:
+        # Merges adjacent superpixels with identical crop signatures into monolithic agricultural parcels.
+        enable_rag = params.get('enable_rag', True)
+        rag_thresh = float(params.get('rag_thresh', 0.10))
+        if enable_rag and rag_thresh > 0:
+            u_labels, inv = np.unique(segments_buf, return_inverse=True)
+            if len(u_labels) > 1:
+                flat_inv = inv.ravel()
+                n_lbl = len(u_labels)
+                counts = np.bincount(flat_inv)
+                means = np.zeros((n_lbl, img_norm.shape[2]), dtype=np.float32)
+                for c in range(img_norm.shape[2]):
+                    means[:, c] = np.bincount(flat_inv, weights=img_norm[:, :, c].ravel()) / np.maximum(1, counts)
+
+                # Extract adjacency pairs across horizontal and vertical neighbor pixels
+                h_left = segments_buf[:, :-1].reshape(-1)
+                h_right = segments_buf[:, 1:].reshape(-1)
+                v_top = segments_buf[:-1, :].reshape(-1)
+                v_bottom = segments_buf[1:, :].reshape(-1)
+
+                pairs_h = np.column_stack([h_left, h_right])
+                pairs_v = np.column_stack([v_top, v_bottom])
+                all_pairs = np.vstack([pairs_h, pairs_v])
+
+                valid_pairs = (all_pairs[:, 0] > 0) & (all_pairs[:, 1] > 0) & (all_pairs[:, 0] != all_pairs[:, 1])
+                if np.any(valid_pairs):
+                    edges = np.unique(np.sort(all_pairs[valid_pairs], axis=1), axis=0)
+
+                    lbl_map = np.zeros(segments_buf.max() + 1, dtype=np.int32)
+                    lbl_map[u_labels] = np.arange(n_lbl, dtype=np.int32)
+                    idx1 = lbl_map[edges[:, 0]]
+                    idx2 = lbl_map[edges[:, 1]]
+
+                    diff = means[idx1] - means[idx2]
+                    dists = np.linalg.norm(diff, axis=1)
+
+                    merge_edges = edges[dists < rag_thresh]
+                    if len(merge_edges) > 0:
+                        parent = {}
+
+                        def find(i):
+                            path = []
+                            while parent.get(i, i) != i:
+                                path.append(i)
+                                i = parent[i]
+                            for node in path:
+                                parent[node] = i
+                            return i
+
+                        def union(i, j):
+                            ri = find(i)
+                            rj = find(j)
+                            if ri != rj:
+                                parent[rj] = ri
+
+                        for e in merge_edges:
+                            union(int(e[0]), int(e[1]))
+
+                        remap = np.arange(segments_buf.max() + 1, dtype=np.int32)
+                        for k in parent.keys():
+                            remap[k] = find(k)
+                        segments_buf = remap[segments_buf]
 
         y_offset = y - y_start_buf
         x_offset = x - x_start_buf
@@ -1060,7 +1123,9 @@ class ProcessingPipelineS1S2:
         s2_override: Optional[str] = None,
         lpis_vector: Optional[str] = None,
         slic_segment_ha: Optional[float] = None,
-        slic_compactness: float = 0.08
+        slic_compactness: float = 3.0,
+        slic_rag_thresh: float = 0.10,
+        enable_slic_rag: bool = True
     ):
         self.track = track
         self.seg_mode = seg_mode.lower()
@@ -1071,15 +1136,17 @@ class ProcessingPipelineS1S2:
         self.country = norm_track.split('/')[0].upper() if '/' in norm_track else track.upper()
         self.total_stages = TOTAL_STAGES
 
-        # Regional adaptive scale: fragmented parcel landscapes (PT, ES, IT, GR, PL) require finer superpixels
+        # Regional adaptive scale: default parcel scale matching cadastral dimensions
         if slic_segment_ha is not None:
             self.slic_segment_ha = float(slic_segment_ha)
         else:
             if self.country in ['PT', 'ES', 'IT', 'GR', 'PL']:
-                self.slic_segment_ha = 0.75  # ~75 pixels at 10m (~87m x 87m parcel size)
+                self.slic_segment_ha = 2.5  # ~250 pixels at 10m (~158m x 158m parcel size)
             else:
-                self.slic_segment_ha = 1.25  # ~125 pixels at 10m (~112m x 112m) for NL/FR/DE
+                self.slic_segment_ha = 3.5  # ~350 pixels at 10m (~187m x 187m) for NL/FR/DE
         self.slic_compactness = float(slic_compactness)
+        self.slic_rag_thresh = float(slic_rag_thresh)
+        self.enable_slic_rag = bool(enable_slic_rag)
 
         self.sanitized_track = norm_track.replace('/', '_')
         if not self.sanitized_track.startswith(self.country + "_"):
@@ -1826,18 +1893,21 @@ class ProcessingPipelineS1S2:
             self._run_python_segmentation_tiled(comp_ras, self.stage1_params, 'python_sam')
         else:
             pixels_per_seg = max(10, int((self.slic_segment_ha * 10000.0) / 100.0))
-            tile_sz = 1024
-            buf_sz = 32
+            tile_sz = 2048
+            buf_sz = 64
             max_tile_pixels = (tile_sz + 2 * buf_sz) ** 2
             n_segments_tile = max(100, int(max_tile_pixels / pixels_per_seg))
-            print(f"    [SLIC TUNING] Target parcel size: {self.slic_segment_ha:.2f} ha (~{pixels_per_seg} px) | Compactness: {self.slic_compactness:.2f}")
+            rag_info = f" | RAG Fusion: thresh={self.slic_rag_thresh}" if self.enable_slic_rag else " | RAG Fusion: Disabled"
+            print(f"    [SLIC TUNING] Target parcel size: {self.slic_segment_ha:.2f} ha (~{pixels_per_seg} px) | Compactness: {self.slic_compactness:.2f}{rag_info}")
             slic_params = {
                 'tile_size': tile_sz,
                 'buffer': buf_sz,
                 'n_segments': n_segments_tile,
                 'pixels_per_segment': pixels_per_seg,
                 'compactness': self.slic_compactness,
-                'slic_sigma': 1.2
+                'slic_sigma': 2.0,
+                'enable_rag': self.enable_slic_rag,
+                'rag_thresh': self.slic_rag_thresh
             }
             self._run_python_segmentation_tiled(comp_ras, slic_params, 'python_slic')
 
@@ -1937,6 +2007,8 @@ class ProcessingPipelineS1S2:
         # Stitch tile seams to eliminate boundary-cut parcel fracturing
         if not is_sam:
             self._stitch_tile_seams(out_ds, tile_size, cols, rows, ras_path)
+            print("    [SIEVE FILTER] Absorbing isolated micro-slivers (< 30 px) into adjacent parcels...")
+            gdal.SieveFilter(out_band, None, out_band, 30, 8, callback=None)
 
         out_band.FlushCache()
         out_ds = None
@@ -3067,8 +3139,10 @@ def main():
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 VH/VV GeoTIFF raster")
     parser.add_argument('--s2_raster', default=None, help="Override path to Sentinel-2 Multi-temporal GeoTIFF raster")
     parser.add_argument('--lpis_vector', default=None, help="Path to official LPIS cadastral parcel vector file (.shp, .gpkg) for --seg_mode lpis")
-    parser.add_argument('--slic_segment_ha', type=float, default=None, help="Target superpixel parcel area in hectares for SLIC (default: adaptive, 0.35 ha for PT/ES/PL, 0.75 ha for NL/FR/DE)")
-    parser.add_argument('--slic_compactness', type=float, default=0.08, help="SLIC superpixel boundary compactness (default: 0.08)")
+    parser.add_argument('--slic_segment_ha', type=float, default=None, help="Target superpixel parcel area in hectares for SLIC (default: adaptive, 2.5 ha for PT/ES/PL, 3.5 ha for NL/FR/DE)")
+    parser.add_argument('--slic_compactness', type=float, default=3.0, help="SLIC superpixel boundary compactness (default: 3.0)")
+    parser.add_argument('--slic_rag_thresh', type=float, default=0.10, help="Region Adjacency Graph (RAG) spectral fusion distance threshold for SLIC (default: 0.10)")
+    parser.add_argument('--no_slic_rag', action='store_true', help="Disable Region Adjacency Graph (RAG) spectral fusion pass for SLIC")
 
     args = parser.parse_args()
 
@@ -3081,7 +3155,9 @@ def main():
             s2_override=args.s2_raster,
             lpis_vector=args.lpis_vector,
             slic_segment_ha=args.slic_segment_ha,
-            slic_compactness=args.slic_compactness
+            slic_compactness=args.slic_compactness,
+            slic_rag_thresh=args.slic_rag_thresh,
+            enable_slic_rag=not args.no_slic_rag
         )
 
         if args.stage is None:
