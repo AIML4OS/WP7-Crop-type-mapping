@@ -1025,19 +1025,20 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
         segments_buf = slic(
             img_norm,
             n_segments=n_segments_tile,
-            compactness=params.get('compactness', 3.0),
-            sigma=params.get('slic_sigma', 2.0),
+            compactness=params.get('compactness', 0.20),
+            sigma=params.get('slic_sigma', 1.8),
             start_label=1,
             mask=None,
             enforce_connectivity=True,
-            min_size_factor=0.4
+            min_size_factor=params.get('min_size_factor', 0.3)
         )
         segments_buf[~valid_mask] = 0
 
-        # Vectorized Region Adjacency Graph (RAG) spectral fusion:
-        # Merges adjacent superpixels with identical crop signatures into monolithic agricultural parcels.
-        enable_rag = params.get('enable_rag', True)
-        rag_thresh = float(params.get('rag_thresh', 0.10))
+        # Vectorized Region Adjacency Graph (RAG) spectral fusion (disabled by default):
+        # When enabled, merges adjacent sub-parcel slivers with identical signatures without exceeding max parcel area.
+        enable_rag = params.get('enable_rag', False)
+        rag_thresh = float(params.get('rag_thresh', 0.02))
+        max_rag_px = int(params.get('max_rag_parcel_ha', 15.0) * 100.0)
         if enable_rag and rag_thresh > 0:
             u_labels, inv = np.unique(segments_buf, return_inverse=True)
             if len(u_labels) > 1:
@@ -1070,7 +1071,10 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
                     diff = means[idx1] - means[idx2]
                     dists = np.linalg.norm(diff, axis=1)
 
-                    merge_edges = edges[dists < rag_thresh]
+                    size1 = counts[idx1]
+                    size2 = counts[idx2]
+                    merge_mask = (dists < rag_thresh) & ((size1 + size2) <= max_rag_px)
+                    merge_edges = edges[merge_mask]
                     if len(merge_edges) > 0:
                         parent = {}
 
@@ -1123,9 +1127,9 @@ class ProcessingPipelineS1S2:
         s2_override: Optional[str] = None,
         lpis_vector: Optional[str] = None,
         slic_segment_ha: Optional[float] = None,
-        slic_compactness: float = 3.0,
-        slic_rag_thresh: float = 0.10,
-        enable_slic_rag: bool = True
+        slic_compactness: float = 0.20,
+        slic_rag_thresh: float = 0.02,
+        enable_slic_rag: bool = False
     ):
         self.track = track
         self.seg_mode = seg_mode.lower()
@@ -1141,9 +1145,9 @@ class ProcessingPipelineS1S2:
             self.slic_segment_ha = float(slic_segment_ha)
         else:
             if self.country in ['PT', 'ES', 'IT', 'GR', 'PL']:
-                self.slic_segment_ha = 2.5  # ~250 pixels at 10m (~158m x 158m parcel size)
+                self.slic_segment_ha = 1.8  # ~180 pixels at 10m (~134m x 134m parcel size)
             else:
-                self.slic_segment_ha = 3.5  # ~350 pixels at 10m (~187m x 187m) for NL/FR/DE
+                self.slic_segment_ha = 3.0  # ~300 pixels at 10m (~173m x 173m) for NL/FR/DE
         self.slic_compactness = float(slic_compactness)
         self.slic_rag_thresh = float(slic_rag_thresh)
         self.enable_slic_rag = bool(enable_slic_rag)
@@ -1592,14 +1596,14 @@ class ProcessingPipelineS1S2:
 
         merges_count = 0
 
-        # Dynamically determine seam difference threshold (1.8 dB for SAR dB composites, 0.12 for normalized [0, 1])
-        seam_thresh = 0.12
+        # Dynamically determine seam difference threshold (0.8 dB for SAR dB composites, 0.05 for normalized [0, 1])
+        seam_thresh = 0.05
         if ndvi_band:
             sample_data = ndvi_band.ReadAsArray(cols // 4, rows // 4, min(2048, cols // 2), min(2048, rows // 2))
             if sample_data is not None:
                 v = sample_data[(sample_data != 0) & (~np.isnan(sample_data))]
                 if len(v) > 0 and np.nanmean(v) < 0:
-                    seam_thresh = 1.8
+                    seam_thresh = 0.8
 
         # 1. Check vertical boundaries (along x = tile_size, 2*tile_size, ...)
         for x in range(tile_size, cols, tile_size):
@@ -1620,7 +1624,7 @@ class ProcessingPipelineS1S2:
                 cand_right = right_ids[valid]
                 pairs, counts = np.unique(np.column_stack([cand_left, cand_right]), axis=0, return_counts=True)
                 for (lid, rid), cnt in zip(pairs, counts):
-                    if cnt >= 2:
+                    if cnt >= 8:
                         union(int(lid), int(rid))
                         merges_count += 1
 
@@ -1643,7 +1647,7 @@ class ProcessingPipelineS1S2:
                 cand_bot = bot_ids[valid]
                 pairs, counts = np.unique(np.column_stack([cand_top, cand_bot]), axis=0, return_counts=True)
                 for (tid, bid), cnt in zip(pairs, counts):
-                    if cnt >= 2:
+                    if cnt >= 8:
                         union(int(tid), int(bid))
                         merges_count += 1
 
@@ -1879,9 +1883,11 @@ class ProcessingPipelineS1S2:
                 'n_segments': n_segments_tile,
                 'pixels_per_segment': pixels_per_seg,
                 'compactness': self.slic_compactness,
-                'slic_sigma': 2.0,
+                'slic_sigma': 1.8,
+                'min_size_factor': 0.3,
                 'enable_rag': self.enable_slic_rag,
-                'rag_thresh': self.slic_rag_thresh
+                'rag_thresh': self.slic_rag_thresh,
+                'max_rag_parcel_ha': 15.0
             }
             self._run_python_segmentation_tiled(comp_ras, slic_params, 'python_slic')
 
