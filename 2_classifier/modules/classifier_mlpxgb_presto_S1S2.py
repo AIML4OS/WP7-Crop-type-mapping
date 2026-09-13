@@ -1592,6 +1592,15 @@ class ProcessingPipelineS1S2:
 
         merges_count = 0
 
+        # Dynamically determine seam difference threshold (1.8 dB for SAR dB composites, 0.12 for normalized [0, 1])
+        seam_thresh = 0.12
+        if ndvi_band:
+            sample_data = ndvi_band.ReadAsArray(cols // 4, rows // 4, min(2048, cols // 2), min(2048, rows // 2))
+            if sample_data is not None:
+                v = sample_data[(sample_data != 0) & (~np.isnan(sample_data))]
+                if len(v) > 0 and np.nanmean(v) < 0:
+                    seam_thresh = 1.8
+
         # 1. Check vertical boundaries (along x = tile_size, 2*tile_size, ...)
         for x in range(tile_size, cols, tile_size):
             seg_col = seg_band.ReadAsArray(x - 1, 0, 2, rows)
@@ -1605,8 +1614,7 @@ class ProcessingPipelineS1S2:
                 if ndvi_band:
                     comp_col = ndvi_band.ReadAsArray(x - 1, 0, 2, rows)
                     diff = np.abs(comp_col[:, 0] - comp_col[:, 1])
-                    thresh = 1.8 if np.nanmean(comp_col[valid]) < 0 else 0.12
-                    valid = valid & (diff < thresh)
+                    valid = valid & (diff < seam_thresh)
 
                 cand_left = left_ids[valid]
                 cand_right = right_ids[valid]
@@ -1629,8 +1637,7 @@ class ProcessingPipelineS1S2:
                 if ndvi_band:
                     comp_row = ndvi_band.ReadAsArray(0, y - 1, cols, 2)
                     diff = np.abs(comp_row[0, :] - comp_row[1, :])
-                    thresh = 1.8 if np.nanmean(comp_row[valid]) < 0 else 0.12
-                    valid = valid & (diff < thresh)
+                    valid = valid & (diff < seam_thresh)
 
                 cand_top = top_ids[valid]
                 cand_bot = bot_ids[valid]
