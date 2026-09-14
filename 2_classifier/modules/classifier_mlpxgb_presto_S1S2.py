@@ -1025,12 +1025,12 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
         segments_buf = slic(
             img_norm,
             n_segments=n_segments_tile,
-            compactness=params.get('compactness', 0.20),
-            sigma=params.get('slic_sigma', 1.8),
+            compactness=params.get('compactness', 0.05),
+            sigma=params.get('slic_sigma', 1.5),
             start_label=1,
             mask=None,
             enforce_connectivity=True,
-            min_size_factor=params.get('min_size_factor', 0.3)
+            min_size_factor=params.get('min_size_factor', 0.2)
         )
         segments_buf[~valid_mask] = 0
 
@@ -1127,7 +1127,7 @@ class ProcessingPipelineS1S2:
         s2_override: Optional[str] = None,
         lpis_vector: Optional[str] = None,
         slic_segment_ha: Optional[float] = None,
-        slic_compactness: float = 0.20,
+        slic_compactness: float = 0.05,
         slic_rag_thresh: float = 0.02,
         enable_slic_rag: bool = False
     ):
@@ -1883,8 +1883,8 @@ class ProcessingPipelineS1S2:
                 'n_segments': n_segments_tile,
                 'pixels_per_segment': pixels_per_seg,
                 'compactness': self.slic_compactness,
-                'slic_sigma': 1.8,
-                'min_size_factor': 0.3,
+                'slic_sigma': 1.5,
+                'min_size_factor': 0.2,
                 'enable_rag': self.enable_slic_rag,
                 'rag_thresh': self.slic_rag_thresh,
                 'max_rag_parcel_ha': 15.0

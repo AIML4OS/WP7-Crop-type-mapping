@@ -137,7 +137,7 @@ def run_pipeline(
     s2_override: Optional[str] = None,
     lpis_vector: Optional[str] = None,
     slic_segment_ha: Optional[float] = None,
-    slic_compactness: float = 0.20,
+    slic_compactness: float = 0.05,
     slic_rag_thresh: float = 0.02,
     enable_slic_rag: bool = False
 ):
@@ -468,7 +468,7 @@ Examples:
     parser.add_argument('--s2_raster', default=None, help="Override path to Sentinel-2 Multi-temporal GeoTIFF raster")
     parser.add_argument('--lpis_vector', default=None, help="Path to official LPIS parcel vector file (.shp, .gpkg)")
     parser.add_argument('--slic_segment_ha', type=float, default=None, help="Target superpixel parcel area in hectares for SLIC (default: adaptive, 1.8 ha for PT/ES/PL, 3.0 ha for NL/FR/DE)")
-    parser.add_argument('--slic_compactness', type=float, default=0.20, help="SLIC superpixel boundary compactness (default: 0.20, low values follow physical field boundaries)")
+    parser.add_argument('--slic_compactness', type=float, default=0.05, help="SLIC superpixel boundary compactness (default: 0.05, highly elastic to follow physical field boundaries)")
     parser.add_argument('--slic_rag_thresh', type=float, default=0.02, help="Region Adjacency Graph (RAG) spectral fusion distance threshold for SLIC (default: 0.02)")
     parser.add_argument('--enable_slic_rag', action='store_true', default=False, help="Enable experimental Region Adjacency Graph (RAG) spectral fusion pass for SLIC (default: False)")
     parser.add_argument('--no_slic_rag', action='store_true', help="Explicitly disable Region Adjacency Graph (RAG) spectral fusion pass for SLIC")
