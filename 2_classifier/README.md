@@ -262,9 +262,9 @@ $$\bar{\sigma}^0_{\text{temporal}}(x, y) = \frac{1}{N} \sum_{k=1}^N \sigma^0_k(x
 ### 2. OBIA segmentation algorithms
 
 #### Mode 1: SLIC (Simple Linear Iterative Clustering - Recommended)
-* Operates in a 5D space combining radiometric intensity and 2D geographic coordinates:
-  $$D = \sqrt{d_{\text{color}}^2 + \left(\frac{d_{xy}}{S}\right)^2 \cdot m^2}$$
-  Where $S = \sqrt{N / K}$ is the superpixel grid interval, and $m = 10.0$ is the compactness parameter enforcing regular polygon geometry.
+* Operates in a 5D feature space combining multi-temporal radiometric composite (S1 SAR temporal backscatter moments + S2 multi-spectral composite) and 2D spatial coordinates.
+* **Adaptive target parcel size**: Dynamically sets target parcel size based on country agronomic profile (1.8 ha for Southern/Eastern Europe PT/ES/PL, 3.0 ha for Western Europe NL/FR/DE).
+* **High-elasticity boundary tracking**: Compactness parameter ($m = 0.05$) allows superpixel boundaries to conform precisely to physical parcel boundaries, hedgerows, and drainage canals.
 * **Buffered tile processing**: Rasters are segmented in $2048 \times 2048$ blocks with a **64-pixel halo buffer**. Edge segments are matched and merged across boundaries to completely prevent tile seam artifacts.
 * **32-bit Integer Raster**: Segments are outputted as a `UInt32` GeoTIFF (`*_segmentation_slic.tif`) where every discrete parcel receives a globally unique non-zero integer identifier (`segment_id`).
 
@@ -361,6 +361,10 @@ python run_merge.py --country PT --classifier mlpxgb_presto --seg_mode sam --met
 | `--s1_raster` | string | `None` | Optional explicit path override to Sentinel-1 BigTIFF raster. |
 | `--s2_raster` | string | `None` | Optional explicit path override to Sentinel-2 BigTIFF raster. |
 | `--lpis_vector` | string | `None` | Optional explicit path to official LPIS parcel vector file (`.shp`, `.gpkg`). |
+| `--slic_segment_ha` | float | `None` | Target superpixel parcel area in hectares for SLIC (adaptive: 1.8 ha for PT/ES/PL, 3.0 ha for NL/FR/DE). |
+| `--slic_compactness` | float | `0.05` | SLIC boundary compactness (default: 0.05, elastic adherence to landscape boundaries). |
+| `--slic_rag_thresh` | float | `0.02` | Region Adjacency Graph (RAG) spectral fusion distance threshold for SLIC. |
+| `--enable_slic_rag` | flag | `False` | Enable experimental Region Adjacency Graph (RAG) spectral fusion pass for SLIC. |
 
 ### Merger runner (`run_merge.py`)
 

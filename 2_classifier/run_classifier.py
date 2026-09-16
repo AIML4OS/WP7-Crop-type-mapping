@@ -15,8 +15,7 @@ Features:
       * Multimodal SAR statistics + Optical multi-temporal reflectances.
       * NASA Harvest Presto 128-d multi-temporal geospatial foundation embeddings.
   - Classification Architectures (--classifier):
-      * 'mlpxgb_presto_s1s2' (Default): Enhanced SOTA Joint Presto (S1+S2) + Red-Edge/SAR Physical Indices + Tile I/O + Uncertainty.
-      * 'mlpxgb_presto'          : Standard Dual-Tier Soft-Voting Ensemble (Deep PyTorch MLP + XGBoost GBDT + Presto).
+      * 'mlpxgb_presto' (Default): Enhanced SOTA Joint Presto (S1+S2) + Red-Edge/SAR Physical Indices + Tile I/O + Uncertainty.
       * 'mlp'                    : Pure Deep PyTorch MLP classifier [S1 + S2].
       * 'xgb'                    : Pure XGBoost GBDT classifier [S1 + S2].
       * 'presto_s1' (Archived)   : Single-radar S1-only Presto ANN model.
@@ -33,12 +32,9 @@ Execution Examples:
   # 1. Interactive setup wizard (simply run with zero arguments):
   python run_classifier.py
 
-  # 2. Enhanced automated pipeline (Joint Presto S1S2 + Red-Edge + Tile I/O + Uncertainty [SOTA]):
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto_s1s2 --seg_mode slic --stage A
-  python run_classifier.py --track PT/orbit_147 --classifier mlpxgb_presto_s1s2 --seg_mode lpis --stage A
-
-  # 3. Standard multimodal pipeline:
+  # 2. SOTA multimodal pipeline (Joint Presto S1S2 + Red-Edge + Tile I/O + Uncertainty):
   python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A
+  python run_classifier.py --track PT/orbit_147 --classifier mlpxgb_presto --seg_mode lpis --stage A
 
   # 3. Full automated pipeline using Meta AI SAM deep vision segmentation:
   python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode sam --stage A
@@ -103,12 +99,7 @@ try:
     import modules.classifier_mlpxgb_presto as _cls_mod
     sys.modules['1_classify_MLPXGB_presto_hybrid_S1S2'] = _cls_mod
     sys.modules['classifier_mlpxgb_presto'] = _cls_mod
-except Exception:
-    pass
-
-try:
-    import modules.classifier_mlpxgb_presto_S1S2 as _cls_s1s2_mod
-    sys.modules['classifier_mlpxgb_presto_S1S2'] = _cls_s1s2_mod
+    sys.modules['classifier_mlpxgb_presto_S1S2'] = _cls_mod
 except Exception:
     pass
 
@@ -130,7 +121,7 @@ def discover_available_tracks() -> List[str]:
 def run_pipeline(
     track: str,
     seg_mode: str = 'slic',
-    classifier_model: str = 'mlpxgb_presto_s1s2',
+    classifier_model: str = 'mlpxgb_presto',
     stage: Optional[str] = None,
     mlp_weight: float = 0.65,
     s1_override: Optional[str] = None,
@@ -183,30 +174,19 @@ def run_pipeline(
         mlp_weight = 0.0
 
     # Primary multimodal SOTA engine (S1 + S2 + Presto + MLP + XGBoost)
-    if classifier_model in ['mlpxgb_presto_s1s2', 's1s2']:
-        s1s2_mod = importlib.import_module("classifier_mlpxgb_presto_S1S2")
-        pipeline = s1s2_mod.ProcessingPipelineS1S2(
-            track=norm_track,
-            seg_mode=seg_mode,
-            mlp_weight=mlp_weight,
-            s1_override=s1_override,
-            s2_override=s2_override,
-            lpis_vector=lpis_vector,
-            slic_segment_ha=slic_segment_ha,
-            slic_compactness=slic_compactness,
-            slic_rag_thresh=slic_rag_thresh,
-            enable_slic_rag=enable_slic_rag
-        )
-    else:
-        s1s2_mod = importlib.import_module("classifier_mlpxgb_presto")
-        pipeline = s1s2_mod.ProcessingPipelineS1S2(
-            track=norm_track,
-            seg_mode=seg_mode,
-            mlp_weight=mlp_weight,
-            s1_override=s1_override,
-            s2_override=s2_override,
-            lpis_vector=lpis_vector
-        )
+    s1s2_mod = importlib.import_module("classifier_mlpxgb_presto")
+    pipeline = s1s2_mod.ProcessingPipelineS1S2(
+        track=norm_track,
+        seg_mode=seg_mode,
+        mlp_weight=mlp_weight,
+        s1_override=s1_override,
+        s2_override=s2_override,
+        lpis_vector=lpis_vector,
+        slic_segment_ha=slic_segment_ha,
+        slic_compactness=slic_compactness,
+        slic_rag_thresh=slic_rag_thresh,
+        enable_slic_rag=enable_slic_rag
+    )
 
     if stage is None:
         interactive_menu(pipeline, country, norm_track, classifier_model)
@@ -304,14 +284,13 @@ def interactive_setup_wizard():
     print("""
 ============================================================
  Select Classifier Architecture:
-  [1] Enhanced Multimodal Fusion (Joint Presto S1+S2 + Red-Edge/SAR + Tile I/O + Uncertainty) [S1S2 SOTA - Recommended]
-  [2] Multimodal Dual-Tier Fusion (Deep MLP + XGBoost + Presto) [Standard SOTA]
-  [3] Pure PyTorch Deep MLP [S1 + S2]
-  [4] Pure XGBoost GBDT [S1 + S2]
+  [1] Multimodal Fusion Ensemble (Joint Presto S1+S2 + Red-Edge/SAR + Tile I/O + Uncertainty) [SOTA - Recommended]
+  [2] Pure PyTorch Deep MLP [S1 + S2]
+  [3] Pure XGBoost GBDT [S1 + S2]
 ============================================================""")
-    cls_choice = input(" Enter choice [1-4] (default: 1): ").strip()
-    cls_models = {'1': 'mlpxgb_presto_s1s2', '2': 'mlpxgb_presto', '3': 'mlp', '4': 'xgb'}
-    classifier_model = cls_models.get(cls_choice, 'mlpxgb_presto_s1s2')
+    cls_choice = input(" Enter choice [1-3] (default: 1): ").strip()
+    cls_models = {'1': 'mlpxgb_presto', '2': 'mlp', '3': 'xgb'}
+    classifier_model = cls_models.get(cls_choice, 'mlpxgb_presto')
 
     # Step 4: Select Execution Mode
     print("""
@@ -357,13 +336,12 @@ def interactive_setup_wizard():
         )
 
 
-def interactive_menu(pipeline, country: str, track: str, classifier_model: str = 'mlpxgb_presto_s1s2'):
+def interactive_menu(pipeline, country: str, track: str, classifier_model: str = 'mlpxgb_presto'):
     seg_modes = ['slic', 'sam', 'lpis']
-    cls_models = ['mlpxgb_presto_s1s2', 'mlpxgb_presto', 'mlp', 'xgb']
+    cls_models = ['mlpxgb_presto', 'mlp', 'xgb']
 
     cls_labels = {
-        'mlpxgb_presto_s1s2': 'MLPXGB_PRESTO_S1S2 [Enhanced Joint SOTA]',
-        'mlpxgb_presto': 'MLPXGB_PRESTO [S1 + S2 SOTA]',
+        'mlpxgb_presto': 'MLPXGB_PRESTO [Multimodal S1+S2 SOTA]',
         'mlp': 'PYTORCH_MLP [S1 + S2]',
         'xgb': 'XGBOOST [S1 + S2]'
     }
@@ -459,9 +437,9 @@ Examples:
     parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
     parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
     parser.add_argument('--stage', default=None, help="Stage to execute: 'A' (all 1-8), or single stage '1'..'8' (legacy '0'..'7' supported)")
-    parser.add_argument('--classifier', default='mlpxgb_presto_s1s2',
-                        choices=['mlpxgb_presto_s1s2', 's1s2', 'mlpxgb_presto', 'mlp', 'xgb', 'presto_s1', 'otb'],
-                        help="Classifier model: 'mlpxgb_presto_s1s2' [Enhanced Joint S1S2 SOTA] (default), 'mlpxgb_presto' [Standard SOTA], 'mlp' [S1+S2], 'xgb' [S1+S2] (archived: 'presto_s1', 'otb')")
+    parser.add_argument('--classifier', default='mlpxgb_presto',
+                        choices=['mlpxgb_presto', 'mlpxgb_presto_s1s2', 's1s2', 'mlp', 'xgb', 'presto_s1', 'otb'],
+                        help="Classifier model: 'mlpxgb_presto' [Multimodal S1+S2 SOTA] (default), 'mlp' [S1+S2], 'xgb' [S1+S2] (archived: 'presto_s1', 'otb')")
     parser.add_argument('--seg_mode', default='slic', choices=['slic', 'sam', 'lpis'], help="Segmentation mode: 'slic' (superpixels), 'sam' (Meta AI), 'lpis' (cadastre) (default: slic)")
     parser.add_argument('--mlp_weight', type=float, default=0.65, help="Weight of MLP in fusion ensemble (0.0 to 1.0, default: 0.65)")
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 GeoTIFF raster")

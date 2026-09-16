@@ -1,27 +1,30 @@
 #!/usr/bin/env python
 """
-classifier_mlpxgb_presto_S1S2.py - Multimodal Sentinel-1 (Sigma0) + Sentinel-2 Enhanced Crop Classification
-using NASA Harvest Presto Joint Foundation Embeddings, Red-Edge & SAR Physical Features,
-High-Throughput Vectorized Chunk I/O, Outlier Noise Filtering, and Spatial Uncertainty Estimation (Entropy & Margin).
+classifier_mlpxgb_presto.py - Multimodal Sentinel-1 (Sigma0) + Sentinel-2 Crop Classification
+using NASA Harvest Presto embeddings and a Unified PyTorch MLP + XGBoost Fusion Ensemble.
 
 Pipeline Overview:
   Stage 1: Generate Multimodal Data Footprint (S1 + S2 valid data intersection)
   Stage 2: Multimodal Image Segmentation (SLIC / SAM / LPIS)
   Stage 3: Sample Point Split (70% learn / 30% control)
-  Stage 4: Enhanced Feature Extraction (Vectorized Chunk I/O + Joint Presto + Red-Edge/SAR Physical Features)
-  Stage 5: Train Unified MLP + XGBoost Fusion Ensemble (with Outlier Label Cleaning)
-  Stage 6: Object-Based Tile Inference with Bayesian Priors & Spatial Uncertainty (Shannon Entropy & Margin)
-  Stage 7: Apply Agricultural & Footprint Masks (4 rasters: class, conf, entropy, margin + Overviews)
+  Stage 4: Multimodal Feature Extraction (S1 Sigma0 + S2 Optical + S1 Presto 128d + S2 Presto 128d)
+  Stage 5: Train Unified MLP + XGBoost Fusion Ensemble
+  Stage 6: Object-Based Tile Inference with Bayesian Prior Calibration
+  Stage 7: Apply Agricultural & Data Footprint Masks
   Stage 8: Calculate Out-of-Bag Validation Metrics & Generate Styled Excel Report (.xlsx)
 
 Execution examples:
   # Mode 1: SLIC Superpixel Segmentation (Fast, no external vector required):
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto_s1s2 --seg_mode slic --stage A
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A
 
   # Mode 2: Official Cadastral LPIS Parcel Segmentation:
-  python run_classifier.py --track PT/orbit_147 --classifier mlpxgb_presto_s1s2 --seg_mode lpis --stage A
-  python run_classifier.py --track PL/orbit_12 --classifier mlpxgb_presto_s1s2 --seg_mode lpis --stage A
+  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/brp.gpkg --stage A
+  python run_classifier.py --track PL/orbit_12 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/arimr.shp --stage A
+
+  # Mode 3: Segment Anything (SAM) Deep Learning Segmentation:
+  python run_classifier.py --track PT/orbit_161 --classifier mlpxgb_presto --seg_mode sam --stage A
 """
+
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ.setdefault("OMP_NUM_THREADS", "4")
@@ -379,113 +382,6 @@ def _calculate_class_weights(y_data: np.ndarray, all_classes: np.ndarray) -> np.
 
 
 # =====================================================================
-
-
-def compute_vegetation_and_sar_indices(s1_means: Optional[np.ndarray], s2_means: Optional[np.ndarray], num_dates_s1: int, num_dates_s2: int) -> Tuple[np.ndarray, List[str]]:
-    """
-    Computes physiological red-edge (NDRE1, NDRE2), optical (NDVI, NDWI), and polarimetric SAR (RVI, CR)
-    indices across multi-temporal observations, including temporal summary statistics (max, min, amp, mean).
-    """
-    N = s1_means.shape[0] if s1_means is not None else (s2_means.shape[0] if s2_means is not None else 0)
-    if N == 0:
-        return np.zeros((0, 0), dtype=np.float32), []
-
-    feats = []
-    feat_names = []
-
-    if s2_means is not None and num_dates_s2 > 0:
-        ndre1_list, ndre2_list, ndvi_list, ndwi_list = [], [], [], []
-        for d in range(num_dates_s2):
-            base_idx = d * 9
-            b4 = s2_means[:, base_idx + 2] / 10000.0
-            b5 = s2_means[:, base_idx + 3] / 10000.0
-            b6 = s2_means[:, base_idx + 4] / 10000.0
-            b8a = s2_means[:, base_idx + 6] / 10000.0
-            b11 = s2_means[:, base_idx + 7] / 10000.0
-
-            ndre1 = (b8a - b5) / (b8a + b5 + 1e-6)
-            ndre2 = (b6 - b5) / (b6 + b5 + 1e-6)
-            ndvi = (b8a - b4) / (b8a + b4 + 1e-6)
-            ndwi = (b8a - b11) / (b8a + b11 + 1e-6)
-
-            ndre1_list.append(ndre1)
-            ndre2_list.append(ndre2)
-            ndvi_list.append(ndvi)
-            ndwi_list.append(ndwi)
-            feat_names.extend([f"ndre1_d{d}", f"ndre2_d{d}", f"ndvi_d{d}", f"ndwi_d{d}"])
-
-        ndre1_arr = np.column_stack(ndre1_list)
-        ndre2_arr = np.column_stack(ndre2_list)
-        ndvi_arr = np.column_stack(ndvi_list)
-        ndwi_arr = np.column_stack(ndwi_list)
-
-        s2_temporal_stats = np.column_stack([
-            np.max(ndre1_arr, axis=1), np.min(ndre1_arr, axis=1), np.max(ndre1_arr, axis=1) - np.min(ndre1_arr, axis=1), np.mean(ndre1_arr, axis=1),
-            np.max(ndre2_arr, axis=1), np.mean(ndre2_arr, axis=1),
-            np.max(ndvi_arr, axis=1), np.min(ndvi_arr, axis=1), np.max(ndvi_arr, axis=1) - np.min(ndvi_arr, axis=1), np.mean(ndvi_arr, axis=1),
-            np.max(ndwi_arr, axis=1), np.mean(ndwi_arr, axis=1)
-        ])
-        feat_names.extend([
-            "ndre1_max", "ndre1_min", "ndre1_amp", "ndre1_mean",
-            "ndre2_max", "ndre2_mean",
-            "ndvi_max", "ndvi_min", "ndvi_amp", "ndvi_mean",
-            "ndwi_max", "ndwi_mean"
-        ])
-        feats.append(np.hstack([ndre1_arr, ndre2_arr, ndvi_arr, ndwi_arr, s2_temporal_stats]))
-
-    if s1_means is not None and num_dates_s1 > 0:
-        rvi_list, cr_list = [], []
-        for d in range(num_dates_s1):
-            vh_db = s1_means[:, d]
-            vv_db = s1_means[:, num_dates_s1 + d]
-
-            vh_lin = np.power(10.0, np.clip(vh_db, -35.0, 10.0) / 10.0)
-            vv_lin = np.power(10.0, np.clip(vv_db, -35.0, 10.0) / 10.0)
-
-            rvi = (4.0 * vh_lin) / (vv_lin + vh_lin + 1e-6)
-            cr = vh_db - vv_db
-
-            rvi_list.append(rvi)
-            cr_list.append(cr)
-            feat_names.extend([f"rvi_d{d}", f"cr_d{d}"])
-
-        rvi_arr = np.column_stack(rvi_list)
-        cr_arr = np.column_stack(cr_list)
-
-        s1_temporal_stats = np.column_stack([
-            np.max(rvi_arr, axis=1), np.min(rvi_arr, axis=1), np.max(rvi_arr, axis=1) - np.min(rvi_arr, axis=1), np.mean(rvi_arr, axis=1),
-            np.max(cr_arr, axis=1), np.min(cr_arr, axis=1), np.mean(cr_arr, axis=1)
-        ])
-        feat_names.extend([
-            "rvi_max", "rvi_min", "rvi_amp", "rvi_mean",
-            "cr_max", "cr_min", "cr_mean"
-        ])
-        feats.append(np.hstack([rvi_arr, cr_arr, s1_temporal_stats]))
-
-    arr_res = np.hstack(feats).astype(np.float32) if feats else np.zeros((N, 0), dtype=np.float32)
-    return arr_res, feat_names
-
-
-def _clean_label_noise(X: np.ndarray, y: np.ndarray, classes: np.ndarray, prune_pct: float = 0.02) -> np.ndarray:
-    """
-    Filters out extreme multivariate feature outliers per crop class to sanitize training boundaries.
-    """
-    keep_mask = np.ones(len(y), dtype=bool)
-    pruned_count = 0
-    for c in classes:
-        idx = np.where(y == c)[0]
-        if len(idx) < 40:
-            continue
-        X_c = X[idx]
-        centroid = np.median(X_c, axis=0)
-        dist = np.linalg.norm(X_c - centroid, axis=1)
-        cutoff = np.percentile(dist, 100.0 * (1.0 - prune_pct))
-        outliers = idx[dist > cutoff]
-        keep_mask[outliers] = False
-        pruned_count += len(outliers)
-    if pruned_count > 0:
-        print(f"    [LABEL FILTER] Pruned {pruned_count} extreme outlier samples ({prune_pct*100:.1f}% per class) to sanitize boundaries.")
-    return keep_mask
 # 2. UNIFIED MLP + XGBOOST FUSION ENSEMBLE CLASSIFIER
 # =====================================================================
 
@@ -644,7 +540,6 @@ current_mod = sys.modules.get(__name__)
 if current_mod:
     sys.modules['1_classify_MLPXGB_presto_hybrid_S1S2'] = current_mod
     sys.modules['classifier_mlpxgb_presto'] = current_mod
-    sys.modules['classifier_mlpxgb_presto_S1S2'] = current_mod
 
 main_mod = sys.modules.get('__main__')
 if main_mod:
@@ -656,9 +551,8 @@ if main_mod:
 # 3. MULTIMODAL PRESTO EMBEDDINGS (S1 + S2)
 # =====================================================================
 
-
 class PrestoMultimodalExtractor:
-    """Computes 128-dimensional Presto foundation embeddings for multi-temporal S1 and S2 series, including true joint multimodal fusion."""
+    """Computes 128-dimensional Presto foundation embeddings for multi-temporal S1 and S2 series."""
     def __init__(self, device: str = "cpu"):
         self.device = device
         self.weights_path = presto_dir / "default_model.pt"
@@ -676,78 +570,6 @@ class PrestoMultimodalExtractor:
         self.model.load_state_dict(state_dict, strict=False)
         self.model.to(self.device)
         self.model.eval()
-
-    def get_joint_embeddings(
-        self,
-        batch_s1_vv_vh: Optional[torch.Tensor],
-        batch_s2_9bands: Optional[torch.Tensor],
-        batch_latlons: torch.Tensor,
-        months_tensor: torch.Tensor
-    ) -> np.ndarray:
-        """Computes true multimodal joint cross-attention embeddings across S1 + S2 simultaneously."""
-        if batch_s2_9bands is not None:
-            B, T, _ = batch_s2_9bands.shape
-        elif batch_s1_vv_vh is not None:
-            B, T, _ = batch_s1_vv_vh.shape
-        else:
-            raise ValueError("At least one modality (S1 or S2) must be present.")
-
-        x = torch.zeros(B, T, 17, dtype=torch.float32, device=self.device)
-        mask = torch.ones(B, T, 17, dtype=torch.float32, device=self.device)
-
-        if batch_s1_vv_vh is not None:
-            t_s1 = min(T, batch_s1_vv_vh.shape[1])
-            x[:, :t_s1, 0] = batch_s1_vv_vh[:, :t_s1, 0].to(self.device)
-            x[:, :t_s1, 1] = batch_s1_vv_vh[:, :t_s1, 1].to(self.device)
-            mask[:, :t_s1, 0:2] = 0.0
-
-        if batch_s2_9bands is not None:
-            t_s2 = min(T, batch_s2_9bands.shape[1])
-            b2 = batch_s2_9bands[:, :t_s2, 0].to(self.device)
-            b3 = batch_s2_9bands[:, :t_s2, 1].to(self.device)
-            b4 = batch_s2_9bands[:, :t_s2, 2].to(self.device)
-            b5 = batch_s2_9bands[:, :t_s2, 3].to(self.device)
-            b6 = batch_s2_9bands[:, :t_s2, 4].to(self.device)
-            b7 = batch_s2_9bands[:, :t_s2, 5].to(self.device)
-            b8a = batch_s2_9bands[:, :t_s2, 6].to(self.device)
-            b11 = batch_s2_9bands[:, :t_s2, 7].to(self.device)
-            b12 = batch_s2_9bands[:, :t_s2, 8].to(self.device)
-            ndvi = (b8a - b4) / (b8a + b4 + 1e-6)
-
-            x[:, :t_s2, 2] = b2
-            x[:, :t_s2, 3] = b3
-            x[:, :t_s2, 4] = b4
-            x[:, :t_s2, 5] = b5
-            x[:, :t_s2, 6] = b6
-            x[:, :t_s2, 7] = b7
-            x[:, :t_s2, 9] = b8a
-            x[:, :t_s2, 10] = b11
-            x[:, :t_s2, 11] = b12
-            x[:, :t_s2, 16] = ndvi
-
-            mask[:, :t_s2, [2, 3, 4, 5, 6, 7, 9, 10, 11, 16]] = 0.0
-
-        dw = torch.ones(B, T, dtype=torch.long, device=self.device) * 9
-        if months_tensor.ndim == 1:
-            if len(months_tensor) >= T:
-                m_slice = months_tensor[:T]
-            else:
-                pad = torch.zeros(T - len(months_tensor), dtype=torch.long, device=self.device)
-                m_slice = torch.cat([months_tensor, pad])
-            month = m_slice.unsqueeze(0).expand(B, -1)
-        else:
-            month = months_tensor
-
-        with torch.no_grad():
-            features = self.model.encoder(
-                x=x,
-                dynamic_world=dw,
-                latlons=batch_latlons.to(self.device),
-                mask=mask,
-                month=month,
-                eval_task=True
-            )
-        return features.cpu().numpy()
 
     def get_s1_embeddings(self, batch_s1_vv_vh: torch.Tensor, batch_latlons: torch.Tensor, months_tensor: torch.Tensor) -> np.ndarray:
         B, T, _ = batch_s1_vv_vh.shape
@@ -815,6 +637,7 @@ class PrestoMultimodalExtractor:
                 eval_task=True
             )
         return features.cpu().numpy()
+
 
 # =====================================================================
 # SAM WORKER (MULTIPROCESSING)
@@ -996,110 +819,22 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
         if not np.any(valid_mask):
             return x, y, None, None
 
-        # Multi-band robust 2-98% percentile min-max scaling per channel
-        norm_bands = []
-        for b_arr in img_list:
-            v_pix = b_arr[valid_mask]
-            if len(v_pix) > 0:
-                p2 = float(np.percentile(v_pix, 2.0))
-                p98 = float(np.percentile(v_pix, 98.0))
-                if (p98 - p2) > 1e-6:
-                    scaled = np.clip((b_arr - p2) / (p98 - p2), 0.0, 1.0)
-                else:
-                    scaled = np.zeros_like(b_arr, dtype=np.float64)
-            else:
-                scaled = np.zeros_like(b_arr, dtype=np.float64)
-            norm_bands.append(scaled.astype(np.float64))
-
-        img_norm = np.dstack(norm_bands)
+        img_norm = img_as_float(img)
         tile_size = params.get('tile_size', 2048)
-        active_pixels = int(np.sum(valid_mask))
-        if active_pixels < 20:
-            return x, y, None, None
-        pixels_per_segment = params.get('pixels_per_segment', 250.0)
-        n_segments_tile = max(5, int(active_pixels / max(10.0, pixels_per_segment)))
+        total_tile_pixels = xsize_buf * ysize_buf
+        pixels_per_segment = max_tile_pixels / params.get('n_segments', 32000)
+        n_segments_tile = max(10, int(total_tile_pixels / max(10.0, pixels_per_segment)))
         n_segments_tile = min(n_segments_tile, 40000)
 
-        # Pass mask=None to avoid scikit-image allocating an (N, N) distance matrix in _get_mask_centroids,
-        # which causes 136 GiB RAM allocations when N > 50,000. Grid centroids use O(1) RAM.
         segments_buf = slic(
             img_norm,
             n_segments=n_segments_tile,
             compactness=params.get('compactness', 0.05),
             sigma=params.get('slic_sigma', 1.5),
             start_label=1,
-            mask=None,
-            enforce_connectivity=True,
-            min_size_factor=params.get('min_size_factor', 0.2)
+            mask=None
         )
         segments_buf[~valid_mask] = 0
-
-        # Vectorized Region Adjacency Graph (RAG) spectral fusion (disabled by default):
-        # When enabled, merges adjacent sub-parcel slivers with identical signatures without exceeding max parcel area.
-        enable_rag = params.get('enable_rag', False)
-        rag_thresh = float(params.get('rag_thresh', 0.02))
-        max_rag_px = int(params.get('max_rag_parcel_ha', 15.0) * 100.0)
-        if enable_rag and rag_thresh > 0:
-            u_labels, inv = np.unique(segments_buf, return_inverse=True)
-            if len(u_labels) > 1:
-                flat_inv = inv.ravel()
-                n_lbl = len(u_labels)
-                counts = np.bincount(flat_inv)
-                means = np.zeros((n_lbl, img_norm.shape[2]), dtype=np.float32)
-                for c in range(img_norm.shape[2]):
-                    means[:, c] = np.bincount(flat_inv, weights=img_norm[:, :, c].ravel()) / np.maximum(1, counts)
-
-                # Extract adjacency pairs across horizontal and vertical neighbor pixels
-                h_left = segments_buf[:, :-1].reshape(-1)
-                h_right = segments_buf[:, 1:].reshape(-1)
-                v_top = segments_buf[:-1, :].reshape(-1)
-                v_bottom = segments_buf[1:, :].reshape(-1)
-
-                pairs_h = np.column_stack([h_left, h_right])
-                pairs_v = np.column_stack([v_top, v_bottom])
-                all_pairs = np.vstack([pairs_h, pairs_v])
-
-                valid_pairs = (all_pairs[:, 0] > 0) & (all_pairs[:, 1] > 0) & (all_pairs[:, 0] != all_pairs[:, 1])
-                if np.any(valid_pairs):
-                    edges = np.unique(np.sort(all_pairs[valid_pairs], axis=1), axis=0)
-
-                    lbl_map = np.zeros(segments_buf.max() + 1, dtype=np.int32)
-                    lbl_map[u_labels] = np.arange(n_lbl, dtype=np.int32)
-                    idx1 = lbl_map[edges[:, 0]]
-                    idx2 = lbl_map[edges[:, 1]]
-
-                    diff = means[idx1] - means[idx2]
-                    dists = np.linalg.norm(diff, axis=1)
-
-                    size1 = counts[idx1]
-                    size2 = counts[idx2]
-                    merge_mask = (dists < rag_thresh) & ((size1 + size2) <= max_rag_px)
-                    merge_edges = edges[merge_mask]
-                    if len(merge_edges) > 0:
-                        parent = {}
-
-                        def find(i):
-                            path = []
-                            while parent.get(i, i) != i:
-                                path.append(i)
-                                i = parent[i]
-                            for node in path:
-                                parent[node] = i
-                            return i
-
-                        def union(i, j):
-                            ri = find(i)
-                            rj = find(j)
-                            if ri != rj:
-                                parent[rj] = ri
-
-                        for e in merge_edges:
-                            union(int(e[0]), int(e[1]))
-
-                        remap = np.arange(segments_buf.max() + 1, dtype=np.int32)
-                        for k in parent.keys():
-                            remap[k] = find(k)
-                        segments_buf = remap[segments_buf]
 
         y_offset = y - y_start_buf
         x_offset = x - x_start_buf
@@ -1118,19 +853,7 @@ def slic_worker(tile_info, ras_path, footprint_path, params):
 # =====================================================================
 
 class ProcessingPipelineS1S2:
-    def __init__(
-        self,
-        track: str,
-        seg_mode: str = 'slic',
-        mlp_weight: float = 0.65,
-        s1_override: Optional[str] = None,
-        s2_override: Optional[str] = None,
-        lpis_vector: Optional[str] = None,
-        slic_segment_ha: Optional[float] = None,
-        slic_compactness: float = 0.05,
-        slic_rag_thresh: float = 0.02,
-        enable_slic_rag: bool = False
-    ):
+    def __init__(self, track: str, seg_mode: str = 'slic', mlp_weight: float = 0.65, s1_override: Optional[str] = None, s2_override: Optional[str] = None, lpis_vector: Optional[str] = None):
         self.track = track
         self.seg_mode = seg_mode.lower()
         self.mlp_weight = mlp_weight
@@ -1139,18 +862,6 @@ class ProcessingPipelineS1S2:
         norm_track = track.replace('\\', '/')
         self.country = norm_track.split('/')[0].upper() if '/' in norm_track else track.upper()
         self.total_stages = TOTAL_STAGES
-
-        # Regional adaptive scale: default parcel scale matching cadastral dimensions
-        if slic_segment_ha is not None:
-            self.slic_segment_ha = float(slic_segment_ha)
-        else:
-            if self.country in ['PT', 'ES', 'IT', 'GR', 'PL']:
-                self.slic_segment_ha = 1.8  # ~180 pixels at 10m (~134m x 134m parcel size)
-            else:
-                self.slic_segment_ha = 3.0  # ~300 pixels at 10m (~173m x 173m) for NL/FR/DE
-        self.slic_compactness = float(slic_compactness)
-        self.slic_rag_thresh = float(slic_rag_thresh)
-        self.enable_slic_rag = bool(enable_slic_rag)
 
         self.sanitized_track = norm_track.replace('/', '_')
         if not self.sanitized_track.startswith(self.country + "_"):
@@ -1187,24 +898,21 @@ class ProcessingPipelineS1S2:
         # Resolve Samples & Output Paths
         self.sample_shp = self._resolve_samples_shp()
         
-        self.suffix = f"_mlpxgb_presto_s1s2_{self.seg_mode}"
+        self.suffix = f"_mlpxgb_presto_{self.seg_mode}"
 
         # Standard canonical targets in workingDirs/
         self.footprint_mask = self.seg_dir / f"{self.file_prefix}_data_footprint.tif"
         self.seg_tif = self.seg_dir / f"{self.file_prefix}_segmentation_{self.seg_mode}.tif"
         self.learn_shp = self.samples_dir / f"{self.file_prefix}_learn_{self.seg_mode}.shp"
         self.control_shp = self.samples_dir / f"{self.file_prefix}_control_{self.seg_mode}.shp"
-        self.sel_csv = self.samples_dir / f"{self.file_prefix}_mlpxgb_presto_s1s2_learn_features_{self.seg_mode}.csv"
-        self.model_pkl = self.model_dir / f"{self.file_prefix}_mlpxgb_presto_s1s2_model_{self.seg_mode}.pkl"
+        self.sel_csv = self.samples_dir / f"{self.file_prefix}_mlpxgb_presto_learn_features_{self.seg_mode}.csv"
+        self.model_pkl = self.model_dir / f"{self.file_prefix}_mlpxgb_presto_model_{self.seg_mode}.pkl"
         self.class_tif = self.class_dir / f"{self.file_prefix}_classified{self.suffix}.tif"
         self.conf_tif = self.class_dir / f"{self.file_prefix}_confidence{self.suffix}.tif"
-        self.entropy_tif = self.class_dir / f"{self.file_prefix}_entropy{self.suffix}.tif"
-        self.margin_tif = self.class_dir / f"{self.file_prefix}_margin{self.suffix}.tif"
         self.masked_class = self.class_dir / f"{self.file_prefix}_classified_masked{self.suffix}.tif"
         self.masked_conf = self.class_dir / f"{self.file_prefix}_confidence_masked{self.suffix}.tif"
-        self.masked_entropy = self.class_dir / f"{self.file_prefix}_entropy_masked{self.suffix}.tif"
-        self.masked_margin = self.class_dir / f"{self.file_prefix}_margin_masked{self.suffix}.tif"
         self.metrics_fp = self.reports_dir / f"report_{self.file_prefix}{self.suffix}.xlsx"
+
         # Fallback to legacy workingDir/ only if input stacks exist in legacy location and not in workingDirs
         if not self.proc_dir.exists():
             legacy_samples = [
@@ -1433,90 +1141,6 @@ class ProcessingPipelineS1S2:
             if shps: return shps[0]
         return None
 
-    def _create_seasonal_sar_composite(self) -> Path:
-        """
-        Creates a high-SNR 1-channel seasonal SAR composite for SLIC superpixel segmentation.
-        Focuses on peak crop growing months (April to August) where canopy structural contrast
-        between agricultural fields is maximal and permanent cadastral boundaries are sharpest.
-        Averages across multi-temporal Sentinel-1 acquisitions to eliminate radar speckle noise.
-        """
-        composite_tif = self.seg_dir / f"{self.file_prefix}_sar_seasonal_composite.tif"
-        if composite_tif.exists() and composite_tif.stat().st_size > 1024:
-            return composite_tif
-
-        ref_ras = self.s1_ras if (self.s1_ras and self.s1_ras.exists()) else self.s2_ras
-        if not ref_ras or not ref_ras.exists():
-            raise FileNotFoundError("Neither Sentinel-1 nor Sentinel-2 raster is available for segmentation composite.")
-
-        ds = gdal.Open(str(ref_ras), gdal.GA_ReadOnly)
-        cols = ds.RasterXSize
-        rows = ds.RasterYSize
-        nbands = ds.RasterCount
-        gt = ds.GetGeoTransform()
-        proj = ds.GetProjection()
-
-        # Identify target bands for seasonal peak growth (April to August)
-        target_months = ['apr', 'may', 'jun', 'jul', 'aug']
-        matched_bands = []
-        if self.s1_ras and ref_ras == self.s1_ras:
-            for b in range(1, nbands + 1):
-                desc = str(ds.GetRasterBand(b).GetDescription()).lower()
-                if any(m in desc for m in target_months):
-                    matched_bands.append(b)
-
-        if len(matched_bands) >= 4:
-            selected_bands = matched_bands
-            print(f"    [INFO] Generating seasonal SAR composite using {len(selected_bands)} April-August bands...")
-        else:
-            selected_bands = list(range(1, nbands + 1))
-            print(f"    [INFO] Generating temporal SAR composite using all {len(selected_bands)} bands...")
-
-        driver = gdal.GetDriverByName('GTiff')
-        out_ds = driver.Create(
-            str(composite_tif), cols, rows, 1, gdal.GDT_Float32,
-            options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
-        )
-        out_ds.SetGeoTransform(gt)
-        out_ds.SetProjection(proj)
-        out_band = out_ds.GetRasterBand(1)
-        out_band.SetNoDataValue(0.0)
-
-        tile_size = 4096
-        for y in range(0, rows, tile_size):
-            for x in range(0, cols, tile_size):
-                xsize = min(tile_size, cols - x)
-                ysize = min(tile_size, rows - y)
-
-                sum_arr = np.zeros((ysize, xsize), dtype=np.float32)
-                cnt_arr = np.zeros((ysize, xsize), dtype=np.int16)
-
-                for b in selected_bands:
-                    band = ds.GetRasterBand(b)
-                    arr = band.ReadAsArray(x, y, xsize, ysize)
-                    if arr is None:
-                        continue
-                    nodata = band.GetNoDataValue()
-                    if nodata is not None:
-                        valid = (arr != nodata) & (~np.isnan(arr)) & (arr != 0)
-                    else:
-                        valid = (~np.isnan(arr)) & (arr != 0)
-                    sum_arr[valid] += arr[valid]
-                    cnt_arr[valid] += 1
-
-                mask = cnt_arr > 0
-                out_block = np.zeros((ysize, xsize), dtype=np.float32)
-                out_block[mask] = sum_arr[mask] / cnt_arr[mask]
-                out_band.WriteArray(out_block, x, y)
-
-        out_ds.FlushCache()
-        out_ds = None
-        ds = None
-        print(f"    [OK] Seasonal SAR composite created successfully: {composite_tif.name}")
-        return composite_tif
-
-    # Backward compatibility alias
-    _create_multimodal_pheno_composite = _create_seasonal_sar_composite
-
     def _create_summed_composite(self, ref_ras: Path) -> Path:
         print("    [INFO] Creating high-SNR summed composite for segmentation...")
         composite_tif = self.seg_dir / f"{self.file_prefix}_summed_composite.tif"
@@ -1565,125 +1189,6 @@ class ProcessingPipelineS1S2:
         out_ds = None
         ds = None
         return composite_tif
-
-    def _stitch_tile_seams(self, seg_ds, tile_size: int, cols: int, rows: int, comp_path: Path):
-        """
-        Fast Disjoint Set Union (Union-Find) boundary stitching pass across tile borders.
-        Merges adjacent segment labels on vertical (x=2048, 4096...) and horizontal (y=2048, 4096...)
-        tile seams if they belong to the same continuous field with consistent spectral NDVI.
-        """
-        print("    [TILE STITCHING] Eliminating tile seam artifacts across block boundaries...")
-        seg_band = seg_ds.GetRasterBand(1)
-        ds_comp = gdal.Open(str(comp_path), gdal.GA_ReadOnly) if comp_path.exists() else None
-        ndvi_band = ds_comp.GetRasterBand(1) if ds_comp else None
-
-        parent = {}
-
-        def find(i):
-            path = []
-            while parent.get(i, i) != i:
-                path.append(i)
-                i = parent[i]
-            for node in path:
-                parent[node] = i
-            return i
-
-        def union(i, j):
-            root_i = find(i)
-            root_j = find(j)
-            if root_i != root_j:
-                parent[root_j] = root_i
-
-        merges_count = 0
-
-        # Dynamically determine seam difference threshold (0.8 dB for SAR dB composites, 0.05 for normalized [0, 1])
-        seam_thresh = 0.05
-        if ndvi_band:
-            sample_data = ndvi_band.ReadAsArray(cols // 4, rows // 4, min(2048, cols // 2), min(2048, rows // 2))
-            if sample_data is not None:
-                v = sample_data[(sample_data != 0) & (~np.isnan(sample_data))]
-                if len(v) > 0 and np.nanmean(v) < 0:
-                    seam_thresh = 0.8
-
-        # 1. Check vertical boundaries (along x = tile_size, 2*tile_size, ...)
-        for x in range(tile_size, cols, tile_size):
-            seg_col = seg_band.ReadAsArray(x - 1, 0, 2, rows)
-            if seg_col is None:
-                continue
-            left_ids = seg_col[:, 0]
-            right_ids = seg_col[:, 1]
-            valid = (left_ids > 0) & (right_ids > 0) & (left_ids != right_ids)
-
-            if np.any(valid):
-                if ndvi_band:
-                    comp_col = ndvi_band.ReadAsArray(x - 1, 0, 2, rows)
-                    diff = np.abs(comp_col[:, 0] - comp_col[:, 1])
-                    valid = valid & (diff < seam_thresh)
-
-                cand_left = left_ids[valid]
-                cand_right = right_ids[valid]
-                pairs, counts = np.unique(np.column_stack([cand_left, cand_right]), axis=0, return_counts=True)
-                for (lid, rid), cnt in zip(pairs, counts):
-                    if cnt >= 8:
-                        union(int(lid), int(rid))
-                        merges_count += 1
-
-        # 2. Check horizontal boundaries (along y = tile_size, 2*tile_size, ...)
-        for y in range(tile_size, rows, tile_size):
-            seg_row = seg_band.ReadAsArray(0, y - 1, cols, 2)
-            if seg_row is None:
-                continue
-            top_ids = seg_row[0, :]
-            bot_ids = seg_row[1, :]
-            valid = (top_ids > 0) & (bot_ids > 0) & (top_ids != bot_ids)
-
-            if np.any(valid):
-                if ndvi_band:
-                    comp_row = ndvi_band.ReadAsArray(0, y - 1, cols, 2)
-                    diff = np.abs(comp_row[0, :] - comp_row[1, :])
-                    valid = valid & (diff < seam_thresh)
-
-                cand_top = top_ids[valid]
-                cand_bot = bot_ids[valid]
-                pairs, counts = np.unique(np.column_stack([cand_top, cand_bot]), axis=0, return_counts=True)
-                for (tid, bid), cnt in zip(pairs, counts):
-                    if cnt >= 8:
-                        union(int(tid), int(bid))
-                        merges_count += 1
-
-        if ds_comp:
-            ds_comp = None
-
-        if merges_count == 0 or not parent:
-            print("    [TILE STITCHING] No boundary seam merges required.")
-            return
-
-        # Flatten parent mappings
-        remap = {}
-        for k in parent.keys():
-            root = find(k)
-            if root != k:
-                remap[int(k)] = int(root)
-
-        print(f"    [TILE STITCHING] Merging {len(remap):,} boundary-fractured segment halves into unified parcels...")
-        chunk_sz = 4096
-        remap_keys_set = set(remap.keys())
-        for y in range(0, rows, chunk_sz):
-            for x in range(0, cols, chunk_sz):
-                xs = min(chunk_sz, cols - x)
-                ys = min(chunk_sz, rows - y)
-                block = seg_band.ReadAsArray(x, y, xs, ys)
-                if block is None:
-                    continue
-                u_ids = np.unique(block)
-                intersect_keys = [k for k in u_ids if k in remap_keys_set]
-                if intersect_keys:
-                    for old_id in intersect_keys:
-                        block[block == old_id] = remap[old_id]
-                    seg_band.WriteArray(block, x, y)
-
-        seg_band.FlushCache()
-        print(f"    [TILE STITCHING COMPLETE] Tile seams successfully stitched.")
 
     # --- Stage 1: Footprint ---
     def stage_1_generate_footprint(self, force_recompute=False):
@@ -1857,37 +1362,21 @@ class ProcessingPipelineS1S2:
             else:
                 print(f"    [WARNING] LPIS vector dataset not found. Falling back to SLIC.")
 
-        # Create high-SNR seasonal SAR composite (April-August peak crop growth)
+        # Create composite if needed for SLIC/SAM
         try:
-            comp_ras = self._create_seasonal_sar_composite()
-        except Exception as e:
-            print(f"    [WARNING] Seasonal SAR composite failed ({e}), falling back to summed composite.")
-            try:
-                comp_ras = self._create_summed_composite(ref_ras)
-            except Exception:
-                comp_ras = ref_ras
+            comp_ras = self._create_summed_composite(ref_ras)
+        except Exception:
+            comp_ras = ref_ras
 
         if self.seg_mode == 'sam':
             self._run_python_segmentation_tiled(comp_ras, self.stage1_params, 'python_sam')
         else:
-            pixels_per_seg = max(10, int((self.slic_segment_ha * 10000.0) / 100.0))
-            tile_sz = 2048
-            buf_sz = 64
-            max_tile_pixels = (tile_sz + 2 * buf_sz) ** 2
-            n_segments_tile = max(100, int(max_tile_pixels / pixels_per_seg))
-            rag_info = f" | RAG Fusion: thresh={self.slic_rag_thresh}" if self.enable_slic_rag else " | RAG Fusion: Disabled"
-            print(f"    [SLIC TUNING] Target parcel size: {self.slic_segment_ha:.2f} ha (~{pixels_per_seg} px) | Compactness: {self.slic_compactness:.2f}{rag_info}")
             slic_params = {
-                'tile_size': tile_sz,
-                'buffer': buf_sz,
-                'n_segments': n_segments_tile,
-                'pixels_per_segment': pixels_per_seg,
-                'compactness': self.slic_compactness,
-                'slic_sigma': 1.5,
-                'min_size_factor': 0.2,
-                'enable_rag': self.enable_slic_rag,
-                'rag_thresh': self.slic_rag_thresh,
-                'max_rag_parcel_ha': 15.0
+                'tile_size': 2048,
+                'buffer': 64,
+                'n_segments': 32000,
+                'compactness': 0.05,
+                'slic_sigma': 1.5
             }
             self._run_python_segmentation_tiled(comp_ras, slic_params, 'python_slic')
 
@@ -1984,12 +1473,6 @@ class ProcessingPipelineS1S2:
                             out_band.WriteArray(np.zeros((ysize_valid, xsize_valid), dtype=np.int32), x, y)
                             break
 
-        # Stitch tile seams to eliminate boundary-cut parcel fracturing
-        if not is_sam:
-            self._stitch_tile_seams(out_ds, tile_size, cols, rows, ras_path)
-            print("    [SIEVE FILTER] Absorbing isolated micro-slivers (< 30 px) into adjacent parcels...")
-            gdal.SieveFilter(out_band, None, out_band, 30, 8, callback=None)
-
         out_band.FlushCache()
         out_ds = None
         ds = None
@@ -2029,7 +1512,6 @@ class ProcessingPipelineS1S2:
         print(f"    Split {len(gdf)} points -> {len(gdf_train)} train, {len(gdf_val)} validation.")
 
     # --- Stage 4: Multimodal Feature Extraction ---
-    # --- Stage 4: Multimodal Feature Extraction (Enhanced Vectorized Chunk I/O) ---
     def stage_4_selection(self, force_recompute=False):
         stage = 4
         if self.sel_csv.exists() and not force_recompute:
@@ -2037,37 +1519,42 @@ class ProcessingPipelineS1S2:
                 df_test = pd.read_csv(self.sel_csv, nrows=5)
                 n_feats = df_test.shape[1] - 2
                 if self.s1_ras and self.s2_ras and n_feats < 400:
-                    print(f"[Stage {stage}/{self.total_stages}] Existing CSV has only {n_feats} features (expected ~450+ multimodal features). Re-extracting...")
+                    print(f"[Stage {stage}/{self.total_stages}] Existing CSV has only {n_feats} features (expected ~426 multimodal features). Re-extracting...")
                 else:
                     print(f"[Stage {stage}/{self.total_stages}] Multimodal features already extracted ({n_feats} features in {self.sel_csv.name}), skipping.")
                     return
             except Exception:
                 pass
 
-        print(f"[Stage {stage}/{self.total_stages}] Extracting Multimodal Features (S1 Sigma0 + S2 Optical + Joint Presto + Physical Indices)...")
+        print(f"[Stage {stage}/{self.total_stages}] Extracting Multimodal Features (S1 Sigma0 + S2 Optical + Presto S1/S2)...")
         device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
         extractor = PrestoMultimodalExtractor(device=device)
 
         gdf = gpd.read_file(str(self.learn_shp), engine="pyogrio")
         seg_ds = gdal.Open(str(self.seg_tif))
-        seg_band = seg_ds.GetRasterBand(1)
-        cols, rows = seg_ds.RasterXSize, seg_ds.RasterYSize
+        seg_arr = seg_ds.GetRasterBand(1).ReadAsArray()
         gt = seg_ds.GetGeoTransform()
         inv_gt = gdal.InvGeoTransform(gt)
-        proj = seg_ds.GetProjection()
+        cols, rows = seg_ds.RasterXSize, seg_ds.RasterYSize
 
         gdf_wgs84 = gdf.to_crs("EPSG:4326")
-        if proj and gdf.crs:
+        seg_proj = seg_ds.GetProjection()
+        if seg_proj and gdf.crs:
             from pyproj import CRS
-            target_crs = CRS.from_wkt(proj)
-            gdf_proj = gdf.to_crs(target_crs) if gdf.crs != target_crs else gdf
+            target_crs = CRS.from_wkt(seg_proj)
+            if gdf.crs != target_crs:
+                gdf_proj = gdf.to_crs(target_crs)
+            else:
+                gdf_proj = gdf
         else:
             gdf_proj = gdf
 
         if hasattr(gdf_proj.geometry, 'x'):
-            xs, ys = gdf_proj.geometry.x.values, gdf_proj.geometry.y.values
+            xs = gdf_proj.geometry.x.values
+            ys = gdf_proj.geometry.y.values
         else:
-            xs, ys = gdf_proj.geometry.centroid.x.values, gdf_proj.geometry.centroid.y.values
+            xs = gdf_proj.geometry.centroid.x.values
+            ys = gdf_proj.geometry.centroid.y.values
 
         pxs = (inv_gt[0] + inv_gt[1] * xs + inv_gt[2] * ys).astype(int)
         pys = (inv_gt[3] + inv_gt[4] * xs + inv_gt[5] * ys).astype(int)
@@ -2077,8 +1564,7 @@ class ProcessingPipelineS1S2:
         segment_coords = {}
         for idx, (px, py, cid) in enumerate(zip(pxs, pys, crop_ids)):
             if 0 <= px < cols and 0 <= py < rows:
-                sid_arr = seg_band.ReadAsArray(px, py, 1, 1)
-                sid = int(sid_arr[0, 0]) if sid_arr is not None else 0
+                sid = seg_arr[py, px]
                 if sid > 0:
                     target_segments[sid] = cid
                     geom_wgs = gdf_wgs84.iloc[idx].geometry
@@ -2086,7 +1572,8 @@ class ProcessingPipelineS1S2:
                     segment_coords[sid] = (centroid_wgs.y, centroid_wgs.x)
 
         print(f"    Found {len(target_segments)} unique training segments.")
-        target_sids = set(target_segments.keys())
+        from scipy.ndimage import find_objects
+        slices = find_objects(seg_arr)
 
         ds_s1 = gdal.Open(str(self.s1_ras)) if self.s1_ras else None
         ds_s2 = gdal.Open(str(self.s2_ras)) if self.s2_ras else None
@@ -2101,105 +1588,77 @@ class ProcessingPipelineS1S2:
 
         month_tensor_s1 = torch.tensor(months_s1, dtype=torch.long, device=device)
         month_tensor_s2 = torch.tensor(months_s2, dtype=torch.long, device=device)
-        month_tensor_joint = torch.tensor(months_s2 if num_dates_s2 >= num_dates_s1 else months_s1, dtype=torch.long, device=device)
 
-        print("    Accumulating segment statistics using fast vectorized chunked I/O...")
-        t_io_start = time.time()
-        tile_size = 2048
-        accum_counts = {sid: 0 for sid in target_sids}
-        accum_s1_sums = {sid: np.zeros(nbands_s1, dtype=np.float64) for sid in target_sids} if ds_s1 else {}
-        accum_s2_sums = {sid: np.zeros(nbands_s2, dtype=np.float64) for sid in target_sids} if ds_s2 else {}
-        target_sids_set = set(target_sids)
-
-        for y in range(0, rows, tile_size):
-            for x in range(0, cols, tile_size):
-                xsize = min(tile_size, cols - x)
-                ysize = min(tile_size, rows - y)
-
-                sub_seg = seg_band.ReadAsArray(x, y, xsize, ysize)
-                if sub_seg is None:
-                    continue
-                u_in_tile, inv_arr = np.unique(sub_seg, return_inverse=True)
-                present_pairs = [(int(s), idx) for idx, s in enumerate(u_in_tile) if s in target_sids_set]
-                if not present_pairs:
-                    continue
-
-                flat_inv = inv_arr.ravel()
-                counts = np.bincount(flat_inv)
-                for sid, idx in present_pairs:
-                    accum_counts[sid] += int(counts[idx])
-
-                if ds_s1:
-                    s1_tile = np.nan_to_num(ds_s1.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
-                    if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
-                    for b in range(nbands_s1):
-                        sums = np.bincount(flat_inv, weights=s1_tile[b].ravel())
-                        for sid, idx in present_pairs:
-                            accum_s1_sums[sid][b] += float(sums[idx])
-
-                if ds_s2:
-                    s2_tile = np.nan_to_num(ds_s2.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
-                    if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
-                    for b in range(nbands_s2):
-                        sums = np.bincount(flat_inv, weights=s2_tile[b].ravel())
-                        for sid, idx in present_pairs:
-                            accum_s2_sums[sid][b] += float(sums[idx])
-
-        print(f"    Vectorized chunk I/O completed in {time.time() - t_io_start:.1f}s.")
-
-        valid_sids = [sid for sid in target_sids if accum_counts[sid] > 0]
-        s1_means_list = []
-        s2_means_list = []
+        feature_records = []
         batch_records = []
         batch_s1_profiles = []
         batch_s2_profiles = []
         batch_latlons = []
+        count = 0
+        total = len(target_segments)
 
-        for sid in valid_sids:
-            cid = target_segments[sid]
-            cnt = accum_counts[sid]
-            lat, lon = segment_coords.get(sid, (52.0, 5.0))
+        for sid, cid in target_segments.items():
+            if sid - 1 >= len(slices) or slices[sid - 1] is None:
+                continue
+            sl = slices[sid - 1]
+            ymin, ymax = sl[0].start, sl[0].stop
+            xmin, xmax = sl[1].start, sl[1].stop
+            w, h = xmax - xmin, ymax - ymin
+
+            mask = (seg_arr[ymin:ymax, xmin:xmax] == sid)
+            if not np.any(mask):
+                continue
+
             record = {'crop_id': cid, 'seg_id': sid}
+            lat, lon = segment_coords.get(sid, (52.0, 5.0))
 
-            s1_mean = None
+            # S1 features
+            s1_prof = None
             if ds_s1:
-                s1_mean = (accum_s1_sums[sid] / cnt).astype(np.float32)
-                s1_means_list.append(s1_mean)
-                for b_i, val in enumerate(s1_mean):
-                    record[f's1_b{b_i}'] = float(val)
+                s1_data = [np.nan_to_num(ds_s1.GetRasterBand(b).ReadAsArray(xmin, ymin, w, h)) for b in range(1, nbands_s1 + 1)]
+                s1_arr = np.stack(s1_data, axis=0)
+                s1_means = [float(np.mean(s1_arr[b][mask])) for b in range(nbands_s1)]
+                for b_i, val in enumerate(s1_means):
+                    record[f's1_b{b_i}'] = val
 
                 s1_prof = np.zeros((num_dates_s1, 2), dtype=np.float32)
                 for d in range(num_dates_s1):
-                    s1_prof[d, 0] = (s1_mean[num_dates_s1 + d] + 25.0) / 25.0
-                    s1_prof[d, 1] = (s1_mean[d] + 25.0) / 25.0
-                batch_s1_profiles.append(s1_prof)
+                    s1_prof[d, 0] = (s1_means[num_dates_s1 + d] + 25.0) / 25.0 # VV
+                    s1_prof[d, 1] = (s1_means[d] + 25.0) / 25.0 # VH
 
-            s2_mean = None
+            # S2 features
+            s2_prof = None
             if ds_s2:
-                s2_mean = (accum_s2_sums[sid] / cnt).astype(np.float32)
-                s2_means_list.append(s2_mean)
-                for b_i, val in enumerate(s2_mean):
-                    record[f's2_b{b_i}'] = float(val)
+                s2_data = [np.nan_to_num(ds_s2.GetRasterBand(b).ReadAsArray(xmin, ymin, w, h)) for b in range(1, nbands_s2 + 1)]
+                s2_arr = np.stack(s2_data, axis=0)
+                s2_means = [float(np.mean(s2_arr[b][mask])) for b in range(nbands_s2)]
+                for b_i, val in enumerate(s2_means):
+                    record[f's2_b{b_i}'] = val
 
                 s2_prof = np.zeros((num_dates_s2, 9), dtype=np.float32)
                 for d in range(num_dates_s2):
                     for band_idx in range(9):
-                        s2_prof[d, band_idx] = s2_mean[d * 9 + band_idx] / 10000.0
-                batch_s2_profiles.append(s2_prof)
+                        s2_prof[d, band_idx] = s2_means[d * 9 + band_idx] / 10000.0
 
-            batch_records.append(record)
-            batch_latlons.append([lat, lon])
+            # Validate valid multimodal data
+            is_valid = True
+            if ds_s1 and np.all([record.get(f's1_b{b_i}', 0) == 0 for b_i in range(nbands_s1)]):
+                is_valid = False
+            if ds_s2 and np.all([record.get(f's2_b{b_i}', 0) == 0 for b_i in range(nbands_s2)]):
+                is_valid = False
 
-        # Physical indices
-        s1_means_arr = np.array(s1_means_list, dtype=np.float32) if s1_means_list else None
-        s2_means_arr = np.array(s2_means_list, dtype=np.float32) if s2_means_list else None
-        phys_indices_arr, phys_names = compute_vegetation_and_sar_indices(s1_means_arr, s2_means_arr, num_dates_s1, num_dates_s2)
-        print(f"    Computed {phys_indices_arr.shape[1]} physical Red-Edge & SAR polarimetric features.")
-        for r_idx, rec in enumerate(batch_records):
-            for f_i, f_name in enumerate(phys_names):
-                rec[f_name] = float(phys_indices_arr[r_idx, f_i])
+            if is_valid:
+                batch_records.append(record)
+                if s1_prof is not None: batch_s1_profiles.append(s1_prof)
+                if s2_prof is not None: batch_s2_profiles.append(s2_prof)
+                batch_latlons.append([lat, lon])
 
-        print(f"    Computing Presto Joint Multimodal embeddings in parallel batches (total {len(batch_records)} valid segments)...")
+            count += 1
+            if count % 200 == 0 or count == total:
+                sys.stdout.write(f"\r    Extracting raster stats: {count}/{total} segments...  ")
+                sys.stdout.flush()
+
+        print(f"\n    Computing Presto embeddings in parallel batches (total {len(batch_records)} valid segments)...")
         batch_size = 256
         n_batches = math.ceil(len(batch_records) / batch_size) if batch_records else 0
         for b_idx in range(n_batches):
@@ -2207,25 +1666,19 @@ class ProcessingPipelineS1S2:
             end_i = min(len(batch_records), (b_idx + 1) * batch_size)
             b_ll = torch.tensor(batch_latlons[start_i:end_i], dtype=torch.float32, device=device)
 
-            b_s1_t = torch.from_numpy(np.stack(batch_s1_profiles[start_i:end_i], axis=0)).to(device) if batch_s1_profiles else None
-            b_s2_t = torch.from_numpy(np.stack(batch_s2_profiles[start_i:end_i], axis=0)).to(device) if batch_s2_profiles else None
-
-            embs_joint = extractor.get_joint_embeddings(b_s1_t, b_s2_t, b_ll, month_tensor_joint)
-            for rec_i, emb in enumerate(embs_joint):
-                for f_i, f_val in enumerate(emb):
-                    batch_records[start_i + rec_i][f'presto_joint_{f_i}'] = float(f_val)
-
-            if b_s1_t is not None:
-                embs_s1 = extractor.get_s1_embeddings(b_s1_t, b_ll, month_tensor_s1)
+            if ds_s1 and batch_s1_profiles:
+                b_s1_tensor = torch.from_numpy(np.stack(batch_s1_profiles[start_i:end_i], axis=0)).to(device)
+                embs_s1 = extractor.get_s1_embeddings(b_s1_tensor, b_ll, month_tensor_s1)
                 for rec_i, emb in enumerate(embs_s1):
                     for f_i, f_val in enumerate(emb):
-                        batch_records[start_i + rec_i][f'presto_s1_{f_i}'] = float(f_val)
+                        batch_records[start_i + rec_i][f'presto_s1_{f_i}'] = f_val
 
-            if b_s2_t is not None:
-                embs_s2 = extractor.get_s2_embeddings(b_s2_t, b_ll, month_tensor_s2)
+            if ds_s2 and batch_s2_profiles:
+                b_s2_tensor = torch.from_numpy(np.stack(batch_s2_profiles[start_i:end_i], axis=0)).to(device)
+                embs_s2 = extractor.get_s2_embeddings(b_s2_tensor, b_ll, month_tensor_s2)
                 for rec_i, emb in enumerate(embs_s2):
                     for f_i, f_val in enumerate(emb):
-                        batch_records[start_i + rec_i][f'presto_s2_{f_i}'] = float(f_val)
+                        batch_records[start_i + rec_i][f'presto_s2_{f_i}'] = f_val
 
             sys.stdout.write(f"\r    Presto batch progress: {end_i}/{len(batch_records)} segments ({(end_i/len(batch_records)*100):.1f}%)...  ")
             sys.stdout.flush()
@@ -2233,24 +1686,21 @@ class ProcessingPipelineS1S2:
         df = pd.DataFrame(batch_records)
         df.to_csv(self.sel_csv, index=False)
         print(f"\n    Multimodal features saved to {self.sel_csv} ({df.shape[1] - 2} features).\n")
-    # --- Stage 5: Train Unified MLP + XGBoost Fusion Ensemble (with Outlier Cleaning) ---
+
+    # --- Stage 5: Train Unified MLP + XGBoost Fusion Ensemble ---
     def stage_5_train_classifier(self, force_recompute=False, **kwargs):
         stage = 5
         if self.model_pkl.exists() and not force_recompute:
             print(f"[Stage {stage}/{self.total_stages}] Fusion Ensemble model exists ({self.model_pkl.name}), skipping.")
             return
 
-        print(f"[Stage {stage}/{self.total_stages}] Training Unified Multimodal Fusion Ensemble (PyTorch MLP + XGBoost with Label Noise Filtering)...")
+        print(f"[Stage {stage}/{self.total_stages}] Training Unified Multimodal Fusion Ensemble (PyTorch MLP + XGBoost)...")
 
         df = pd.read_csv(self.sel_csv)
         y = df['crop_id'].values
         X = df.drop(columns=['crop_id', 'seg_id']).values
 
         all_classes = np.unique(y)
-        clean_mask = _clean_label_noise(X, y, all_classes, prune_pct=0.02)
-        X = X[clean_mask]
-        y = y[clean_mask]
-
         class_weights = _calculate_class_weights(y, all_classes)
 
         scaler = StandardScaler()
@@ -2260,53 +1710,45 @@ class ProcessingPipelineS1S2:
             hidden_layer_sizes=(512, 256, 128),
             max_iter=200,
             batch_size=256,
-            lr=0.001,
             class_weights=class_weights,
             all_classes=all_classes
         )
 
-        n_jobs = int(os.environ.get("OMP_NUM_THREADS", 4))
         if HAS_XGBOOST:
-            xgb_clf = xgb.XGBClassifier(
-                n_estimators=350,
-                max_depth=7,
+            xgb_model = xgb.XGBClassifier(
+                n_estimators=250,
+                max_depth=6,
                 learning_rate=0.08,
-                subsample=0.85,
-                colsample_bytree=0.85,
-                tree_method='hist',
+                subsample=0.8,
+                colsample_bytree=0.25,
                 random_state=42,
-                n_jobs=n_jobs,
-                eval_metric='mlogloss'
+                n_jobs=-1,
+                tree_method='hist'
             )
         else:
-            print("    [INFO] XGBoost not found in environment; using sklearn.ensemble.HistGradientBoostingClassifier.")
-            xgb_clf = HistGradientBoostingClassifier(
-                max_iter=300,
-                learning_rate=0.08,
-                max_depth=7,
-                random_state=42
-            )
+            from sklearn.ensemble import HistGradientBoostingClassifier
+            xgb_model = HistGradientBoostingClassifier(max_iter=200, random_state=42)
 
-        ensemble = EnsembleClassifier(mlp_model=mlp, xgb_model=xgb_clf, weight_mlp=self.mlp_weight)
-        ensemble.fit(X_scaled, y)
+        fusion_ensemble = EnsembleClassifier(mlp, xgb_model, weight_mlp=self.mlp_weight)
+        fusion_ensemble.fit(X_scaled, y)
 
-        joblib.dump({'model': ensemble, 'scaler': scaler, 'features': df.drop(columns=['crop_id', 'seg_id']).columns.tolist()}, self.model_pkl)
-        print(f"    [OK] Model successfully trained and serialized: {self.model_pkl}\n")
-    # --- Stage 6: Tile-based Object Inference with Bayesian Priors & Spatial Uncertainty ---
+        joblib.dump({'model': fusion_ensemble, 'scaler': scaler, 'classes': all_classes}, self.model_pkl)
+        print(f"    Fusion Ensemble model saved to {self.model_pkl}\n")
+
+    # --- Stage 6: Inference with Bayesian Priors ---
     def stage_6_classify_vector(self, force_recompute=False):
         stage = 6
-        if self.class_tif.exists() and self.entropy_tif.exists() and not force_recompute:
-            print(f"[Stage {stage}/{self.total_stages}] Classification rasters exist, skipping.")
+        if self.class_tif.exists() and not force_recompute:
+            print(f"[Stage {stage}/{self.total_stages}] Classification raster exists, skipping.")
             return
 
-        print(f"[Stage {stage}/{self.total_stages}] Running Vectorized Tile-based Inference with Bayesian Priors & Spatial Uncertainty...")
+        print(f"[Stage {stage}/{self.total_stages}] Running Vectorized Tile-based Object Inference with Bayesian Priors...")
         main_mod = sys.modules.get('__main__')
         if main_mod:
             setattr(main_mod, 'EnsembleClassifier', EnsembleClassifier)
             setattr(main_mod, 'TorchMLPClassifier', TorchMLPClassifier)
         sys.modules['1_classify_MLPXGB_presto_hybrid_S1S2'] = sys.modules[__name__]
         sys.modules['classifier_mlpxgb_presto'] = sys.modules[__name__]
-        sys.modules['classifier_mlpxgb_presto_S1S2'] = sys.modules[__name__]
 
         data = joblib.load(self.model_pkl)
         clf = data['model']
@@ -2326,18 +1768,11 @@ class ProcessingPipelineS1S2:
         ds_conf.SetGeoTransform(gt)
         ds_conf.SetProjection(proj)
 
-        ds_ent = driver.Create(str(self.entropy_tif), cols, rows, 1, gdal.GDT_Float32, options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
-        ds_ent.SetGeoTransform(gt)
-        ds_ent.SetProjection(proj)
-
-        ds_mar = driver.Create(str(self.margin_tif), cols, rows, 1, gdal.GDT_Float32, options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
-        ds_mar.SetGeoTransform(gt)
-        ds_mar.SetProjection(proj)
-
         df_learn = pd.read_csv(self.sel_csv)
         classes = clf.classes_
         class_counts = df_learn['crop_id'].value_counts().to_dict()
 
+        # Resolve crop names mapping for dynamic Bayesian area thresholds
         id_to_name = {}
         shp_to_check = self.learn_shp if (hasattr(self, 'learn_shp') and self.learn_shp and self.learn_shp.exists()) else self.sample_shp
         if shp_to_check and shp_to_check.exists():
@@ -2351,6 +1786,7 @@ class ProcessingPipelineS1S2:
             except Exception as e:
                 print(f"    [WARNING] Could not read crop names from shapefile: {e}")
 
+        # Fallback to auxiliary country priors.json if any names are missing
         country_priors_file = self.aux_dir / "shapefiles_samples" / self.country / "priors.json"
         if country_priors_file.exists():
             try:
@@ -2362,6 +1798,7 @@ class ProcessingPipelineS1S2:
             except Exception:
                 pass
 
+        # Compute intelligent dynamic Bayesian priors completely automatically
         priors_arr = compute_dynamic_bayesian_priors(
             classes=classes,
             class_counts=class_counts,
@@ -2391,7 +1828,6 @@ class ProcessingPipelineS1S2:
         months_s2 = [parse_month_from_description(ds_s2.GetRasterBand(b).GetDescription()) for b in range(1, num_dates_s2 + 1)] if ds_s2 else [0]
         month_tensor_s1 = torch.tensor(months_s1, dtype=torch.long, device=device)
         month_tensor_s2 = torch.tensor(months_s2, dtype=torch.long, device=device)
-        month_tensor_joint = torch.tensor(months_s2 if num_dates_s2 >= num_dates_s1 else months_s1, dtype=torch.long, device=device)
 
         from scipy import ndimage
         srs_ras = osr.SpatialReference()
@@ -2439,7 +1875,9 @@ class ProcessingPipelineS1S2:
                 counts = np.bincount(flat_inv)
                 valid_counts = np.maximum(counts[offset:], 1)
 
-                # Vectorized centroids via local bincount (orders of magnitude faster than ndimage.center_of_mass)
+                feat_blocks = []
+
+                # Centroids vectorized via local bincount (fast O(1) memory)
                 yy, xx = np.indices((ysize, xsize), dtype=np.float32)
                 sum_y = np.bincount(flat_inv, weights=yy.ravel())[offset:]
                 sum_x = np.bincount(flat_inv, weights=xx.ravel())[offset:]
@@ -2451,12 +1889,13 @@ class ProcessingPipelineS1S2:
                 latlons = np.column_stack([lats, lons]).astype(np.float32)
                 b_ll = torch.from_numpy(latlons).to(device)
 
+                # Sentinel-1 Block Read & Vectorized Zonal Means
                 embs_s1 = None
                 s1_means = None
-                b_s1 = None
                 if ds_s1:
                     s1_tile = np.nan_to_num(ds_s1.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
-                    if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
+                    if s1_tile.ndim == 2:
+                        s1_tile = s1_tile[np.newaxis, ...]
                     s1_means = np.zeros((len(u_sids), nbands_s1), dtype=np.float32)
                     for b in range(nbands_s1):
                         sums = np.bincount(flat_inv, weights=s1_tile[b].ravel())
@@ -2470,12 +1909,13 @@ class ProcessingPipelineS1S2:
                     b_s1 = torch.from_numpy(s1_profiles).to(device)
                     embs_s1 = extractor.get_s1_embeddings(b_s1, b_ll, month_tensor_s1)
 
+                # Sentinel-2 Block Read & Vectorized Zonal Means
                 embs_s2 = None
                 s2_means = None
-                b_s2 = None
                 if ds_s2:
                     s2_tile = np.nan_to_num(ds_s2.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
-                    if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
+                    if s2_tile.ndim == 2:
+                        s2_tile = s2_tile[np.newaxis, ...]
                     s2_means = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
                     for b in range(nbands_s2):
                         sums = np.bincount(flat_inv, weights=s2_tile[b].ravel())
@@ -2489,20 +1929,16 @@ class ProcessingPipelineS1S2:
                     b_s2 = torch.from_numpy(s2_profiles).to(device)
                     embs_s2 = extractor.get_s2_embeddings(b_s2, b_ll, month_tensor_s2)
 
-                # Physical indices
-                phys_indices, _ = compute_vegetation_and_sar_indices(s1_means, s2_means, num_dates_s1, num_dates_s2)
-
-                # Joint Presto multimodal embeddings
-                embs_joint = extractor.get_joint_embeddings(b_s1, b_s2, b_ll, month_tensor_joint)
-
-                # Assemble feature blocks: [s1_means, s2_means, phys_indices, embs_joint, embs_s1, embs_s2]
+                # Exact column order matching Stage 3: [s1_means, s2_means, embs_s1, embs_s2]
                 feat_blocks = []
-                if s1_means is not None: feat_blocks.append(s1_means)
-                if s2_means is not None: feat_blocks.append(s2_means)
-                if phys_indices.shape[1] > 0: feat_blocks.append(phys_indices)
-                if embs_joint is not None: feat_blocks.append(embs_joint)
-                if embs_s1 is not None: feat_blocks.append(embs_s1)
-                if embs_s2 is not None: feat_blocks.append(embs_s2)
+                if s1_means is not None:
+                    feat_blocks.append(s1_means)
+                if s2_means is not None:
+                    feat_blocks.append(s2_means)
+                if embs_s1 is not None:
+                    feat_blocks.append(embs_s1)
+                if embs_s2 is not None:
+                    feat_blocks.append(embs_s2)
 
                 X_tile = np.hstack(feat_blocks)
                 X_tile_scaled = scaler.transform(X_tile)
@@ -2514,44 +1950,20 @@ class ProcessingPipelineS1S2:
                 preds = clf.classes_[np.argmax(corr_probs, axis=1)]
                 confs = np.max(corr_probs, axis=1)
 
-                # Normalized Shannon Entropy
-                n_classes = len(clf.classes_)
-                log_k = np.log(max(n_classes, 2))
-                entropies = -np.sum(corr_probs * np.log(corr_probs + 1e-12), axis=1) / log_k
-                entropies = np.clip(entropies, 0.0, 1.0)
-
-                # Confidence Margin
-                if n_classes > 1:
-                    part_probs = np.partition(corr_probs, -2, axis=1)
-                    margins = part_probs[:, -1] - part_probs[:, -2]
-                else:
-                    margins = np.ones_like(confs)
-
-                # Fast O(1) Local Compact LUT Remapping (strictly len(u_all) elements)
+                # Fast O(1) Local Compact LUT Remapping
                 lut_pred = np.zeros(len(u_all), dtype=np.int32)
                 lut_conf = np.zeros(len(u_all), dtype=np.float32)
-                lut_ent = np.zeros(len(u_all), dtype=np.float32)
-                lut_mar = np.zeros(len(u_all), dtype=np.float32)
-
                 lut_pred[offset:] = preds
                 lut_conf[offset:] = confs
-                lut_ent[offset:] = entropies
-                lut_mar[offset:] = margins
 
                 pred_arr = lut_pred[inv_arr]
                 prob_arr = lut_conf[inv_arr]
-                ent_arr = lut_ent[inv_arr]
-                mar_arr = lut_mar[inv_arr]
 
                 pred_arr[foot_arr == 0] = 0
                 prob_arr[foot_arr == 0] = 0
-                ent_arr[foot_arr == 0] = 0
-                mar_arr[foot_arr == 0] = 0
 
                 ds_cls.GetRasterBand(1).WriteArray(pred_arr, x, y)
                 ds_conf.GetRasterBand(1).WriteArray(prob_arr, x, y)
-                ds_ent.GetRasterBand(1).WriteArray(ent_arr, x, y)
-                ds_mar.GetRasterBand(1).WriteArray(mar_arr, x, y)
 
                 total_segments_classified += len(u_sids)
 
@@ -2567,32 +1979,27 @@ class ProcessingPipelineS1S2:
 
         ds_cls.FlushCache()
         ds_conf.FlushCache()
-        ds_ent.FlushCache()
-        ds_mar.FlushCache()
         ds_cls = None
         ds_conf = None
-        ds_ent = None
-        ds_mar = None
         total_time_min = (time.time() - t_infer_start) / 60.0
         print(f"\n    [INFERENCE COMPLETE] Successfully classified {total_segments_classified:,} objects across {total_tiles} tiles in {total_time_min:.1f} minutes.")
-        print(f"    Raw classification saved: {self.class_tif}")
-        print(f"    Raw entropy saved:        {self.entropy_tif}")
-        print(f"    Raw margin saved:         {self.margin_tif}\n")
-    # --- Stage 7: Apply Agricultural & Footprint Masks ---
+        print(f"    Raw classification saved: {self.class_tif}\n")
+
+    # --- Stage 7: Apply Masking ---
     def stage_7_mask_classification(self, force_recompute=False):
         stage = 7
-        if self.masked_class.exists() and self.masked_conf.exists() and self.masked_entropy.exists() and not force_recompute:
+        if self.masked_class.exists() and self.masked_conf.exists() and not force_recompute:
             print(f"[Stage {stage}/{self.total_stages}] Masked outputs already exist, skipping.")
             return
 
-        print(f"[Stage {stage}/{self.total_stages}] Applying Agricultural & Footprint Masks to Classification, Confidence, Entropy, Margin...")
+        print(f"[Stage {stage}/{self.total_stages}] Applying Agricultural & Footprint Masks...")
         ref_ras = self.class_tif if self.class_tif.exists() else (self.s1_ras if self.s1_ras else self.s2_ras)
         if not ref_ras or not ref_ras.exists():
             print("ERROR: Reference raster or classification output not found.")
             return
 
         if not self.class_tif.exists() or not self.conf_tif.exists():
-            print("ERROR: Classification outputs not found. Run Stage 6 first.")
+            print("ERROR: Classification outputs not found. Run Stage 5 first.")
             return
 
         ds_ref = gdal.Open(str(ref_ras))
@@ -2632,8 +2039,6 @@ class ProcessingPipelineS1S2:
         ds_foot = gdal.Open(str(self.footprint_mask)) if (self.footprint_mask and self.footprint_mask.exists()) else None
         ds_cls = gdal.Open(str(self.class_tif))
         ds_conf = gdal.Open(str(self.conf_tif))
-        ds_ent = gdal.Open(str(self.entropy_tif)) if self.entropy_tif.exists() else None
-        ds_mar = gdal.Open(str(self.margin_tif)) if self.margin_tif.exists() else None
 
         driver = gdal.GetDriverByName('GTiff')
         out_cls = driver.Create(str(self.masked_class), cols, rows, 1, gdal.GDT_Int32,
@@ -2648,18 +2053,6 @@ class ProcessingPipelineS1S2:
         out_conf.SetProjection(proj)
         out_conf.GetRasterBand(1).SetNoDataValue(0)
 
-        out_ent = driver.Create(str(self.masked_entropy), cols, rows, 1, gdal.GDT_Float32,
-                                options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
-        out_ent.SetGeoTransform(gt)
-        out_ent.SetProjection(proj)
-        out_ent.GetRasterBand(1).SetNoDataValue(0)
-
-        out_mar = driver.Create(str(self.masked_margin), cols, rows, 1, gdal.GDT_Float32,
-                                options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
-        out_mar.SetGeoTransform(gt)
-        out_mar.SetProjection(proj)
-        out_mar.GetRasterBand(1).SetNoDataValue(0)
-
         tile_size = 4096
         total_tiles = math.ceil(cols / tile_size) * math.ceil(rows / tile_size)
         tile_cnt = 0
@@ -2671,8 +2064,6 @@ class ProcessingPipelineS1S2:
 
                 cls_arr = ds_cls.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
                 conf_arr = ds_conf.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
-                ent_arr = ds_ent.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize) if ds_ent else np.zeros((ysize, xsize), dtype=np.float32)
-                mar_arr = ds_mar.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize) if ds_mar else np.zeros((ysize, xsize), dtype=np.float32)
 
                 combined_mask = np.ones((ysize, xsize), dtype=bool)
                 if ds_foot:
@@ -2685,13 +2076,9 @@ class ProcessingPipelineS1S2:
 
                 cls_arr[~combined_mask] = 0
                 conf_arr[~combined_mask] = 0.0
-                ent_arr[~combined_mask] = 0.0
-                mar_arr[~combined_mask] = 0.0
 
                 out_cls.GetRasterBand(1).WriteArray(cls_arr, x, y)
                 out_conf.GetRasterBand(1).WriteArray(conf_arr, x, y)
-                out_ent.GetRasterBand(1).WriteArray(ent_arr, x, y)
-                out_mar.GetRasterBand(1).WriteArray(mar_arr, x, y)
 
                 tile_cnt += 1
                 if tile_cnt % 20 == 0 or tile_cnt == total_tiles:
@@ -2700,34 +2087,31 @@ class ProcessingPipelineS1S2:
 
         out_cls.GetRasterBand(1).FlushCache()
         out_conf.GetRasterBand(1).FlushCache()
-        out_ent.GetRasterBand(1).FlushCache()
-        out_mar.GetRasterBand(1).FlushCache()
 
-        # Build multi-scale pyramids
-        print("    Building multi-scale pyramid overviews [2, 4, 8, 16, 32, 64]...")
+        # Build pyramids
         try:
             out_cls.BuildOverviews('NEAREST', [2, 4, 8, 16, 32, 64])
             out_conf.BuildOverviews('AVERAGE', [2, 4, 8, 16, 32, 64])
-            out_ent.BuildOverviews('AVERAGE', [2, 4, 8, 16, 32, 64])
-            out_mar.BuildOverviews('AVERAGE', [2, 4, 8, 16, 32, 64])
         except Exception:
             pass
 
         out_cls = None
         out_conf = None
-        out_ent = None
-        out_mar = None
+        ds_mask = None
+        ds_foot = None
         ds_cls = None
         ds_conf = None
-        ds_ent = None
-        ds_mar = None
-        ds_foot = None
-        ds_mask = None
-        print(f"    [MASKING COMPLETE] Masked products created:")
-        print(f"      - {self.masked_class}")
-        print(f"      - {self.masked_conf}")
-        print(f"      - {self.masked_entropy}")
-        print(f"      - {self.masked_margin}\n")
+
+        if temp_mask_vrt and os.path.exists(temp_mask_vrt):
+            try:
+                os.remove(temp_mask_vrt)
+            except Exception:
+                pass
+
+        print(f"    Masked classification saved to {self.masked_class}")
+        print(f"    Masked confidence saved to {self.masked_conf}\n")
+
+    # --- Stage 8: Validation Metrics ---
     def stage_8_calculate_metrics(self):
         stage = 8
         print(f"[Stage {stage}/{self.total_stages}] Calculating Out-of-Bag Validation Metrics and Generating Excel Report...")
@@ -3111,61 +2495,39 @@ def main_menu(pipeline):
 
 def main():
     parser = argparse.ArgumentParser(description="Multimodal S1 (Sigma0) + S2 Crop Classification with Unified MLP + XGBoost Fusion Ensemble.")
-    parser.add_argument('-t', '--track', default=None, help="Track/orbit identifier, e.g. NL/orbit_88, PT/orbit_147, PL/orbit_12")
-    parser.add_argument('-c', '--country', default=None, help="Country code, e.g. PT, NL, PL (processes all orbits sequentially)")
+    parser.add_argument('--track', required=True, help="Track/orbit identifier, e.g. NL/orbit_88, PT/orbit_161, PL/orbit_12")
     parser.add_argument('--stage', default=None, help="Stage to run: 'A' (all 1-8), or single stage '1'..'8' (legacy '0'..'7' supported)")
     parser.add_argument('--seg_mode', default='slic', choices=['sam', 'slic', 'lpis'], help="Segmentation mode (default: slic)")
     parser.add_argument('--mlp_weight', type=float, default=0.65, help="Weight of MLP in fusion ensemble (0.0 to 1.0, default: 0.65)")
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 VH/VV GeoTIFF raster")
     parser.add_argument('--s2_raster', default=None, help="Override path to Sentinel-2 Multi-temporal GeoTIFF raster")
     parser.add_argument('--lpis_vector', default=None, help="Path to official LPIS cadastral parcel vector file (.shp, .gpkg) for --seg_mode lpis")
-    parser.add_argument('--slic_segment_ha', type=float, default=None, help="Target superpixel parcel area in hectares for SLIC (default: adaptive, 2.5 ha for PT/ES/PL, 3.5 ha for NL/FR/DE)")
-    parser.add_argument('--slic_compactness', type=float, default=3.0, help="SLIC superpixel boundary compactness (default: 3.0)")
-    parser.add_argument('--slic_rag_thresh', type=float, default=0.10, help="Region Adjacency Graph (RAG) spectral fusion distance threshold for SLIC (default: 0.10)")
-    parser.add_argument('--no_slic_rag', action='store_true', help="Disable Region Adjacency Graph (RAG) spectral fusion pass for SLIC")
 
     args = parser.parse_args()
 
-    def _exec_pipeline(tr):
-        pipeline = ProcessingPipelineS1S2(
-            track=tr,
-            seg_mode=args.seg_mode,
-            mlp_weight=args.mlp_weight,
-            s1_override=args.s1_raster,
-            s2_override=args.s2_raster,
-            lpis_vector=args.lpis_vector,
-            slic_segment_ha=args.slic_segment_ha,
-            slic_compactness=args.slic_compactness,
-            slic_rag_thresh=args.slic_rag_thresh,
-            enable_slic_rag=not args.no_slic_rag
-        )
+    pipeline = ProcessingPipelineS1S2(
+        track=args.track,
+        seg_mode=args.seg_mode,
+        mlp_weight=args.mlp_weight,
+        s1_override=args.s1_raster,
+        s2_override=args.s2_raster,
+        lpis_vector=args.lpis_vector
+    )
 
-        if args.stage is None:
-            main_menu(pipeline)
-        else:
-            choice = args.stage.strip().upper()
-            if choice == 'A':
-                pipeline.run_all()
-            elif choice in ['1', '0']: pipeline.stage_1_generate_footprint(True)
-            elif choice == '2': pipeline.stage_2_segmentation(True)
-            elif choice == '3': pipeline.stage_3_split_samples(True)
-            elif choice == '4': pipeline.stage_4_selection(True)
-            elif choice == '5': pipeline.stage_5_train_classifier(True)
-            elif choice == '6': pipeline.stage_6_classify_vector(True)
-            elif choice == '7': pipeline.stage_7_mask_classification(True)
-            elif choice == '8': pipeline.stage_8_calculate_metrics()
-
-    if not args.track:
-        if args.country:
-            c_dir = base_dir / args.country.upper()
-            if c_dir.exists():
-                orbs = [d.name for d in c_dir.glob("orbit_*") if d.is_dir()]
-                for o in orbs:
-                    _exec_pipeline(f"{args.country.upper()}/{o}")
-                return
-        parser.error("Either --track (-t) or --country (-c) must be specified.")
-
-    _exec_pipeline(args.track)
+    if args.stage is None:
+        main_menu(pipeline)
+    else:
+        choice = args.stage.strip().upper()
+        if choice == 'A':
+            pipeline.run_all()
+        elif choice in ['1', '0']: pipeline.stage_1_generate_footprint(True)
+        elif choice == '2': pipeline.stage_2_segmentation(True)
+        elif choice == '3': pipeline.stage_3_split_samples(True)
+        elif choice == '4': pipeline.stage_4_selection(True)
+        elif choice == '5': pipeline.stage_5_train_classifier(True)
+        elif choice == '6': pipeline.stage_6_classify_vector(True)
+        elif choice == '7': pipeline.stage_7_mask_classification(True)
+        elif choice == '8': pipeline.stage_8_calculate_metrics()
 
 
 if __name__ == '__main__':

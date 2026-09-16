@@ -442,10 +442,10 @@ Located in `2_classifier/`, this toolbox implements object-based image analysis 
 
 * **Master runner script**: `run_classifier.py`
 * **Internal engines (`modules/`)**:
-  * `classifier_mlpxgb_presto.py`: Multimodal fusion ensemble combining NASA Harvest Presto transformer embeddings, PyTorch Deep MLP, and XGBoost GBDT (`[S1 + S2] [SOTA]`).
+  * `classifier_mlpxgb_presto.py`: Enhanced multimodal fusion ensemble combining NASA Harvest Presto transformer embeddings, PyTorch Deep MLP, XGBoost GBDT, vectorized chunk I/O, and spatial uncertainty estimation (`[S1 + S2] [SOTA]`).
   * `multi_orbit_merger.py`: Nationwide multi-orbit confidence merger and seamless blender.
   * `presto_model.py`: Embedded NASA Harvest Presto transformer foundation architecture.
-  *(Note: Legacy engines `classifier_otb.py` and `classifier_presto_s1.py` have been moved to `Archive_scripts/`)*
+  *(Note: Legacy engines `classifier_otb.py`, `classifier_presto_s1.py`, and previous classifier iterations have been archived to `Archive_scripts/`)*
 
 ---
 

@@ -77,6 +77,9 @@ def get_masked_filenames(track_prefix: str, suffix: str) -> List[Tuple[str, str]
 
     # 5. MLPXGB / S1S2 specific
     if 'mlpxgb' in suffix or 's1s2' in suffix:
+        seg = suffix.split('_')[-1]
+        candidates.append((f"{track_prefix}_classified_masked_mlpxgb_presto_{seg}.tif", f"{track_prefix}_confidence_masked_mlpxgb_presto_{seg}.tif"))
+        candidates.append((f"{track_prefix}_classified_masked_mlpxgb_presto_s1s2_{seg}.tif", f"{track_prefix}_confidence_masked_mlpxgb_presto_s1s2_{seg}.tif"))
         candidates.append((f"{track_prefix}_classified_s1s2_masked.tif", f"{track_prefix}_confidence_s1s2_masked.tif"))
         candidates.append((f"{track_prefix}_classified_masked_s1s2.tif", f"{track_prefix}_confidence_masked_s1s2.tif"))
 
