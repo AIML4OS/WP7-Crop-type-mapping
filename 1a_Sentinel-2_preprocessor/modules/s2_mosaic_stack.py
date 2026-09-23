@@ -338,10 +338,16 @@ def mosaic_stack_clip_single_track(
 
     valid_layers = []
     band_descriptions = []
+    min_cal_date = None
+    max_cal_date = None
     for out_band_tif, band, doy, year in mosaic_bands_list:
         if out_band_tif.exists() and out_band_tif.stat().st_size > 1024:
             valid_layers.append(str(out_band_tif))
             cal_date = datetime.date(year, 1, 1) + datetime.timedelta(days=int(doy) - 1)
+            if min_cal_date is None or cal_date < min_cal_date:
+                min_cal_date = cal_date
+            if max_cal_date is None or cal_date > max_cal_date:
+                max_cal_date = cal_date
             date_str = cal_date.strftime("%d%b%Y")
             desc = f"S2_{band}_{date_str}_doy{doy}"
             band_descriptions.append(desc)
@@ -350,14 +356,15 @@ def mosaic_stack_clip_single_track(
         logging.warning(f"No valid mosaic layers generated for track {track}.")
         return
 
-    out_vrt = out_final_dir / f"{sanitized_track}_S2_timeseries_temp.vrt"
+    date_range_str = f"_{max_cal_date.strftime('%Y%m%d')}_{min_cal_date.strftime('%Y%m%d')}" if (min_cal_date and max_cal_date) else ""
+    out_vrt = out_final_dir / f"{sanitized_track}{date_range_str}_S2_timeseries_temp.vrt"
     if "/" not in norm_track and "\\" not in norm_track:
         out_proc_dir = BASE_DIR / country_code.upper() / "S2"
         out_proc_dir.mkdir(parents=True, exist_ok=True)
-    out_final_tif = out_proc_dir / f"{sanitized_track}_S2_timeseries.tif"
-    out_final_tmp = out_proc_dir / f"{sanitized_track}_S2_timeseries.tmp.tif"
+    out_final_tif = out_proc_dir / f"{sanitized_track}{date_range_str}_S2_timeseries.tif"
+    out_final_tmp = out_proc_dir / f"{sanitized_track}{date_range_str}_S2_timeseries.tmp.tif"
 
-    logging.info(f"Assembling VRT and translating final {len(band_descriptions)}-band multi-temporal GeoTIFF stack...")
+    logging.info(f"Assembling VRT and translating final {len(band_descriptions)}-band multi-temporal GeoTIFF stack ({out_final_tif.name})...")
     vrt_opts = gdal.BuildVRTOptions(separate=True)
     gdal.BuildVRT(str(out_vrt), valid_layers, options=vrt_opts)
 
@@ -395,21 +402,31 @@ def mosaic_stack_clip_single_track(
         if out_final_tmp.exists():
             out_final_tmp.rename(out_final_tif)
 
-        # Ensure shared country S2 directory has master stack (via instant hardlink, 0 bytes extra space)
+        # Ensure shared country S2 directory has master stack with timestamp signature
         shared_s2_dir = BASE_DIR / country_code.upper() / "S2"
         shared_s2_dir.mkdir(parents=True, exist_ok=True)
-        shared_country_tif = shared_s2_dir / f"{country_code.upper()}_S2_timeseries.tif"
+        shared_country_tif = shared_s2_dir / f"{country_code.upper()}{date_range_str}_S2_timeseries.tif"
         if out_final_tif.exists() and shared_country_tif.resolve() != out_final_tif.resolve():
             try:
                 if shared_country_tif.exists():
                     shared_country_tif.unlink()
                 os.link(str(out_final_tif), str(shared_country_tif))
-                logging.info(f"Shared country master S2 stack linked to {shared_country_tif}")
+                logging.info(f"Shared country master S2 stack linked to {shared_country_tif.name}")
             except Exception:
                 try:
                     shutil.copy2(str(out_final_tif), str(shared_country_tif))
                 except Exception:
                     pass
+
+        # Also create canonical alias without timestamp for backward compatibility
+        canonical_s2 = shared_s2_dir / f"{country_code.upper()}_S2_timeseries.tif"
+        if out_final_tif.exists() and canonical_s2.resolve() != out_final_tif.resolve():
+            try:
+                if canonical_s2.exists():
+                    canonical_s2.unlink()
+                os.link(str(out_final_tif), str(canonical_s2))
+            except Exception:
+                pass
 
     if out_vrt.exists():
         try: out_vrt.unlink()
