@@ -347,12 +347,12 @@ def generate_s2_time_series_for_tile(
     enable_whittaker: bool = True,
     whittaker_lambda: float = 15.0
 ) -> bool:
-    result_synthetic_dir.mkdir(parents=True, exist_ok=True)
     clean_tile = tile_name.upper().replace('T', '')
-
     b02_paths = list(tile_tif_dir.glob("**/*_B02*.tif"))
     if not b02_paths:
+        logging.warning(f"No B02 GeoTIFFs found in {tile_tif_dir} for tile {tile_name}. Skipping time-series generation.")
         return False
+    result_synthetic_dir.mkdir(parents=True, exist_ok=True)
 
     acquisitions = []
     for b02_p in b02_paths:

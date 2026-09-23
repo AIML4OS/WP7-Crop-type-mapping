@@ -40,8 +40,9 @@ S2_REPO_PATH = Path(os.environ.get("S2_REPO_PATH", r"Y:\Sentinel-2\MSI\L2A"))
 try:
     _root_dir = Path(__file__).resolve().parent.parent
     _cfg_paths = [
-        Path(__file__).resolve().parent / "config_s2.json",
-        _root_dir / "config.json"
+        _root_dir / "config_s2.json",
+        _root_dir / "config.json",
+        Path(__file__).resolve().parent / "config_s2.json"
     ]
     for _cp in _cfg_paths:
         if _cp.exists():

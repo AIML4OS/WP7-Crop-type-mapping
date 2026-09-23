@@ -285,11 +285,10 @@ def mosaic_stack_clip_single_track(
 
     synthetic_dirs = list(s2_base.glob("**/_synthetic_s2"))
     if not synthetic_dirs:
+        logging.warning(f"No _synthetic_s2 directories found in {s2_base}. Please run Stage 2 first.")
         return
 
-    logging.info(f"Track {track}: mosaicking from {len(synthetic_dirs)} tile sources...")
-
-    year = 2024
+    year = None
     for syn_d in synthetic_dirs:
         day_folders = list(syn_d.glob("day*_*"))
         if day_folders:
@@ -297,6 +296,12 @@ def mosaic_stack_clip_single_track(
             if match:
                 year = int(match.group(1))
                 break
+
+    if year is None:
+        logging.warning(f"No generated synthetic DOY folders (day*_<year>) found in {s2_base}. Please run Stage 2 (time-series interpolation) first.")
+        return
+
+    logging.info(f"Track {track}: mosaicking from {len(synthetic_dirs)} tile sources (Acquisition Year: {year})...")
 
     mosaic_tasks = []
     mosaic_bands_list = []

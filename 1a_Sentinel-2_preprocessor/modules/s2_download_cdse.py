@@ -595,9 +595,12 @@ def process_orbit_cdse_s2(
                     except: pass
 
         if unzipped_safe.exists():
-            convert_safe_to_geotiff(unzipped_safe, dest_prod_tif_dir)
-            try: shutil.rmtree(str(unzipped_safe))
-            except: pass
+            ok = convert_safe_to_geotiff(unzipped_safe, dest_prod_tif_dir)
+            if ok:
+                try: shutil.rmtree(str(unzipped_safe))
+                except: pass
+            else:
+                logging.error(f"Failed converting SAFE to GeoTIFF: {unzipped_safe.name}")
 
         with prod_lock:
             proc_count += 1
@@ -767,9 +770,12 @@ def process_country_cdse_s2(
                     except: pass
 
         if unzipped_safe.exists():
-            convert_safe_to_geotiff(unzipped_safe, dest_prod_tif_dir)
-            try: shutil.rmtree(str(unzipped_safe))
-            except: pass
+            ok = convert_safe_to_geotiff(unzipped_safe, dest_prod_tif_dir)
+            if ok:
+                try: shutil.rmtree(str(unzipped_safe))
+                except: pass
+            else:
+                logging.error(f"Failed converting SAFE to GeoTIFF: {unzipped_safe.name}")
 
         with lock:
             proc_count += 1
