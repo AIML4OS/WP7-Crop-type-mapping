@@ -130,7 +130,8 @@ def run_pipeline(
     slic_segment_ha: Optional[float] = None,
     slic_compactness: float = 0.05,
     slic_rag_thresh: float = 0.02,
-    enable_slic_rag: bool = False
+    enable_slic_rag: bool = False,
+    overwrite: bool = False
 ):
     norm_track = track.replace('\\', '/')
     country = norm_track.split('/')[0].upper() if '/' in norm_track else track.upper()
@@ -185,7 +186,8 @@ def run_pipeline(
         slic_segment_ha=slic_segment_ha,
         slic_compactness=slic_compactness,
         slic_rag_thresh=slic_rag_thresh,
-        enable_slic_rag=enable_slic_rag
+        enable_slic_rag=enable_slic_rag,
+        overwrite=overwrite
     )
 
     if stage is None:
@@ -450,6 +452,7 @@ Examples:
     parser.add_argument('--slic_rag_thresh', type=float, default=0.02, help="Region Adjacency Graph (RAG) spectral fusion distance threshold for SLIC (default: 0.02)")
     parser.add_argument('--enable_slic_rag', action='store_true', default=False, help="Enable experimental Region Adjacency Graph (RAG) spectral fusion pass for SLIC (default: False)")
     parser.add_argument('--no_slic_rag', action='store_true', help="Explicitly disable Region Adjacency Graph (RAG) spectral fusion pass for SLIC")
+    parser.add_argument('--overwrite', action='store_true', help="Force re-generation of feature vectors, model training, and classification maps")
 
     args = parser.parse_args()
 
@@ -480,7 +483,8 @@ Examples:
                         slic_segment_ha=args.slic_segment_ha,
                         slic_compactness=args.slic_compactness,
                         slic_rag_thresh=args.slic_rag_thresh,
-                        enable_slic_rag=slic_rag_enabled
+                        enable_slic_rag=slic_rag_enabled,
+                        overwrite=args.overwrite
                     )
                 return
         parser.error("Either --track (-t) or --country (-c) must be specified.")
@@ -497,7 +501,8 @@ Examples:
         slic_segment_ha=args.slic_segment_ha,
         slic_compactness=args.slic_compactness,
         slic_rag_thresh=args.slic_rag_thresh,
-        enable_slic_rag=slic_rag_enabled
+        enable_slic_rag=slic_rag_enabled,
+        overwrite=args.overwrite
     )
 
 

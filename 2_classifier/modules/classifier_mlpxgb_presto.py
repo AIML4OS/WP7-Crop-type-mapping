@@ -1171,12 +1171,14 @@ class ProcessingPipelineS1S2:
         slic_segment_ha: Optional[float] = None,
         slic_compactness: float = 0.05,
         slic_rag_thresh: float = 0.02,
-        enable_slic_rag: bool = False
+        enable_slic_rag: bool = False,
+        overwrite: bool = False
     ):
         self.track = track
         self.seg_mode = seg_mode.lower()
         self.mlp_weight = mlp_weight
         self.lpis_vector_override = lpis_vector
+        self.overwrite = bool(overwrite)
         
         norm_track = track.replace('\\', '/')
         self.country = norm_track.split('/')[0].upper() if '/' in norm_track else track.upper()
@@ -1237,13 +1239,13 @@ class ProcessingPipelineS1S2:
         self.learn_shp = self.samples_dir / f"{self.file_prefix}_learn_{self.seg_mode}.shp"
         self.control_shp = self.samples_dir / f"{self.file_prefix}_control_{self.seg_mode}.shp"
         self.sel_csv = self.samples_dir / f"{self.file_prefix}_mlpxgb_presto_learn_features_{self.seg_mode}.csv"
-        if not self.sel_csv.exists():
+        if not self.sel_csv.exists() and not self.overwrite:
             alt_csv = self.samples_dir / f"{self.file_prefix}_mlpxgb_presto_s1s2_learn_features_{self.seg_mode}.csv"
             if alt_csv.exists():
                 self.sel_csv = alt_csv
 
         self.model_pkl = self.model_dir / f"{self.file_prefix}_mlpxgb_presto_model_{self.seg_mode}.pkl"
-        if not self.model_pkl.exists():
+        if not self.model_pkl.exists() and not self.overwrite:
             alt_model = self.model_dir / f"{self.file_prefix}_mlpxgb_presto_s1s2_model_{self.seg_mode}.pkl"
             if alt_model.exists():
                 self.model_pkl = alt_model
@@ -3219,11 +3221,12 @@ class ProcessingPipelineS1S2:
 
     def run_all(self):
         """Executes all classification stages (1 through 8) sequentially."""
+        force = getattr(self, 'overwrite', False)
         self.stage_1_generate_footprint(False)
         self.stage_2_segmentation(False)
         self.stage_3_split_samples(False)
-        self.stage_4_selection(False)
-        self.stage_5_train_classifier(False)
+        self.stage_4_selection(force)
+        self.stage_5_train_classifier(force)
         self.stage_6_classify_vector(True)
         self.stage_7_mask_classification(True)
         self.stage_8_calculate_metrics()
