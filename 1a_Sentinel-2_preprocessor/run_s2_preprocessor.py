@@ -62,6 +62,23 @@ logging.basicConfig(
 BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
 DEFAULT_DOYS = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]
 
+REGIONAL_DOYS = {
+    'CONTINENTAL_CENTRAL': [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287],
+    'MEDITERRANEAN': [45, 65, 85, 105, 120, 135, 150, 165, 180, 200, 220, 240, 260, 280],
+    'NORTHERN': [105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300]
+}
+
+
+def get_regional_doys_for_country(country_code: str) -> List[int]:
+    """Returns optimal 14-date phenological DOY sequence for specified country."""
+    c = country_code.upper()
+    if c in {'PT', 'ES', 'IT', 'EL', 'GR', 'CY', 'MT', 'AL', 'TR', 'ME', 'MK'}:
+        return REGIONAL_DOYS['MEDITERRANEAN']
+    elif c in {'SE', 'FI', 'EE', 'LT', 'LV', 'NO', 'IS'}:
+        return REGIONAL_DOYS['NORTHERN']
+    return REGIONAL_DOYS['CONTINENTAL_CENTRAL']
+
+
 COUNTRY_ORBITS = {
     'AL': [80, 153],  # DESCENDING (100.0%) - 2 orbits
     'AT': [22, 95, 124, 168],  # DESCENDING (100.0%) - 4 orbits
@@ -146,9 +163,11 @@ class Sentinel2Pipeline:
         end_date: Optional[str] = None,
         source: str = "auto",
         cloud_cover: float = 80.0,
-        doys: List[int] = DEFAULT_DOYS,
+        doys: Optional[List[int]] = None,
         threads: int = 8,
-        overwrite: bool = False
+        overwrite: bool = False,
+        enable_whittaker: bool = True,
+        whittaker_lambda: float = 15.0
     ):
         self.country = country.upper()
         self.orbit = orbit
@@ -157,9 +176,15 @@ class Sentinel2Pipeline:
         self.start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
         self.end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
         self.cloud_cover = cloud_cover
-        self.doys = doys
+        if doys is None or doys == DEFAULT_DOYS:
+            self.doys = get_regional_doys_for_country(self.country)
+            logging.info(f"Auto-selected regional DOY phenological profile for {self.country}: {self.doys}")
+        else:
+            self.doys = doys
         self.threads = threads
         self.overwrite = overwrite
+        self.enable_whittaker = enable_whittaker
+        self.whittaker_lambda = whittaker_lambda
         self.source = detect_s2_source() if source == "auto" else source.lower()
 
         if self.orbit:
@@ -254,14 +279,18 @@ class Sentinel2Pipeline:
                 track=f"{self.country}/orbit_{self.orbit}",
                 doys=self.doys,
                 max_workers=self.threads,
-                overwrite=self.overwrite
+                overwrite=self.overwrite,
+                enable_whittaker=self.enable_whittaker,
+                whittaker_lambda=self.whittaker_lambda
             )
         else:
             ts_mod.run_time_series(
                 country=self.country,
                 doys=self.doys,
                 max_workers=self.threads,
-                overwrite=self.overwrite
+                overwrite=self.overwrite,
+                enable_whittaker=self.enable_whittaker,
+                whittaker_lambda=self.whittaker_lambda
             )
 
     def stage_3_mosaic_stack(self):
@@ -457,9 +486,12 @@ Examples:
     parser.add_argument('-s', '--start_date', default=None, help="Acquisition start date (YYYY-MM-DD, required for Stage 1/A)")
     parser.add_argument('-e', '--end_date', default=None, help="Acquisition end date (YYYY-MM-DD, required for Stage 1/A)")
     parser.add_argument('--cloud_cover', type=float, default=80.0, help="Max scene cloud cover percentage (default: 80.0)")
-    parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="Target DOYs list (default: 14 dates)")
+    parser.add_argument('--doys', nargs='+', type=int, default=None, help="Target DOYs list (default: auto-detected regional profile)")
     parser.add_argument('--threads', type=int, default=8, help="Worker threads for parallel processing (default: 8)")
     parser.add_argument('--overwrite', action='store_true', help="Force re-generation of existing intermediate and final stacks")
+    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', default=True, help="Enable Whittaker smoothing across DOYs (default: True)")
+    parser.add_argument('--no_whittaker', dest='whittaker', action='store_false', help="Disable Whittaker smoothing")
+    parser.add_argument('--whittaker_lambda', type=float, default=15.0, help="Smoothing penalty lambda for Whittaker (default: 15.0)")
 
     args = parser.parse_args()
 
@@ -495,7 +527,9 @@ Examples:
         cloud_cover=args.cloud_cover,
         doys=args.doys,
         threads=args.threads,
-        overwrite=args.overwrite
+        overwrite=args.overwrite,
+        enable_whittaker=args.whittaker,
+        whittaker_lambda=args.whittaker_lambda
     )
 
     if args.stage is None:

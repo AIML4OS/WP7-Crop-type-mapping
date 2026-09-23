@@ -317,7 +317,7 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
     
     drv = gdal.GetDriverByName('GTiff')
     ds_out = drv.Create(str(out_tif), cols, rows, 1, gdal.GDT_Int32, 
-                        options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+                        options=['COMPRESS=ZSTD', 'PREDICTOR=2', 'ZSTD_LEVEL=3', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'])
     ds_out.SetGeoTransform(gt_global)
     ds_out.SetProjection(proj)
     band_out = ds_out.GetRasterBand(1)

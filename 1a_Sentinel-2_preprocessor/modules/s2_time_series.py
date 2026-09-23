@@ -31,6 +31,174 @@ BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/wo
 DEFAULT_DOYS = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]
 S2_SPECTRAL_BANDS = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B8A', 'B11', 'B12']
 
+REGIONAL_DOYS = {
+    'CONTINENTAL_CENTRAL': [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287],
+    'MEDITERRANEAN': [45, 65, 85, 105, 120, 135, 150, 165, 180, 200, 220, 240, 260, 280],
+    'NORTHERN': [105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300]
+}
+
+
+def get_regional_doys(country_code: str) -> List[int]:
+    """Returns the optimal 14-date phenological DOY sequence for the specified country."""
+    c = country_code.upper()
+    if c in {'PT', 'ES', 'IT', 'EL', 'GR', 'CY', 'MT', 'AL', 'TR', 'ME', 'MK'}:
+        return REGIONAL_DOYS['MEDITERRANEAN']
+    elif c in {'SE', 'FI', 'EE', 'LT', 'LV', 'NO', 'IS'}:
+        return REGIONAL_DOYS['NORTHERN']
+    return REGIONAL_DOYS['CONTINENTAL_CENTRAL']
+
+
+def whittaker_smooth_series(
+    y_stack: np.ndarray,
+    lmbda: float = 15.0,
+    d: int = 2
+) -> np.ndarray:
+    """
+    Vectorized robust penalized least-squares Whittaker smoother for satellite reflectance stacks.
+    Filters residual cloud spikes, shadow dips, and atmospheric fluctuations across the DOY sequence.
+
+    Args:
+        y_stack: (T, H, W) or (T, N) float32 multi-temporal reflectance array.
+        lmbda: Smoothing penalty parameter (default: 15.0).
+        d: Difference order (default: 2, penalizes second derivative / acceleration).
+
+    Returns:
+        Smoothed array matching the shape of y_stack.
+    """
+    T = y_stack.shape[0]
+    if T < 4:
+        return y_stack
+
+    orig_shape = y_stack.shape
+    Y = y_stack.reshape(T, -1).astype(np.float32)
+
+    # Active mask: skip nodata pixels (all zeroes across all dates)
+    valid_px = np.any(Y > 0, axis=0)
+    if not np.any(valid_px):
+        return y_stack
+
+    Y_valid = Y[:, valid_px]
+
+    # Second-order difference operator D of shape (T-d, T)
+    E = np.eye(T, dtype=np.float32)
+    D = np.diff(E, n=d, axis=0)
+    DTD = (D.T @ D).astype(np.float32)
+
+    # Pass 1: Global smooth curve
+    A1 = np.eye(T, dtype=np.float32) + lmbda * DTD
+    inv_A1 = np.linalg.inv(A1)
+    Z1 = inv_A1 @ Y_valid
+
+    # Pass 2: Outlier detection & downweighting
+    # Cloud spikes: positive deviations exceeding max(20% of baseline, 300 DN)
+    # Shadow dips: negative deviations dropping below 20% of baseline
+    residuals = Y_valid - Z1
+    spike_thresh = np.maximum(0.20 * Z1, 300.0)
+    is_outlier = (residuals > spike_thresh) | (residuals < -spike_thresh)
+
+    if not np.any(is_outlier):
+        out = Y.copy()
+        out[:, valid_px] = Z1
+        return out.reshape(orig_shape)
+
+    # GPU-accelerated per-pixel batched solve if CUDA is available, else vectorized CPU 2-pass
+    solved_on_gpu = False
+    try:
+        import torch
+        if torch.cuda.is_available():
+            device = torch.device('cuda:0')
+            Y_t = torch.as_tensor(Y_valid, device=device)
+            W_t = torch.where(torch.as_tensor(is_outlier, device=device), 0.05, 1.0)
+            DTD_t = torch.as_tensor(DTD, device=device).unsqueeze(0)
+
+            chunk_size = 500_000
+            Z_t = torch.empty_like(Y_t)
+            N = Y_valid.shape[1]
+            for start in range(0, N, chunk_size):
+                end = min(start + chunk_size, N)
+                W_c = W_t[:, start:end].T
+                A_c = torch.diag_embed(W_c) + lmbda * DTD_t
+                WY_c = (W_c * Y_t[:, start:end].T).unsqueeze(-1)
+                Z_c = torch.linalg.solve(A_c, WY_c).squeeze(-1).T
+                Z_t[:, start:end] = Z_c
+
+            Z_final = Z_t.cpu().numpy()
+            solved_on_gpu = True
+    except Exception:
+        solved_on_gpu = False
+
+    if not solved_on_gpu:
+        # Fast vectorized CPU 2-pass: replace outliers with baseline estimate and re-solve
+        Y_cleaned = Y_valid.copy()
+        Y_cleaned[is_outlier] = Z1[is_outlier]
+        Z_final = inv_A1 @ Y_cleaned
+
+    out = Y.copy()
+    out[:, valid_px] = Z_final
+    return out.reshape(orig_shape)
+
+
+def apply_whittaker_smoothing_to_tile(
+    tile_synthetic_dir: Path,
+    doys: List[int],
+    bands: List[str] = S2_SPECTRAL_BANDS,
+    lmbda: float = 15.0,
+    max_block_size: int = 2048
+) -> bool:
+    """
+    Applies Whittaker smoothing across all target DOY rasters for each spectral band of a tile.
+    Reads in 2048x2048 blocks, applies whittaker_smooth_series, and updates GeoTIFFs on disk.
+    """
+    if len(doys) < 4:
+        return False
+
+    day_folders = []
+    for doy in doys:
+        matching = list(tile_synthetic_dir.glob(f"day{doy}_*"))
+        if matching:
+            day_folders.append(matching[0])
+
+    if len(day_folders) != len(doys):
+        return False
+
+    T = len(day_folders)
+
+    for band in bands:
+        band_files = [df / f"{band}.tif" for df in day_folders]
+        if not all(bf.exists() for bf in band_files):
+            continue
+
+        ds_list = [gdal.Open(str(bf), gdal.GA_Update) for bf in band_files]
+        if any(ds is None for ds in ds_list):
+            for ds in ds_list:
+                if ds: ds = None
+            continue
+
+        cols = ds_list[0].RasterXSize
+        rows = ds_list[0].RasterYSize
+
+        for y in range(0, rows, max_block_size):
+            for x in range(0, cols, max_block_size):
+                xsize = min(max_block_size, cols - x)
+                ysize = min(max_block_size, rows - y)
+
+                block_stack = np.empty((T, ysize, xsize), dtype=np.float32)
+                for t_idx, ds in enumerate(ds_list):
+                    block_stack[t_idx] = ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize).astype(np.float32)
+
+                if np.any(block_stack > 0):
+                    smoothed_block = whittaker_smooth_series(block_stack, lmbda=lmbda)
+                    smoothed_arr = np.clip(smoothed_block, 0, 65535).astype(np.uint16)
+
+                    for t_idx, ds in enumerate(ds_list):
+                        ds.GetRasterBand(1).WriteArray(smoothed_arr[t_idx], x, y)
+
+        for ds in ds_list:
+            ds.FlushCache()
+            ds = None
+
+    return True
+
 COUNTRY_ORBITS = {
     'AL': [80, 153],  # DESCENDING (100.0%) - 2 orbits
     'AT': [22, 95, 124, 168],  # DESCENDING (100.0%) - 4 orbits
@@ -175,7 +343,9 @@ def generate_s2_time_series_for_tile(
     tile_tif_dir: Path,
     result_synthetic_dir: Path,
     doys: List[int],
-    overwrite: bool = False
+    overwrite: bool = False,
+    enable_whittaker: bool = True,
+    whittaker_lambda: float = 15.0
 ) -> bool:
     result_synthetic_dir.mkdir(parents=True, exist_ok=True)
     clean_tile = tile_name.upper().replace('T', '')
@@ -463,10 +633,24 @@ def generate_s2_time_series_for_tile(
             out_ds.GetRasterBand(1).SetNoDataValue(0)
             out_ds = None
 
+    # Whittaker multi-temporal smoothing across the DOY sequence
+    if enable_whittaker and len(doys) >= 4:
+        try:
+            apply_whittaker_smoothing_to_tile(result_synthetic_dir, doys, bands=S2_SPECTRAL_BANDS, lmbda=whittaker_lambda)
+        except Exception as e:
+            logging.warning(f"Whittaker smoothing failed for {tile_name} ({e}), keeping raw synthetic DOY interpolation.")
+
     return True
 
 
-def run_time_series_for_dir(s2_base: Path, doys: List[int], max_workers: int = 8, overwrite: bool = False):
+def run_time_series_for_dir(
+    s2_base: Path,
+    doys: List[int],
+    max_workers: int = 8,
+    overwrite: bool = False,
+    enable_whittaker: bool = True,
+    whittaker_lambda: float = 15.0
+):
     import threading
     if not s2_base.exists():
         return
@@ -484,7 +668,10 @@ def run_time_series_for_dir(s2_base: Path, doys: List[int], max_workers: int = 8
     def _worker_tile(t_dir):
         nonlocal done_tiles
         clean_tile_name = t_dir.name.replace('_tif', '')
-        res = generate_s2_time_series_for_tile(clean_tile_name, t_dir, s2_base / clean_tile_name / "_synthetic_s2", doys, overwrite=overwrite)
+        res = generate_s2_time_series_for_tile(
+            clean_tile_name, t_dir, s2_base / clean_tile_name / "_synthetic_s2",
+            doys, overwrite=overwrite, enable_whittaker=enable_whittaker, whittaker_lambda=whittaker_lambda
+        )
         with lock:
             done_tiles += 1
             pct = (done_tiles / total_tiles) * 100.0
@@ -495,27 +682,45 @@ def run_time_series_for_dir(s2_base: Path, doys: List[int], max_workers: int = 8
         list(executor.map(_worker_tile, tile_dirs))
 
 
-def run_time_series_for_track(track: str, doys: List[int], max_workers: int = 8, overwrite: bool = False):
+def run_time_series_for_track(
+    track: str,
+    doys: Optional[List[int]] = None,
+    max_workers: int = 8,
+    overwrite: bool = False,
+    enable_whittaker: bool = True,
+    whittaker_lambda: float = 15.0
+):
+    country_part = track.split('/')[0].split('\\')[0].upper()
+    if doys is None or doys == DEFAULT_DOYS:
+        doys = get_regional_doys(country_part)
+        logging.info(f"Auto-selected regional DOY phenological profile for {country_part}: {doys}")
+
     s2_base = BASE_DIR / track / "S2"
-    run_time_series_for_dir(s2_base, doys, max_workers, overwrite)
+    run_time_series_for_dir(s2_base, doys, max_workers, overwrite, enable_whittaker, whittaker_lambda)
 
 
 def run_time_series(
     country: Optional[str] = None,
     track: Optional[str] = None,
     orbit: Optional[int] = None,
-    doys: List[int] = DEFAULT_DOYS,
+    doys: Optional[List[int]] = None,
     max_workers: int = 4,
-    overwrite: bool = False
+    overwrite: bool = False,
+    enable_whittaker: bool = True,
+    whittaker_lambda: float = 15.0
 ):
     if track:
-        run_time_series_for_track(track, doys, max_workers, overwrite)
+        run_time_series_for_track(track, doys, max_workers, overwrite, enable_whittaker, whittaker_lambda)
     elif country:
         country_code = country.upper()
+        if doys is None or doys == DEFAULT_DOYS:
+            doys = get_regional_doys(country_code)
+            logging.info(f"Auto-selected regional DOY phenological profile for {country_code}: {doys}")
+
         shared_s2 = BASE_DIR / country_code / "S2"
         if shared_s2.exists() and any(d.name.endswith("_tif") for d in shared_s2.iterdir() if d.is_dir()):
             logging.info(f"Using shared country-level S2 repository for {country_code} at {shared_s2}")
-            run_time_series_for_dir(shared_s2, doys, max_workers, overwrite)
+            run_time_series_for_dir(shared_s2, doys, max_workers, overwrite, enable_whittaker, whittaker_lambda)
         else:
             country_dir = BASE_DIR / country_code
             if orbit is not None:
@@ -529,7 +734,7 @@ def run_time_series(
 
             logging.info(f"Generating synthetic time-series for country {country_code} across orbits {orbits}...")
             for o in orbits:
-                run_time_series_for_track(f"{country_code}/orbit_{o}", doys, max_workers, overwrite)
+                run_time_series_for_track(f"{country_code}/orbit_{o}", doys, max_workers, overwrite, enable_whittaker, whittaker_lambda)
 
 
 def main():
@@ -537,8 +742,12 @@ def main():
     parser.add_argument('-c', '--country', default=None, help="Country code, e.g. PL, NL, FR, PT")
     parser.add_argument('-t', '--track', default=None, help="Track/Orbit relative path, e.g. NL/orbit_88")
     parser.add_argument('-o', '--orbit', type=int, default=None, help="Specify single orbit")
-    parser.add_argument('--doys', nargs='+', type=int, default=DEFAULT_DOYS, help="DOY targets")
+    parser.add_argument('--doys', nargs='+', type=int, default=None, help="DOY targets (default: auto-detected regional profile)")
     parser.add_argument('--threads', type=int, default=4, help="Worker threads (default: 4)")
+    parser.add_argument('--overwrite', action='store_true', help="Force re-generation of existing synthetic series")
+    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', default=True, help="Enable Whittaker smoothing (default: True)")
+    parser.add_argument('--no_whittaker', dest='whittaker', action='store_false', help="Disable Whittaker smoothing")
+    parser.add_argument('--whittaker_lambda', type=float, default=15.0, help="Smoothing penalty lambda for Whittaker (default: 15.0)")
 
     args = parser.parse_args()
 
@@ -547,7 +756,10 @@ def main():
         track=args.track,
         orbit=args.orbit,
         doys=args.doys,
-        max_workers=args.threads
+        max_workers=args.threads,
+        overwrite=args.overwrite,
+        enable_whittaker=args.whittaker,
+        whittaker_lambda=args.whittaker_lambda
     )
 
 

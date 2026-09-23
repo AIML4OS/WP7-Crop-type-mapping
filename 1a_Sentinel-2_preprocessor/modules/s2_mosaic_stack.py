@@ -31,6 +31,23 @@ SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
 DEFAULT_DOYS = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]
 S2_SPECTRAL_BANDS = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B8A', 'B11', 'B12']
 
+REGIONAL_DOYS = {
+    'CONTINENTAL_CENTRAL': [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287],
+    'MEDITERRANEAN': [45, 65, 85, 105, 120, 135, 150, 165, 180, 200, 220, 240, 260, 280],
+    'NORTHERN': [105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300]
+}
+
+
+def get_regional_doys(country_code: str) -> List[int]:
+    """Returns the optimal 14-date phenological DOY sequence for the specified country."""
+    c = country_code.upper()
+    if c in {'PT', 'ES', 'IT', 'EL', 'GR', 'CY', 'MT', 'AL', 'TR', 'ME', 'MK'}:
+        return REGIONAL_DOYS['MEDITERRANEAN']
+    elif c in {'SE', 'FI', 'EE', 'LT', 'LV', 'NO', 'IS'}:
+        return REGIONAL_DOYS['NORTHERN']
+    return REGIONAL_DOYS['CONTINENTAL_CENTRAL']
+
+
 COUNTRY_ORBITS = {
     'AL': [80, 153],  # DESCENDING (100.0%) - 2 orbits
     'AT': [22, 95, 124, 168],  # DESCENDING (100.0%) - 4 orbits
@@ -171,7 +188,7 @@ def mosaic_single_band_doy(
         'multithread': True,
         'warpOptions': ["NUM_THREADS=ALL_CPUS"],
         'resampleAlg': gdal.GRA_Bilinear,
-        'creationOptions': ["COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=6", "TILED=YES", "BIGTIFF=YES"],
+        'creationOptions': ["COMPRESS=ZSTD", "PREDICTOR=2", "ZSTD_LEVEL=3", "TILED=YES", "BIGTIFF=YES", "NUM_THREADS=ALL_CPUS"],
         'xRes': res_x,
         'yRes': res_y
     }
@@ -201,11 +218,15 @@ def mosaic_stack_clip_single_track(
     track: str,
     country_code: str,
     target_epsg: int = 3857,
-    doys: List[int] = DEFAULT_DOYS,
+    doys: Optional[List[int]] = None,
     max_workers: int = 8,
     overwrite: bool = False,
     build_overviews: bool = True
 ):
+    if doys is None or doys == DEFAULT_DOYS:
+        doys = get_regional_doys(country_code)
+        logging.info(f"Auto-selected regional DOY phenological profile for {country_code}: {doys}")
+
     norm_track = track.replace('\\', '/')
     sanitized_track = norm_track.replace('/', '_')
     track_dir = BASE_DIR / track
@@ -341,7 +362,7 @@ def mosaic_stack_clip_single_track(
     gdal.BuildVRT(str(out_vrt), valid_layers, options=vrt_opts)
 
     trans_opts = gdal.TranslateOptions(
-        creationOptions=['COMPRESS=DEFLATE', 'PREDICTOR=2', 'ZLEVEL=6', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'],
+        creationOptions=['COMPRESS=ZSTD', 'PREDICTOR=2', 'ZSTD_LEVEL=3', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'],
         callback=gdal.TermProgress_nocb
     )
     if out_final_tmp.exists():
@@ -358,7 +379,7 @@ def mosaic_stack_clip_single_track(
 
         if build_overviews:
             logging.info(f"Building compressed pyramid overviews (2, 4, 8, 16, 32, 64) for {out_final_tif.name}...")
-            gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
+            gdal.SetConfigOption('COMPRESS_OVERVIEW', 'ZSTD')
             gdal.SetConfigOption('PREDICTOR_OVERVIEW', '2')
             gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
             ds_final.BuildOverviews('AVERAGE', [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb)

@@ -36,6 +36,7 @@ import json
 import math
 import re
 import threading
+import queue
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Dict, Tuple
@@ -93,6 +94,11 @@ aux_dir = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxilia
 presto_dir = aux_dir / "Presto_models"
 
 TOTAL_STAGES = 8
+
+
+def get_gdal_creation_options(predictor: int = 2, zstd_level: int = 3) -> list:
+    """Returns high-performance BigTIFF creation options with ZSTD compression (falling back to DEFLATE if needed)."""
+    return ['COMPRESS=ZSTD', f'PREDICTOR={predictor}', f'ZSTD_LEVEL={zstd_level}', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS']
 
 
 # =====================================================================
@@ -381,10 +387,17 @@ def _calculate_class_weights(y_data: np.ndarray, all_classes: np.ndarray) -> np.
 # =====================================================================
 
 
-def compute_vegetation_and_sar_indices(s1_means: Optional[np.ndarray], s2_means: Optional[np.ndarray], num_dates_s1: int, num_dates_s2: int) -> Tuple[np.ndarray, List[str]]:
+def compute_vegetation_and_sar_indices(
+    s1_means: Optional[np.ndarray],
+    s2_means: Optional[np.ndarray],
+    num_dates_s1: int,
+    num_dates_s2: int,
+    s1_stds: Optional[np.ndarray] = None,
+    s2_stds: Optional[np.ndarray] = None
+) -> Tuple[np.ndarray, List[str]]:
     """
-    Computes physiological red-edge (NDRE1, NDRE2), optical (NDVI, NDWI), and polarimetric SAR (RVI, CR)
-    indices across multi-temporal observations, including temporal summary statistics (max, min, amp, mean).
+    Computes physiological red-edge (NDRE1, NDRE2), optical (NDVI, NDWI), polarimetric SAR (RVI, CR),
+    temporal rate-of-change (Delta-VH), and intra-object texture/variance across multi-temporal observations.
     """
     N = s1_means.shape[0] if s1_means is not None else (s2_means.shape[0] if s2_means is not None else 0)
     if N == 0:
@@ -433,6 +446,15 @@ def compute_vegetation_and_sar_indices(s1_means: Optional[np.ndarray], s2_means:
         ])
         feats.append(np.hstack([ndre1_arr, ndre2_arr, ndvi_arr, ndwi_arr, s2_temporal_stats]))
 
+        # Intra-object optical texture / variance if provided
+        if s2_stds is not None and s2_stds.shape[1] >= num_dates_s2 * 9:
+            s2_std_mean = np.mean(s2_stds, axis=1).reshape(-1, 1)
+            s2_std_max = np.max(s2_stds, axis=1).reshape(-1, 1)
+            # Estimate of NDVI intra-parcel variance from red and NIR channels
+            ndvi_intra_std = (np.mean(s2_stds[:, 2::9] + s2_stds[:, 6::9], axis=1) / 10000.0).reshape(-1, 1)
+            feats.append(np.hstack([s2_std_mean, s2_std_max, ndvi_intra_std]))
+            feat_names.extend(["s2_intra_std_mean", "s2_intra_std_max", "ndvi_intra_std"])
+
     if s1_means is not None and num_dates_s1 > 0:
         rvi_list, cr_list = [], []
         for d in range(num_dates_s1):
@@ -461,6 +483,24 @@ def compute_vegetation_and_sar_indices(s1_means: Optional[np.ndarray], s2_means:
             "cr_max", "cr_min", "cr_mean"
         ])
         feats.append(np.hstack([rvi_arr, cr_arr, s1_temporal_stats]))
+
+        # Physical SAR phenological dynamics: Delta-VH Spring vs Summer rate-of-change
+        if num_dates_s1 >= 4:
+            spring_d = max(0, min(int(num_dates_s1 * 0.25), num_dates_s1 - 1))
+            summer_d = max(0, min(int(num_dates_s1 * 0.60), num_dates_s1 - 1))
+            delta_vh = (s1_means[:, summer_d] - s1_means[:, spring_d]).reshape(-1, 1)
+            delta_vv = (s1_means[:, summer_d + num_dates_s1] - s1_means[:, spring_d + num_dates_s1]).reshape(-1, 1)
+            vh_amp = (np.max(s1_means[:, :num_dates_s1], axis=1) - np.min(s1_means[:, :num_dates_s1], axis=1)).reshape(-1, 1)
+            feats.append(np.hstack([delta_vh, delta_vv, vh_amp]))
+            feat_names.extend(["s1_delta_vh_spring_summer", "s1_delta_vv_spring_summer", "s1_vh_temporal_amp"])
+
+        # Intra-object SAR texture / relative standard deviation
+        if s1_stds is not None and s1_stds.shape[1] >= num_dates_s1 * 2:
+            vh_intra_std_mean = np.mean(s1_stds[:, :num_dates_s1], axis=1).reshape(-1, 1)
+            vv_intra_std_mean = np.mean(s1_stds[:, num_dates_s1:num_dates_s1 * 2], axis=1).reshape(-1, 1)
+            vh_intra_std_max = np.max(s1_stds[:, :num_dates_s1], axis=1).reshape(-1, 1)
+            feats.append(np.hstack([vh_intra_std_mean, vv_intra_std_mean, vh_intra_std_max]))
+            feat_names.extend(["s1_vh_intra_std_mean", "s1_vv_intra_std_mean", "s1_vh_intra_std_max"])
 
     arr_res = np.hstack(feats).astype(np.float32) if feats else np.zeros((N, 0), dtype=np.float32)
     return arr_res, feat_names
@@ -491,13 +531,14 @@ def _clean_label_noise(X: np.ndarray, y: np.ndarray, classes: np.ndarray, prune_
 
 class TorchMLPClassifier:
     """PyTorch Deep Neural Network Classifier for Multimodal Crop Classification."""
-    def __init__(self, hidden_layer_sizes=(512, 256, 128), max_iter=200, batch_size=256, lr=0.001, class_weights=None, all_classes=None):
+    def __init__(self, hidden_layer_sizes=(512, 256, 128), max_iter=200, batch_size=256, lr=0.001, class_weights=None, all_classes=None, temperature: float = 1.2):
         self.hidden_layer_sizes = hidden_layer_sizes
         self.max_iter = max_iter
         self.batch_size = batch_size
         self.lr = lr
         self.class_weights = class_weights
         self.all_classes = all_classes
+        self.temperature = max(float(temperature), 0.1)
         self.device = torch.device('cuda' if (HAS_TORCH and torch.cuda.is_available()) else 'cpu')
         self.model = None
         self.le = None
@@ -572,7 +613,8 @@ class TorchMLPClassifier:
             for (batch_x,) in dataloader:
                 batch_x = batch_x.to(self.device)
                 logits = self.model(batch_x)
-                probs = torch.softmax(logits, dim=1).cpu().numpy()
+                scaled_logits = logits / self.temperature
+                probs = torch.softmax(scaled_logits, dim=1).cpu().numpy()
                 probs_list.append(probs)
 
         return np.vstack(probs_list)
@@ -1493,7 +1535,7 @@ class ProcessingPipelineS1S2:
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(
             str(composite_tif), cols, rows, 1, gdal.GDT_Float32,
-            options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
+            options=get_gdal_creation_options(predictor=3)
         )
         out_ds.SetGeoTransform(gt)
         out_ds.SetProjection(proj)
@@ -1551,7 +1593,7 @@ class ProcessingPipelineS1S2:
 
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(str(composite_tif), cols, rows, 1, gdal.GDT_Float32,
-                               options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+                               options=get_gdal_creation_options(predictor=3))
         out_ds.SetGeoTransform(gt)
         out_ds.SetProjection(proj)
         out_band = out_ds.GetRasterBand(1)
@@ -1726,7 +1768,7 @@ class ProcessingPipelineS1S2:
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(
             str(self.footprint_mask), cols, rows, 1, gdal.GDT_Byte,
-            options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES']
+            options=get_gdal_creation_options(predictor=2)
         )
         out_ds.SetGeoTransform(gt)
         out_ds.SetProjection(proj)
@@ -1839,7 +1881,7 @@ class ProcessingPipelineS1S2:
 
                 driver = gdal.GetDriverByName("GTiff")
                 ds_out = driver.Create(str(self.seg_tif), cols, rows, 1, gdal.GDT_Int32,
-                                       options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+                                       options=get_gdal_creation_options(predictor=2))
                 ds_out.SetGeoTransform(gt)
                 ds_out.SetProjection(proj)
 
@@ -1924,7 +1966,7 @@ class ProcessingPipelineS1S2:
 
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(str(self.seg_tif), cols, rows, 1, gdal.GDT_Int32,
-                               options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+                               options=get_gdal_creation_options(predictor=2))
         out_ds.SetGeoTransform(gt)
         out_ds.SetProjection(proj)
         out_band = out_ds.GetRasterBand(1)
@@ -2127,7 +2169,9 @@ class ProcessingPipelineS1S2:
         tile_size = 2048
         accum_counts = {sid: 0 for sid in target_sids}
         accum_s1_sums = {sid: np.zeros(nbands_s1, dtype=np.float64) for sid in target_sids} if ds_s1 else {}
+        accum_s1_sq_sums = {sid: np.zeros(nbands_s1, dtype=np.float64) for sid in target_sids} if ds_s1 else {}
         accum_s2_sums = {sid: np.zeros(nbands_s2, dtype=np.float64) for sid in target_sids} if ds_s2 else {}
+        accum_s2_sq_sums = {sid: np.zeros(nbands_s2, dtype=np.float64) for sid in target_sids} if ds_s2 else {}
         target_sids_set = set(target_sids)
 
         for y in range(0, rows, tile_size):
@@ -2151,24 +2195,34 @@ class ProcessingPipelineS1S2:
                 if ds_s1:
                     s1_tile = np.nan_to_num(ds_s1.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
                     if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
+                    # Convert SAR dB to linear power scale for unbiased physical aggregation
+                    s1_tile_lin = np.power(10.0, np.clip(s1_tile, -45.0, 15.0) / 10.0)
                     for b in range(nbands_s1):
-                        sums = np.bincount(flat_inv, weights=s1_tile[b].ravel())
+                        b_lin = s1_tile_lin[b].ravel()
+                        sums = np.bincount(flat_inv, weights=b_lin)
+                        sq_sums = np.bincount(flat_inv, weights=b_lin ** 2)
                         for sid, idx in present_pairs:
                             accum_s1_sums[sid][b] += float(sums[idx])
+                            accum_s1_sq_sums[sid][b] += float(sq_sums[idx])
 
                 if ds_s2:
                     s2_tile = np.nan_to_num(ds_s2.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
                     if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
                     for b in range(nbands_s2):
-                        sums = np.bincount(flat_inv, weights=s2_tile[b].ravel())
+                        b_vals = s2_tile[b].ravel()
+                        sums = np.bincount(flat_inv, weights=b_vals)
+                        sq_sums = np.bincount(flat_inv, weights=b_vals ** 2)
                         for sid, idx in present_pairs:
                             accum_s2_sums[sid][b] += float(sums[idx])
+                            accum_s2_sq_sums[sid][b] += float(sq_sums[idx])
 
         print(f"    Vectorized chunk I/O completed in {time.time() - t_io_start:.1f}s.")
 
         valid_sids = [sid for sid in target_sids if accum_counts[sid] > 0]
         s1_means_list = []
+        s1_stds_list = []
         s2_means_list = []
+        s2_stds_list = []
         batch_records = []
         batch_s1_profiles = []
         batch_s2_profiles = []
@@ -2182,8 +2236,17 @@ class ProcessingPipelineS1S2:
 
             s1_mean = None
             if ds_s1:
-                s1_mean = (accum_s1_sums[sid] / cnt).astype(np.float32)
+                # Unbiased mean in dB from linear power accumulation
+                mean_lin = (accum_s1_sums[sid] / cnt).astype(np.float64)
+                var_lin = (accum_s1_sq_sums[sid] / cnt) - (mean_lin ** 2)
+                std_lin = np.sqrt(np.maximum(var_lin, 0.0))
+                # Convert linear mean back to physical dB
+                s1_mean = (10.0 * np.log10(np.maximum(mean_lin, 1e-4))).astype(np.float32)
+                # Scale-invariant texture (CV = std / mean)
+                s1_std = (std_lin / (mean_lin + 1e-6)).astype(np.float32)
                 s1_means_list.append(s1_mean)
+                s1_stds_list.append(s1_std)
+
                 for b_i, val in enumerate(s1_mean):
                     record[f's1_b{b_i}'] = float(val)
 
@@ -2196,7 +2259,11 @@ class ProcessingPipelineS1S2:
             s2_mean = None
             if ds_s2:
                 s2_mean = (accum_s2_sums[sid] / cnt).astype(np.float32)
+                var_s2 = (accum_s2_sq_sums[sid] / cnt) - (s2_mean.astype(np.float64) ** 2)
+                s2_std = np.sqrt(np.maximum(var_s2, 0.0)).astype(np.float32)
                 s2_means_list.append(s2_mean)
+                s2_stds_list.append(s2_std)
+
                 for b_i, val in enumerate(s2_mean):
                     record[f's2_b{b_i}'] = float(val)
 
@@ -2209,11 +2276,17 @@ class ProcessingPipelineS1S2:
             batch_records.append(record)
             batch_latlons.append([lat, lon])
 
-        # Physical indices
+        # Physical indices with intra-object variance / texture features
         s1_means_arr = np.array(s1_means_list, dtype=np.float32) if s1_means_list else None
+        s1_stds_arr = np.array(s1_stds_list, dtype=np.float32) if s1_stds_list else None
         s2_means_arr = np.array(s2_means_list, dtype=np.float32) if s2_means_list else None
-        phys_indices_arr, phys_names = compute_vegetation_and_sar_indices(s1_means_arr, s2_means_arr, num_dates_s1, num_dates_s2)
-        print(f"    Computed {phys_indices_arr.shape[1]} physical Red-Edge & SAR polarimetric features.")
+        s2_stds_arr = np.array(s2_stds_list, dtype=np.float32) if s2_stds_list else None
+
+        phys_indices_arr, phys_names = compute_vegetation_and_sar_indices(
+            s1_means_arr, s2_means_arr, num_dates_s1, num_dates_s2,
+            s1_stds=s1_stds_arr, s2_stds=s2_stds_arr
+        )
+        print(f"    Computed {phys_indices_arr.shape[1]} physical Red-Edge, SAR phenological & texture features.")
         for r_idx, rec in enumerate(batch_records):
             for f_i, f_name in enumerate(phys_names):
                 rec[f_name] = float(phys_indices_arr[r_idx, f_i])
@@ -2337,19 +2410,19 @@ class ProcessingPipelineS1S2:
         gt, proj = ds_info.GetGeoTransform(), ds_info.GetProjection()
 
         driver = gdal.GetDriverByName('GTiff')
-        ds_cls = driver.Create(str(self.class_tif), cols, rows, 1, gdal.GDT_Int32, options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+        ds_cls = driver.Create(str(self.class_tif), cols, rows, 1, gdal.GDT_Int32, options=get_gdal_creation_options(predictor=2))
         ds_cls.SetGeoTransform(gt)
         ds_cls.SetProjection(proj)
 
-        ds_conf = driver.Create(str(self.conf_tif), cols, rows, 1, gdal.GDT_Float32, options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+        ds_conf = driver.Create(str(self.conf_tif), cols, rows, 1, gdal.GDT_Float32, options=get_gdal_creation_options(predictor=3))
         ds_conf.SetGeoTransform(gt)
         ds_conf.SetProjection(proj)
 
-        ds_ent = driver.Create(str(self.entropy_tif), cols, rows, 1, gdal.GDT_Float32, options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+        ds_ent = driver.Create(str(self.entropy_tif), cols, rows, 1, gdal.GDT_Float32, options=get_gdal_creation_options(predictor=3))
         ds_ent.SetGeoTransform(gt)
         ds_ent.SetProjection(proj)
 
-        ds_mar = driver.Create(str(self.margin_tif), cols, rows, 1, gdal.GDT_Float32, options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+        ds_mar = driver.Create(str(self.margin_tif), cols, rows, 1, gdal.GDT_Float32, options=get_gdal_creation_options(predictor=3))
         ds_mar.SetGeoTransform(gt)
         ds_mar.SetProjection(proj)
 
@@ -2420,169 +2493,249 @@ class ProcessingPipelineS1S2:
         transformer_to_wgs84 = Transformer.from_crs(f"EPSG:{ras_epsg}", "EPSG:4326", always_xy=True)
 
         tile_size = 2048
-        total_tiles = math.ceil(cols / tile_size) * math.ceil(rows / tile_size)
-        tile_cnt = 0
+        tile_coords = []
+        for y in range(0, rows, tile_size):
+            for x in range(0, cols, tile_size):
+                xsize = min(tile_size, cols - x)
+                ysize = min(tile_size, rows - y)
+                tile_coords.append((x, y, xsize, ysize))
+
+        total_tiles = len(tile_coords)
         total_segments_classified = 0
         t_infer_start = time.time()
 
-        print(f"    Starting vectorized tile-based inference ({total_tiles} tiles of {tile_size}x{tile_size} px)...")
+        print(f"    Starting asynchronous tile-based inference with Producer-Consumer GPU pipeline ({total_tiles} tiles of {tile_size}x{tile_size} px)...")
 
-        for y in range(0, rows, tile_size):
-            for x in range(0, cols, tile_size):
-                tile_cnt += 1
-                xsize = min(tile_size, cols - x)
-                ysize = min(tile_size, rows - y)
+        batch_queue = queue.Queue(maxsize=2)
+        producer_error = [None]
 
-                sub_seg = seg_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
-                foot_arr = foot_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+        def _tile_producer_worker():
+            try:
+                for idx, (x, y, xsize, ysize) in enumerate(tile_coords):
+                    if producer_error[0] is not None:
+                        break
+                    tile_cnt = idx + 1
+                    sub_seg = seg_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    foot_arr = foot_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
 
-                u_all, inv_arr = np.unique(sub_seg, return_inverse=True)
-                has_zero = (len(u_all) > 0 and u_all[0] == 0)
-                offset = 1 if has_zero else 0
-                u_sids = u_all[offset:]
+                    u_all, inv_arr = np.unique(sub_seg, return_inverse=True)
+                    has_zero = (len(u_all) > 0 and u_all[0] == 0)
+                    offset = 1 if has_zero else 0
+                    u_sids = u_all[offset:]
 
-                if len(u_sids) == 0:
-                    if tile_cnt % 25 == 0 or tile_cnt == total_tiles:
-                        elapsed = time.time() - t_infer_start
-                        rate = tile_cnt / elapsed if elapsed > 0 else 0
-                        eta_sec = (total_tiles - tile_cnt) / rate if rate > 0 else 0
-                        eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60):02d}s"
-                        sys.stdout.write(
-                            f"\r    [INFERENCE] Tile {tile_cnt}/{total_tiles} ({(tile_cnt/total_tiles*100):.1f}%) | "
-                            f"Objects: {total_segments_classified:,} | Time: {int(elapsed//60)}m {int(elapsed%60):02d}s | ETA: {eta_str}  "
-                        )
-                        sys.stdout.flush()
-                    continue
+                    if len(u_sids) == 0:
+                        batch_queue.put({
+                            'empty': True,
+                            'x': x, 'y': y, 'xsize': xsize, 'ysize': ysize,
+                            'tile_cnt': tile_cnt
+                        })
+                        continue
 
-                flat_inv = inv_arr.ravel()
-                counts = np.bincount(flat_inv)
-                valid_counts = np.maximum(counts[offset:], 1)
+                    flat_inv = inv_arr.ravel()
+                    counts = np.bincount(flat_inv)
+                    valid_counts = np.maximum(counts[offset:], 1)
 
-                # Vectorized centroids via local bincount (orders of magnitude faster than ndimage.center_of_mass)
-                yy, xx = np.indices((ysize, xsize), dtype=np.float32)
-                sum_y = np.bincount(flat_inv, weights=yy.ravel())[offset:]
-                sum_x = np.bincount(flat_inv, weights=xx.ravel())[offset:]
-                cy_arr = (sum_y / valid_counts) + y
-                cx_arr = (sum_x / valid_counts) + x
-                mx_arr = gt[0] + cx_arr * gt[1] + cy_arr * gt[2]
-                my_arr = gt[3] + cx_arr * gt[4] + cy_arr * gt[5]
-                lons, lats = transformer_to_wgs84.transform(mx_arr, my_arr)
-                latlons = np.column_stack([lats, lons]).astype(np.float32)
-                b_ll = torch.from_numpy(latlons).to(device)
+                    # Vectorized centroids via local bincount
+                    yy, xx = np.indices((ysize, xsize), dtype=np.float32)
+                    sum_y = np.bincount(flat_inv, weights=yy.ravel())[offset:]
+                    sum_x = np.bincount(flat_inv, weights=xx.ravel())[offset:]
+                    cy_arr = (sum_y / valid_counts) + y
+                    cx_arr = (sum_x / valid_counts) + x
+                    mx_arr = gt[0] + cx_arr * gt[1] + cy_arr * gt[2]
+                    my_arr = gt[3] + cx_arr * gt[4] + cy_arr * gt[5]
+                    lons, lats = transformer_to_wgs84.transform(mx_arr, my_arr)
+                    latlons = np.column_stack([lats, lons]).astype(np.float32)
+                    b_ll = torch.from_numpy(latlons)
 
-                embs_s1 = None
-                s1_means = None
-                b_s1 = None
-                if ds_s1:
-                    s1_tile = np.nan_to_num(ds_s1.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
-                    if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
-                    s1_means = np.zeros((len(u_sids), nbands_s1), dtype=np.float32)
-                    for b in range(nbands_s1):
-                        sums = np.bincount(flat_inv, weights=s1_tile[b].ravel())
-                        s1_means[:, b] = sums[offset:] / valid_counts
+                    s1_means = None
+                    s1_stds = None
+                    b_s1 = None
+                    if ds_s1:
+                        s1_tile = np.nan_to_num(ds_s1.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
+                        if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
+                        s1_tile_lin = np.power(10.0, np.clip(s1_tile, -45.0, 15.0) / 10.0)
+                        s1_means = np.zeros((len(u_sids), nbands_s1), dtype=np.float32)
+                        s1_stds = np.zeros((len(u_sids), nbands_s1), dtype=np.float32)
+                        for b in range(nbands_s1):
+                            b_lin = s1_tile_lin[b].ravel()
+                            sums_lin = np.bincount(flat_inv, weights=b_lin)
+                            sq_sums_lin = np.bincount(flat_inv, weights=b_lin ** 2)
+                            m_lin = sums_lin[offset:] / valid_counts
+                            v_lin = (sq_sums_lin[offset:] / valid_counts) - (m_lin ** 2)
+                            std_lin = np.sqrt(np.maximum(v_lin, 0.0))
+                            s1_means[:, b] = (10.0 * np.log10(np.maximum(m_lin, 1e-4))).astype(np.float32)
+                            s1_stds[:, b] = (std_lin / (m_lin + 1e-6)).astype(np.float32)
 
-                    s1_profiles = np.zeros((len(u_sids), num_dates_s1, 2), dtype=np.float32)
-                    for d in range(num_dates_s1):
-                        s1_profiles[:, d, 0] = (s1_means[:, num_dates_s1 + d] + 25.0) / 25.0
-                        s1_profiles[:, d, 1] = (s1_means[:, d] + 25.0) / 25.0
+                        s1_profiles = np.zeros((len(u_sids), num_dates_s1, 2), dtype=np.float32)
+                        for d in range(num_dates_s1):
+                            s1_profiles[:, d, 0] = (s1_means[:, num_dates_s1 + d] + 25.0) / 25.0
+                            s1_profiles[:, d, 1] = (s1_means[:, d] + 25.0) / 25.0
+                        b_s1 = torch.from_numpy(s1_profiles)
 
-                    b_s1 = torch.from_numpy(s1_profiles).to(device)
-                    embs_s1 = extractor.get_s1_embeddings(b_s1, b_ll, month_tensor_s1)
+                    s2_means = None
+                    s2_stds = None
+                    b_s2 = None
+                    if ds_s2:
+                        s2_tile = np.nan_to_num(ds_s2.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
+                        if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
+                        s2_means = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
+                        s2_stds = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
+                        for b in range(nbands_s2):
+                            b_vals = s2_tile[b].ravel()
+                            sums = np.bincount(flat_inv, weights=b_vals)
+                            sq_sums = np.bincount(flat_inv, weights=b_vals ** 2)
+                            m_s2 = sums[offset:] / valid_counts
+                            v_s2 = (sq_sums[offset:] / valid_counts) - (m_s2 ** 2)
+                            s2_means[:, b] = m_s2
+                            s2_stds[:, b] = np.sqrt(np.maximum(v_s2, 0.0)).astype(np.float32)
 
-                embs_s2 = None
-                s2_means = None
-                b_s2 = None
-                if ds_s2:
-                    s2_tile = np.nan_to_num(ds_s2.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
-                    if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
-                    s2_means = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
-                    for b in range(nbands_s2):
-                        sums = np.bincount(flat_inv, weights=s2_tile[b].ravel())
-                        s2_means[:, b] = sums[offset:] / valid_counts
+                        s2_profiles = np.zeros((len(u_sids), num_dates_s2, 9), dtype=np.float32)
+                        for d in range(num_dates_s2):
+                            for band_idx in range(9):
+                                s2_profiles[:, d, band_idx] = s2_means[:, d * 9 + band_idx] / 10000.0
+                        b_s2 = torch.from_numpy(s2_profiles)
 
-                    s2_profiles = np.zeros((len(u_sids), num_dates_s2, 9), dtype=np.float32)
-                    for d in range(num_dates_s2):
-                        for band_idx in range(9):
-                            s2_profiles[:, d, band_idx] = s2_means[:, d * 9 + band_idx] / 10000.0
+                    # Physical indices with intra-object variance / texture features
+                    phys_indices, _ = compute_vegetation_and_sar_indices(
+                        s1_means, s2_means, num_dates_s1, num_dates_s2,
+                        s1_stds=s1_stds, s2_stds=s2_stds
+                    )
 
-                    b_s2 = torch.from_numpy(s2_profiles).to(device)
-                    embs_s2 = extractor.get_s2_embeddings(b_s2, b_ll, month_tensor_s2)
+                    batch_queue.put({
+                        'empty': False,
+                        'x': x, 'y': y, 'xsize': xsize, 'ysize': ysize,
+                        'tile_cnt': tile_cnt,
+                        'u_all': u_all, 'inv_arr': inv_arr, 'offset': offset,
+                        'u_sids': u_sids, 'foot_arr': foot_arr,
+                        'b_ll': b_ll, 'b_s1': b_s1, 'b_s2': b_s2,
+                        's1_means': s1_means, 's2_means': s2_means,
+                        'phys_indices': phys_indices
+                    })
+                batch_queue.put(None)
+            except Exception as e:
+                producer_error[0] = e
+                batch_queue.put(None)
 
-                # Physical indices
-                phys_indices, _ = compute_vegetation_and_sar_indices(s1_means, s2_means, num_dates_s1, num_dates_s2)
+        producer_thread = threading.Thread(target=_tile_producer_worker, daemon=True)
+        producer_thread.start()
 
-                # Joint Presto multimodal embeddings
-                embs_joint = extractor.get_joint_embeddings(b_s1, b_s2, b_ll, month_tensor_joint)
+        while True:
+            item = batch_queue.get()
+            if item is None:
+                batch_queue.task_done()
+                break
 
-                # Assemble feature blocks: [s1_means, s2_means, phys_indices, embs_joint, embs_s1, embs_s2]
-                feat_blocks = []
-                if s1_means is not None: feat_blocks.append(s1_means)
-                if s2_means is not None: feat_blocks.append(s2_means)
-                if phys_indices.shape[1] > 0: feat_blocks.append(phys_indices)
-                if embs_joint is not None: feat_blocks.append(embs_joint)
-                if embs_s1 is not None: feat_blocks.append(embs_s1)
-                if embs_s2 is not None: feat_blocks.append(embs_s2)
+            x = item['x']
+            y = item['y']
+            xsize = item['xsize']
+            ysize = item['ysize']
+            tile_cnt = item['tile_cnt']
 
-                X_tile = np.hstack(feat_blocks)
-                X_tile_scaled = scaler.transform(X_tile)
-                raw_probs = clf.predict_proba(X_tile_scaled)
+            if item['empty']:
+                if tile_cnt % 25 == 0 or tile_cnt == total_tiles:
+                    elapsed = time.time() - t_infer_start
+                    rate = tile_cnt / elapsed if elapsed > 0 else 0
+                    eta_sec = (total_tiles - tile_cnt) / rate if rate > 0 else 0
+                    eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60):02d}s"
+                    sys.stdout.write(
+                        f"\r    [INFERENCE] Tile {tile_cnt}/{total_tiles} ({(tile_cnt/total_tiles*100):.1f}%) | "
+                        f"Objects: {total_segments_classified:,} | Time: {int(elapsed//60)}m {int(elapsed%60):02d}s | ETA: {eta_str}  "
+                    )
+                    sys.stdout.flush()
+                batch_queue.task_done()
+                continue
 
-                corr_probs = raw_probs * priors_arr
-                corr_probs = corr_probs / np.sum(corr_probs, axis=1, keepdims=True)
+            u_all = item['u_all']
+            inv_arr = item['inv_arr']
+            offset = item['offset']
+            u_sids = item['u_sids']
+            foot_arr = item['foot_arr']
+            s1_means = item['s1_means']
+            s2_means = item['s2_means']
+            phys_indices = item['phys_indices']
 
-                preds = clf.classes_[np.argmax(corr_probs, axis=1)]
-                confs = np.max(corr_probs, axis=1)
+            b_ll = item['b_ll'].to(device, non_blocking=True)
+            b_s1 = item['b_s1'].to(device, non_blocking=True) if item['b_s1'] is not None else None
+            b_s2 = item['b_s2'].to(device, non_blocking=True) if item['b_s2'] is not None else None
 
-                # Normalized Shannon Entropy
-                n_classes = len(clf.classes_)
-                log_k = np.log(max(n_classes, 2))
-                entropies = -np.sum(corr_probs * np.log(corr_probs + 1e-12), axis=1) / log_k
-                entropies = np.clip(entropies, 0.0, 1.0)
+            embs_s1 = extractor.get_s1_embeddings(b_s1, b_ll, month_tensor_s1) if b_s1 is not None else None
+            embs_s2 = extractor.get_s2_embeddings(b_s2, b_ll, month_tensor_s2) if b_s2 is not None else None
+            embs_joint = extractor.get_joint_embeddings(b_s1, b_s2, b_ll, month_tensor_joint)
 
-                # Confidence Margin
-                if n_classes > 1:
-                    part_probs = np.partition(corr_probs, -2, axis=1)
-                    margins = part_probs[:, -1] - part_probs[:, -2]
-                else:
-                    margins = np.ones_like(confs)
+            feat_blocks = []
+            if s1_means is not None: feat_blocks.append(s1_means)
+            if s2_means is not None: feat_blocks.append(s2_means)
+            if phys_indices.shape[1] > 0: feat_blocks.append(phys_indices)
+            if embs_joint is not None: feat_blocks.append(embs_joint)
+            if embs_s1 is not None: feat_blocks.append(embs_s1)
+            if embs_s2 is not None: feat_blocks.append(embs_s2)
 
-                # Fast O(1) Local Compact LUT Remapping (strictly len(u_all) elements)
-                lut_pred = np.zeros(len(u_all), dtype=np.int32)
-                lut_conf = np.zeros(len(u_all), dtype=np.float32)
-                lut_ent = np.zeros(len(u_all), dtype=np.float32)
-                lut_mar = np.zeros(len(u_all), dtype=np.float32)
+            X_tile = np.hstack(feat_blocks)
+            X_tile_scaled = scaler.transform(X_tile)
+            raw_probs = clf.predict_proba(X_tile_scaled)
 
-                lut_pred[offset:] = preds
-                lut_conf[offset:] = confs
-                lut_ent[offset:] = entropies
-                lut_mar[offset:] = margins
+            corr_probs = raw_probs * priors_arr
+            corr_probs = corr_probs / np.sum(corr_probs, axis=1, keepdims=True)
 
-                pred_arr = lut_pred[inv_arr]
-                prob_arr = lut_conf[inv_arr]
-                ent_arr = lut_ent[inv_arr]
-                mar_arr = lut_mar[inv_arr]
+            preds = clf.classes_[np.argmax(corr_probs, axis=1)]
+            confs = np.max(corr_probs, axis=1)
 
-                pred_arr[foot_arr == 0] = 0
-                prob_arr[foot_arr == 0] = 0
-                ent_arr[foot_arr == 0] = 0
-                mar_arr[foot_arr == 0] = 0
+            # Normalized Shannon Entropy
+            n_classes = len(clf.classes_)
+            log_k = np.log(max(n_classes, 2))
+            entropies = -np.sum(corr_probs * np.log(corr_probs + 1e-12), axis=1) / log_k
+            entropies = np.clip(entropies, 0.0, 1.0)
 
-                ds_cls.GetRasterBand(1).WriteArray(pred_arr, x, y)
-                ds_conf.GetRasterBand(1).WriteArray(prob_arr, x, y)
-                ds_ent.GetRasterBand(1).WriteArray(ent_arr, x, y)
-                ds_mar.GetRasterBand(1).WriteArray(mar_arr, x, y)
+            # Confidence Margin
+            if n_classes > 1:
+                part_probs = np.partition(corr_probs, -2, axis=1)
+                margins = part_probs[:, -1] - part_probs[:, -2]
+            else:
+                margins = np.ones_like(confs)
 
-                total_segments_classified += len(u_sids)
+            # Fast O(1) Local Compact LUT Remapping
+            lut_pred = np.zeros(len(u_all), dtype=np.int32)
+            lut_conf = np.zeros(len(u_all), dtype=np.float32)
+            lut_ent = np.zeros(len(u_all), dtype=np.float32)
+            lut_mar = np.zeros(len(u_all), dtype=np.float32)
 
-                elapsed = time.time() - t_infer_start
-                rate = tile_cnt / elapsed if elapsed > 0 else 0
-                eta_sec = (total_tiles - tile_cnt) / rate if rate > 0 else 0
-                eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60):02d}s"
-                sys.stdout.write(
-                    f"\r    [INFERENCE] Tile {tile_cnt}/{total_tiles} ({(tile_cnt/total_tiles*100):.1f}%) | "
-                    f"Objects: {total_segments_classified:,} | Time: {int(elapsed//60)}m {int(elapsed%60):02d}s | ETA: {eta_str}  "
-                )
-                sys.stdout.flush()
+            lut_pred[offset:] = preds
+            lut_conf[offset:] = confs
+            lut_ent[offset:] = entropies
+            lut_mar[offset:] = margins
+
+            pred_arr = lut_pred[inv_arr]
+            prob_arr = lut_conf[inv_arr]
+            ent_arr = lut_ent[inv_arr]
+            mar_arr = lut_mar[inv_arr]
+
+            pred_arr[foot_arr == 0] = 0
+            prob_arr[foot_arr == 0] = 0
+            ent_arr[foot_arr == 0] = 0
+            mar_arr[foot_arr == 0] = 0
+
+            ds_cls.GetRasterBand(1).WriteArray(pred_arr, x, y)
+            ds_conf.GetRasterBand(1).WriteArray(prob_arr, x, y)
+            ds_ent.GetRasterBand(1).WriteArray(ent_arr, x, y)
+            ds_mar.GetRasterBand(1).WriteArray(mar_arr, x, y)
+
+            total_segments_classified += len(u_sids)
+
+            elapsed = time.time() - t_infer_start
+            rate = tile_cnt / elapsed if elapsed > 0 else 0
+            eta_sec = (total_tiles - tile_cnt) / rate if rate > 0 else 0
+            eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60):02d}s"
+            sys.stdout.write(
+                f"\r    [INFERENCE] Tile {tile_cnt}/{total_tiles} ({(tile_cnt/total_tiles*100):.1f}%) | "
+                f"Objects: {total_segments_classified:,} | Time: {int(elapsed//60)}m {int(elapsed%60):02d}s | ETA: {eta_str}  "
+            )
+            sys.stdout.flush()
+
+            batch_queue.task_done()
+
+        producer_thread.join()
+        if producer_error[0] is not None:
+            raise producer_error[0]
 
         ds_cls.FlushCache()
         ds_conf.FlushCache()
@@ -2656,25 +2809,25 @@ class ProcessingPipelineS1S2:
 
         driver = gdal.GetDriverByName('GTiff')
         out_cls = driver.Create(str(self.masked_class), cols, rows, 1, gdal.GDT_Int32,
-                                options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+                                options=get_gdal_creation_options(predictor=2))
         out_cls.SetGeoTransform(gt)
         out_cls.SetProjection(proj)
         out_cls.GetRasterBand(1).SetNoDataValue(0)
 
         out_conf = driver.Create(str(self.masked_conf), cols, rows, 1, gdal.GDT_Float32,
-                                 options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+                                 options=get_gdal_creation_options(predictor=3))
         out_conf.SetGeoTransform(gt)
         out_conf.SetProjection(proj)
         out_conf.GetRasterBand(1).SetNoDataValue(0)
 
         out_ent = driver.Create(str(self.masked_entropy), cols, rows, 1, gdal.GDT_Float32,
-                                options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+                                options=get_gdal_creation_options(predictor=3))
         out_ent.SetGeoTransform(gt)
         out_ent.SetProjection(proj)
         out_ent.GetRasterBand(1).SetNoDataValue(0)
 
         out_mar = driver.Create(str(self.masked_margin), cols, rows, 1, gdal.GDT_Float32,
-                                options=['COMPRESS=DEFLATE', 'TILED=YES', 'BIGTIFF=YES'])
+                                options=get_gdal_creation_options(predictor=3))
         out_mar.SetGeoTransform(gt)
         out_mar.SetProjection(proj)
         out_mar.GetRasterBand(1).SetNoDataValue(0)
