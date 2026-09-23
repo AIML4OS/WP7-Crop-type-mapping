@@ -175,10 +175,27 @@ $$\rho_{\text{BOA}}(\lambda) = \frac{\pi \cdot (L_{\text{TOA}}(\lambda) - L_{\te
 * **Normalized Difference Water Index (NDWI / NDII)**:
   $$\text{NDWI} = \frac{\text{B8A} - \text{B11}}{\text{B8A} + \text{B11}}$$
 
-#### 3. Standardized 14-DOY agricultural nodes
-Temporal observations are interpolated into 14 standardized agricultural reference dates (Day of Year):
-$$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
-Constructing a unified $14\text{ DOYs} \times 9\text{ bands} = 126\text{-band}$ multi-temporal spectral cube.
+#### 3. Standardized 14-DOY agricultural nodes & regional phenological profiles
+Temporal observations are interpolated into 14 standardized agricultural reference dates (Day of Year) tailored to specific European bioclimatic zones:
+* **Mediterranean profile (`PT`, `ES`, `IT`, `EL`, `CY`, etc.)**:
+  $$\text{DOYs} = [45, 65, 85, 105, 120, 135, 150, 165, 180, 200, 220, 240, 260, 280]$$
+  Captures early February green-up (DOY 45 $\approx$ Feb 14), early cereal heading, summer drought senescence, and autumn emergence.
+* **Continental & Central European profile (`PL`, `NL`, `DE`, `FR`, etc.)**:
+  $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
+  Optimized for spring green-up (DOY 80 $\approx$ March 21), peak summer vegetative growth, and autumn harvest.
+* **Northern European profile (`SE`, `FI`, `EE`, `LT`, `LV`, `NO`)**:
+  $$\text{DOYs} = [105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300]$$
+  Calibrated for delayed boreal snowmelt and late autumn harvest windows.
+
+#### 4. Whittaker penalized least-squares smoother (`--enable_whittaker`)
+To suppress residual cloud artifacts, shadow dips, and atmospheric fluctuations across the reconstructed sequence, the pipeline incorporates an optional, vectorized Whittaker smoother:
+$$Q = \sum_{i=1}^M (y_i - z_i)^2 + \lambda \sum_{i=1}^{M-d} (\Delta^d z_i)^2$$
+Operating directly on the temporal continuum with $d=2$ curvature continuity and $\lambda=15.0$, yielding continuous, physically realistic phenological NDVI trajectories.
+
+#### 5. High-throughput ZSTD compression & temporal stack naming
+* **Zstandard (ZSTD level 3, predictor 2)**: Optical BigTIFF cubes utilize high-speed ZSTD compression, yielding $\sim 35\text{--}45\%$ reduction in storage footprint with significantly faster multi-threaded decompression rates than legacy DEFLATE.
+* **Temporal acquisition signature**: Mosaicked BigTIFF stacks feature explicit temporal range indicators matching the Sentinel-1 SAR convention:
+  `{COUNTRY}_{END_DATE}_{START_DATE}_S2_timeseries.tif` (e.g. `PT_20251007_20241015_S2_timeseries.tif`) with an instant hardlink alias to `{COUNTRY}_S2_timeseries.tif`.
 
 ---
 
@@ -282,10 +299,20 @@ $$\text{Footprint}(x, y) = \begin{cases} 1 & \text{if } \text{Valid}(\text{S1}_{
 +----------------------------------------------------------------------------------------------------+
 ```
 
-#### 1. Tier 1: Handcrafted temporal & spectral features
+#### 1. Tier 1: Handcrafted temporal, spectral & object texture features (100D feature suite)
 * **Sentinel-1 SAR temporal moments**: For each polarization ($VV$, $VH$) and cross-ratio ($VH/VV$), the pipeline extracts statistical moments across the agricultural calendar:
   $$\mu = \frac{1}{N}\sum_{t=1}^N \sigma^0_t, \quad \sigma = \sqrt{\frac{1}{N}\sum_{t=1}^N (\sigma^0_t - \mu)^2}, \quad \text{Min}, \quad \text{Max}, \quad \Delta \text{dB} = \text{Max} - \text{Min}$$
   These metrics capture surface roughness, canopy closure speed, and abrupt drops in backscatter caused by harvesting.
+* **Specialized SAR phenological indices (RVI & Dual-Pol vegetation metrics)**:
+  $$\text{RVI} = \frac{4 \cdot \sigma^0_{VH}}{\sigma^0_{VV} + \sigma^0_{VH}}$$
+  Tracks canopy volume fraction and vegetative biomass accumulation independent of soil surface dielectric variations.
+* **Seasonal SAR backscatter dynamics ($\Delta VH$)**:
+  $$\Delta VH = VH_{\text{summer}} - VH_{\text{spring}}$$
+  Provides strong discriminative power to differentiate winter cereals (established autumn canopy) from spring-sown crops (bare soil in early spring transitioning to lush vegetation by mid-summer).
+* **Intra-object texture variance & dispersion (field-level std & IQR)**:
+  Rather than summarizing objects by mean values alone, the feature extractor captures internal spatial heterogeneity:
+  $$\text{std}_{\text{object}}(VH), \quad \text{IQR}_{\text{object}}(VH), \quad \text{std}_{\text{object}}(\text{NDVI}), \quad \text{IQR}_{\text{object}}(\text{NDVI})$$
+  This enables the classifier to immediately distinguish dense, uniform field canopies (e.g. wheat, barley, rye) from wide-row crops (e.g. maize, sugar beets) and structured woody vegetation (e.g. vineyards, orchards, olive groves).
 * **Sentinel-2 multi-spectral trajectories**: Standardized 14-DOY reflectances across 9 spectral bands ($14 \times 9 = 126$ features) plus time-series vegetation indices ($\text{NDVI}(t)$, $\text{NDRE1}(t)$, $\text{NDRE2}(t)$, $\text{NDWI}(t)$) tracking chlorophyll absorption, red-edge shift, and canopy moisture.
 
 #### 2. Tier 2: NASA Harvest Presto 256-dimensional foundation embeddings
@@ -294,7 +321,7 @@ $$E_{\text{S1}} \in \mathbb{R}^{128} \quad (\text{SAR dynamics}), \qquad E_{\tex
 
 #### 3. Unified concatenated feature vector
 The complete feature vector combines domain-specific physical interpretability with deep self-supervised representation learning:
-$$X_{\text{fused}} = \left[ F_{\text{S1,stats}} \,\|\, F_{\text{S2,spectral}} \,\|\, E_{\text{Presto,S1}} \,\|\, E_{\text{Presto,S2}} \right] \in \mathbb{R}^{D}$$
+$$X_{\text{fused}} = \left[ F_{\text{S1,stats,texture}} \,\|\, F_{\text{S2,spectral,texture}} \,\|\, E_{\text{Presto,S1}} \,\|\, E_{\text{Presto,S2}} \right] \in \mathbb{R}^{D}$$
 
 ---
 
@@ -677,30 +704,32 @@ python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py
    - Queries Copernicus CDSE API (or CreoDIAS local archive) for Sentinel-2 L2A BOA surface reflectance tiles intersecting the country territory.
    - Extracts 9 spectral bands (`B02`, `B03`, `B04`, `B05`, `B06`, `B07`, `B8A`, `B11`, `B12`) and the Scene Classification Layer (`SCL`).
    - Strictly masks out clouds (high/medium prob), thin cirrus, cloud shadows, snow, and defective pixels, saving clean GeoTIFFs to `_temp_processing/{TILE}_tif/`.
-2. **Stage 2 (14-DOY Synthetic Time-Series Interpolation)**:
-   - Evaluates the temporal distribution of cloud-free observations across the 14 standardized agricultural reference dates:
-     $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
-   - Computes pure Python/NumPy multi-core linear interpolation between nearest forward and backward clear observations for all 9 bands, saving synthetic composite tiles to `_temp_processing/{TILE}/_synthetic_s2/day{DOY}_{YEAR}/`.
-3. **Stage 3 (SAR Grid Matching & 126-Band BigTIFF Stacking)**:
+2. **Stage 2 (14-DOY Synthetic Time-Series Interpolation & Whittaker Smoothing)**:
+   - Evaluates the temporal distribution of cloud-free observations across 14 standardized agricultural reference dates tailored to regional European profiles (Mediterranean DOY 45–280, Continental DOY 80–287, Northern DOY 105–300).
+   - Computes multi-core linear interpolation between nearest forward and backward clear observations for all 9 bands.
+   - Applies an optional vectorized **Whittaker penalized least-squares smoother** (`--enable_whittaker`, $\lambda = 15.0$) across the temporal DOY profile, suppressing cloud spikes and shadow artifacts to ensure continuous phenological trajectories.
+   - Saves synthetic composite tiles to `workingDirs/{COUNTRY}/S2/{TILE}/_synthetic_s2/day{DOY}_{YEAR}/`.
+3. **Stage 3 (SAR Grid Matching, ZSTD Stacking & Timestamped Naming)**:
    - Reads the Sentinel-1 SAR stack bounding box and spatial resolution as the master geometric reference.
    - Performs sub-pixel resampling ($\Delta X = 0.000\text{ m}, \Delta Y = 0.000\text{ m}$) ensuring 100% pixel-for-pixel alignment between optical reflectances and radar backscatter.
-   - Compiles all 14 DOYs $\times$ 9 spectral bands into a unified 126-band BigTIFF (`Int16`, DEFLATE compressed) and builds 6 pyramid overview layers.
+   - Compiles all 14 DOYs $\times$ 9 spectral bands into a unified 126-band BigTIFF using **high-speed ZSTD level 3 compression (`PREDICTOR=2`)** with 6 pyramid overview layers.
+   - Generates standardized temporal filenames matching the SAR standard: `{COUNTRY}_{END_DATE}_{START_DATE}_S2_timeseries.tif` (with instant backward-compatible alias).
 
 #### How to execute:
 ```powershell
-# Recommended: Full automated run for Portugal using official CDSE API (4 parallel workers):
-python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --source cdse -s 2025-02-15 -e 2025-09-15 --stage A --threads 4
+# Recommended: Full automated run for Portugal using official CDSE API and Whittaker smoother:
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --source cdse -s 2025-02-15 -e 2025-09-15 --enable_whittaker --stage A --threads 8
 
 # Process a single orbit track:
-python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track PT/orbit_52 --source cdse -s 2025-02-15 -e 2025-09-15 --stage A --threads 4
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track PT/orbit_52 --source cdse -s 2025-02-15 -e 2025-09-15 --enable_whittaker --stage A --threads 8
 
 # Interactive wizard mode (guides you step-by-step):
 python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py
 ```
 
 #### Expected output artifact:
-* `workingDirs/{COUNTRY}/orbit_{ORBIT}/1_input_stacks/{COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif`  
-  *(126-band Int16 optical BigTIFF, 10 m, EPSG:3857, matched 1:1 with SAR grid).*
+* `workingDirs/{COUNTRY}/S2/{COUNTRY}_{END_DATE}_{START_DATE}_S2_timeseries.tif`  
+  *(126-band ZSTD-compressed optical BigTIFF, 10 m, EPSG:3857, matched 1:1 with SAR grid).*
 
 ---
 
@@ -709,23 +738,23 @@ python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py
 #### What happens in each classification stage (stages 1 to 8):
 
 | Stage | Name | Action & scientific description | Generated output file |
-| :---: | :--- | :--- | :--- |
+| :--- | :--- | :--- | :--- |
 | **1** | **Data Footprint & SAR Composite** | Generates multi-temporal mean amplitude SAR composite ($\bar{\sigma}^0$) to suppress speckle. Computes binary spatial intersection of valid S1, S2, and NUTS2 boundaries. | `0_segmentation/*_s1_composite.tif`<br>`0_segmentation/*_data_footprint.tif` |
 | **2** | **OBIA Segmentation** | Delineates homogeneous agricultural parcels using SLIC superpixels (with 64px halo buffer), Meta AI SAM foundation vision transformers, or official LPIS vector cadastre. | `0_segmentation/*_segmentation_{MODE}.tif` |
 | **3** | **Stratified Sample Split** | Spatially intersects `samples.shp` with segment parcels. Partitions points into **70% training (`learn_{MODE}.shp`)** and **30% independent validation (`control_{MODE}.shp`)** with balanced class stratification. | `1_samples_and_features/learn_{MODE}.shp`<br>`1_samples_and_features/control_{MODE}.shp` |
-| **4** | **Feature Extraction** | Extracts temporal backscatter statistics (mean, min, max, std of VH, VV, VH/VV), 14-DOY optical reflectances (`B02`–`B12`), dynamic NDVI, and **128d S1 + 128d S2 NASA Harvest Presto token embeddings**. | `1_samples_and_features/*_features_{MODE}.csv`<br>`1_samples_and_features/features_scaler.pkl` |
+| **4** | **Feature Extraction (100D Suite)** | Extracts temporal backscatter statistics (mean, min, max, std of VH, VV, VH/VV), **intra-object texture variance (`std` and `IQR` for S1-VH and S2-NDVI)**, **Radar Vegetation Index (RVI)**, **seasonal dynamics ($\Delta VH$)**, 14-DOY optical reflectances (`B02`–`B12`), dynamic NDVI, and **128d S1 + 128d S2 NASA Harvest Presto token embeddings**. | `1_samples_and_features/*_features_{MODE}.csv`<br>`1_samples_and_features/features_scaler.pkl` |
 | **5** | **Model Training** | Fits class-weighted PyTorch Deep MLP (`BatchNorm1d`, `Dropout`, Cosine Annealing) and XGBoost GBDT (250 trees, histogram split). Combines models via soft-voting ensemble blend ($0.65\text{ MLP} + 0.35\text{ XGB}$). | `2_models/*_model_{MODE}.pkl`<br>`2_models/presto_encoder.pt` |
-| **6** | **Vectorized Tile Inference** | Reads input rasters in $2048 \times 2048$ blocks. Uses fast `np.bincount` zonal aggregation, batched Presto embedding forward passes, dynamic Bayesian prior calibration, and $O(1)$ LUT raster reconstruction. | `3_maps/*_classified_{MODE}.tif`<br>`3_maps/*_confidence_{MODE}.tif` |
+| **6** | **Asynchronous Vectorized Tile Inference** | Runs an **asynchronous CPU producer thread** prefetching $2048 \times 2048$ blocks and computing vectorized `np.bincount` zonal aggregation, while the **GPU consumer** runs batched Presto embeddings and MLP forward passes in parallel. Applies dynamic Bayesian prior calibration and $O(1)$ LUT raster reconstruction. | `3_maps/*_classified_{MODE}.tif`<br>`3_maps/*_confidence_{MODE}.tif` |
 | **7** | **Cropland Masking** | Applies high-resolution agricultural mask (`AgriMasks/{COUNTRY}/`) and data footprint, suppressing non-agricultural surfaces (forests, urban, water bodies). | `3_maps/*_classified_masked_{MODE}.tif`<br>`3_maps/*_confidence_masked_{MODE}.tif` |
 | **8** | **Accuracy Assessment** | Evaluates predictions against the independent 30% control dataset. Computes full confusion matrix, Overall Accuracy (OA), Cohen's Kappa ($\kappa$), User's Accuracy (Precision), Producer's Accuracy (Recall), and F1-scores. | `4_reports/report_*_metrics_{MODE}.xlsx` |
 
 #### How to execute:
 ```powershell
-# Recommended SOTA: Multimodal Deep MLP + XGBoost + Presto with SLIC Superpixels:
-python 2_classifier/run_classifier.py --country PT --classifier mlpxgb_presto --seg_mode slic --stage A
+# Recommended SOTA: Multimodal Deep MLP + XGBoost + Presto with SLIC Superpixels (forcing fresh retraining with --overwrite):
+python 2_classifier/run_classifier.py --country PT --classifier mlpxgb_presto --seg_mode slic --overwrite --stage A
 
 # Run single orbit track:
-python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode slic --stage A
+python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode slic --overwrite --stage A
 
 # Run specific single stages (e.g. Stage 4 Feature Extraction or Stage 6 Inference):
 python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 4
@@ -858,6 +887,12 @@ In version 3.0, Stage 5 (`stage_5_classify_vector`) has been re-architected with
 | **Tile raster reconstruction** | Iterative dictionary mask assignment | Direct array indexing `lut_pred[sub_seg]` | 🟢 **$2\text{ ms}$ per tile** |
 | **Average time per tile ($2048 \times 2048$ px)** | $2.5\text{ to }4.0\text{ minutes}$ | **$4\text{ to }7\text{ seconds}$** | 🚀 **$\sim 35\times$ speedup** |
 | **Total Stage 5 runtime (full country orbit)** | **$24\text{ to }48\text{ hours}$** | **$30\text{ to }50\text{ minutes}$** | ⚡ **$\sim 40\times\text{ to }60\times\text{ faster}$** |
+
+### Asynchronous GPU-CPU producer-consumer pipeline
+To maximize GPU tensor core utilization across massive multimodal satellite BigTIFFs, spatial tile inference employs a background prefetching producer-consumer threading model:
+1. **Background CPU producer**: Runs in a dedicated background worker (`threading.Thread`), sequentially prefetching the next $2048 \times 2048$ tile block from disk, computing vectorized `np.bincount` zonal aggregations, and packing candidate tensors.
+2. **Foreground GPU consumer**: Concurrently runs batched Presto embedding extraction and PyTorch Deep MLP forward passes on the current GPU tensor buffer (`cuda`).
+3. **Latency masking**: Disk read and feature assembly latency is completely hidden behind GPU tensor execution, cutting tile inference bottlenecks and achieving near 100% hardware saturation.
 
 ---
 

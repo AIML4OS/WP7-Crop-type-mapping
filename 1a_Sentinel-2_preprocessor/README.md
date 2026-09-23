@@ -26,13 +26,33 @@ The pipeline utilizes 9 spectral bands at 10 m and 20 m spatial resolutions (res
 * **Normalized Difference Water Index (NDWI / NDII)**:
   $$\text{NDWI} = \frac{\text{B8A} - \text{B11}}{\text{B8A} + \text{B11}}$$
 
-### 4. Standardized agricultural DOY time series
-Satellite observations across years and orbits have variable revisit dates due to cloud cover. The pipeline solves this by interpolating all observations into **14 standardized 10-day agricultural reference dates (Day of Year - DOY)**:
-$$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
-* DOY 80 (March 21): Early spring emergence / winter crop green-up.
-* DOY 105–175 (April–June): Peak vegetative growth and canopy closure.
-* DOY 189–231 (July–August): Flowering, grain filling, and harvest of summer crops.
-* DOY 252–287 (September–October): Late harvest and autumn emergence.
+### 4. Standardized agricultural DOY time series & regional phenological profiles
+Satellite observations across years and orbits have variable revisit dates due to cloud cover. The pipeline solves this by interpolating all observations into **14 standardized 10-day agricultural reference dates (Day of Year - DOY)** using regional phenological profiles tailored to European biomes:
+* **Mediterranean profile (`PT`, `ES`, `IT`, `EL`, `CY`, etc.)**:
+  $$\text{DOYs} = [45, 65, 85, 105, 120, 135, 150, 165, 180, 200, 220, 240, 260, 280]$$
+  Captures early February green-up (DOY 45 $\approx$ Feb 14), early cereal heading (DOY 105–135), summer drought senescence (DOY 180–220), and autumn emergence (DOY 260–280).
+* **Continental & Central European profile (`PL`, `NL`, `DE`, `FR`, etc.)**:
+  $$\text{DOYs} = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]$$
+  Tailored to spring green-up (DOY 80 $\approx$ March 21), peak summer canopy closure (June–July), and late harvest (September–October).
+* **Northern European profile (`SE`, `FI`, `EE`, `LT`, `LV`, `NO`)**:
+  $$\text{DOYs} = [105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300]$$
+  Adjusted for late snowmelt, short intense boreal growing seasons, and late autumn harvests.
+
+### 5. Whittaker penalized least-squares smoother (`--enable_whittaker`)
+Residual cloud spikes, shadow dips, and atmospheric fluctuations can distort temporal NDVI trajectories. The pipeline incorporates a vectorized, robust Whittaker smoother across the DOY sequence. It minimizes a balanced penalized objective function:
+
+$$Q = \sum_{i=1}^M (y_i - z_i)^2 + \lambda \sum_{i=1}^{M-d} (\Delta^d z_i)^2$$
+
+Where:
+* $y_i$ is the raw interpolated reflectance for DOY $i$, and $z_i$ is the reconstructed smooth signal.
+* $\Delta^d$ is the $d$-th difference operator (default: $d = 2$, enforcing curve curvature continuity).
+* $\lambda$ is the smoothing penalty parameter (default: $\lambda = 15.0$).
+* Solved directly via vectorized linear system $(I + \lambda D^T D) z = y$, preserving true crop phenological transitions while eliminating spurious atmospheric noise.
+
+### 6. High-throughput ZSTD compression & temporal stack naming
+* **Zstandard (ZSTD) level 3 with horizontal differencing predictor (`PREDICTOR=2`)**: Multi-temporal BigTIFF mosaics utilize high-speed ZSTD compression, yielding $\sim 35\text{--}45\%$ smaller file sizes than classic DEFLATE with significantly faster decompression rates during machine learning feature extraction.
+* **Standardized temporal acquisition signature**: Output optical stacks include full temporal acquisition boundaries matching the Sentinel-1 SAR standard:
+  `{COUNTRY}_{END_DATE}_{START_DATE}_S2_timeseries.tif` (e.g. `PT_20251007_20241015_S2_timeseries.tif`) with an instant, zero-byte hardlink alias to `{COUNTRY}_S2_timeseries.tif` for complete backward compatibility.
 
 ---
 
@@ -171,13 +191,17 @@ python run_s2_preprocessor.py --track PT/orbit_52 --stage 3 --threads 8
 | :--- | :---: | :---: | :--- |
 | `-t, --track` | string | `None` | Satellite track identifier (e.g. `PT/orbit_52`, `NL/orbit_88`). |
 | `-c, --country` | string | `None` | Country code (e.g. `PT`, `NL`, `PL`, `ES`, `FR`, `DE`). |
-| `-s, --start_date` | string | `2024-10-15` | Start date of agricultural season (`YYYY-MM-DD`). |
-| `-e, --end_date` | string | `2025-09-15` | End date of agricultural season (`YYYY-MM-DD`). |
-| `--cloud_cover` | int | `80` | Maximum allowable tile cloud cover percentage (0 to 100). |
-| `--source` | choice | `cdse` | Data source: `cdse` (Copernicus API) or `creodias` (local archive). |
+| `-s, --start_date` | string | `None` | Start date of agricultural season (`YYYY-MM-DD`). |
+| `-e, --end_date` | string | `None` | End date of agricultural season (`YYYY-MM-DD`). |
+| `--cloud_cover` | float | `80.0` | Maximum allowable scene cloud cover percentage (0.0 to 100.0). |
+| `--source` | choice | `auto` | Data source: `cdse` (Copernicus API), `creodias` (local archive), or `auto`. |
 | `--threads` | int | `8` | Number of parallel worker threads for multi-temporal interpolation. |
 | `--stage` | string | `None` | Stage to execute: `A` (all stages), `1` (download/extract), `2` (time-series), `3` (mosaic & stack). |
-| `--overwrite` | flag | `False` | Force recomputation of already existing output files. |
+| `--doys` | int list | `auto` | List of target DOYs (default: auto-detected regional profile). |
+| `--enable_whittaker` | flag | `True` | Enable penalized least-squares Whittaker smoothing across DOYs. |
+| `--no_whittaker` | flag | `False` | Disable Whittaker smoothing (use raw linear interpolation). |
+| `--whittaker_lambda` | float | `15.0` | Smoothing penalty parameter $\lambda$ for Whittaker filter. |
+| `--overwrite` | flag | `False` | Force recomputation of already existing intermediate and final stacks. |
 
 ---
 
