@@ -205,6 +205,8 @@ def mosaic_single_band_doy(
         warp_options_kwargs['cutlineDSName'] = str(shp_cutline)
         warp_options_kwargs['cropToCutline'] = (output_bounds is None)
 
+    gdal.SetConfigOption('GDAL_WARP_IGNORE_BAD_CUTLINE_GEOMETRY', 'YES')
+    gdal.PushErrorHandler('CPLQuietErrorHandler')
     try:
         warp_opts = gdal.WarpOptions(**warp_options_kwargs)
         gdal.Warp(str(output_tif), existing_files, options=warp_opts)
@@ -212,6 +214,8 @@ def mosaic_single_band_doy(
     except Exception as e:
         logging.error(f"Error mosaicking {output_tif.name}: {e}")
         return False
+    finally:
+        gdal.PopErrorHandler()
 
 
 def mosaic_stack_clip_single_track(
@@ -333,9 +337,10 @@ def mosaic_stack_clip_single_track(
         )
         with lock:
             done_bands += 1
-            if done_bands % 5 == 0 or done_bands == total_bands:
-                pct = (done_bands / total_bands) * 100.0
-                logging.info(f"  [MOSAIC PROGRESS] Track {track}: {done_bands}/{total_bands} bands completed ({pct:.1f}%)")
+            pct = (done_bands / total_bands) * 100.0
+            doy_name = task[1].parent.name
+            band_name = task[1].name
+            logging.info(f"  [MOSAIC PROGRESS] Track {track}: {done_bands}/{total_bands} bands completed ({pct:.1f}%) - Finished: {doy_name}/{band_name}")
         return res
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
