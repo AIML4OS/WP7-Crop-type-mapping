@@ -327,7 +327,8 @@ def mosaic_stack_clip_single_track(
     done_bands = 0
     lock = threading.Lock()
 
-    logging.info(f"Track {track}: warping {total_bands} single-band DOY mosaics (Workers: {max_workers})...")
+    warp_workers = 1 if (shp_cutline and shp_cutline.exists()) else min(max_workers, 2)
+    logging.info(f"Track {track}: warping {total_bands} single-band DOY mosaics (Warp Workers: {warp_workers}, Internal Threads: ALL_CPUS)...")
 
     def _worker_mosaic(task):
         nonlocal done_bands
@@ -343,7 +344,7 @@ def mosaic_stack_clip_single_track(
             logging.info(f"  [MOSAIC PROGRESS] Track {track}: {done_bands}/{total_bands} bands completed ({pct:.1f}%) - Finished: {doy_name}/{band_name}")
         return res
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=warp_workers) as executor:
         list(executor.map(_worker_mosaic, mosaic_tasks))
 
     valid_layers = []
