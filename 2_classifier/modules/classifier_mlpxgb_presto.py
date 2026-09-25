@@ -101,6 +101,85 @@ def get_gdal_creation_options(predictor: int = 2, zstd_level: int = 3) -> list:
     return ['COMPRESS=ZSTD', f'PREDICTOR={predictor}', f'ZSTD_LEVEL={zstd_level}', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS']
 
 
+def safe_read_tile(ds, x: int, y: int, xsize: int, ysize: int, band_idx: int = None, dtype=np.float32) -> np.ndarray:
+    """
+    Safely reads a tile from a GDAL Dataset or Band with boundary clamping and zero-padding.
+    Prevents GDAL RasterIO out-of-range errors when S1, S2, or mask raster dimensions differ slightly.
+
+    If band_idx is provided (1-based), reads only that band and returns 2D array of shape (ysize, xsize).
+    If band_idx is None:
+        - If ds is a Band, returns 2D array of shape (ysize, xsize).
+        - If ds is a Dataset with RasterCount == 1, returns 2D array of shape (ysize, xsize).
+        - If ds is a Dataset with RasterCount > 1, returns 3D array of shape (num_bands, ysize, xsize).
+    """
+    if ds is None:
+        return None
+
+    is_dataset = hasattr(ds, 'RasterCount')
+    if is_dataset:
+        ds_xsize = ds.RasterXSize
+        ds_ysize = ds.RasterYSize
+        num_bands = ds.RasterCount
+        if band_idx is not None:
+            target = ds.GetRasterBand(band_idx)
+            is_single_band = True
+        else:
+            target = ds
+            is_single_band = (num_bands == 1)
+    else:
+        # ds is a Band
+        ds_xsize = ds.XSize
+        ds_ysize = ds.YSize
+        num_bands = 1
+        target = ds
+        is_single_band = True
+
+    # Check for complete out-of-bounds
+    if x >= ds_xsize or y >= ds_ysize or (x + xsize) <= 0 or (y + ysize) <= 0:
+        if is_single_band:
+            return np.zeros((ysize, xsize), dtype=dtype)
+        else:
+            return np.zeros((num_bands, ysize, xsize), dtype=dtype)
+
+    src_x = max(0, x)
+    src_y = max(0, y)
+    dst_x = max(0, -x)
+    dst_y = max(0, -y)
+
+    rx = min(xsize - dst_x, ds_xsize - src_x)
+    ry = min(ysize - dst_y, ds_ysize - src_y)
+
+    if rx <= 0 or ry <= 0:
+        if is_single_band:
+            return np.zeros((ysize, xsize), dtype=dtype)
+        else:
+            return np.zeros((num_bands, ysize, xsize), dtype=dtype)
+
+    tile_data = target.ReadAsArray(src_x, src_y, rx, ry)
+    if tile_data is None:
+        if is_single_band:
+            return np.zeros((ysize, xsize), dtype=dtype)
+        else:
+            return np.zeros((num_bands, ysize, xsize), dtype=dtype)
+
+    tile_data = np.nan_to_num(tile_data.astype(dtype))
+
+    # Fast path: exactly fits requested window
+    if rx == xsize and ry == ysize and dst_x == 0 and dst_y == 0:
+        return tile_data
+
+    # Pad into destination array
+    if is_single_band or tile_data.ndim == 2:
+        out = np.zeros((ysize, xsize), dtype=dtype)
+        out[dst_y:dst_y + ry, dst_x:dst_x + rx] = tile_data
+        return out
+    else:
+        out = np.zeros((num_bands, ysize, xsize), dtype=dtype)
+        out[:, dst_y:dst_y + ry, dst_x:dst_x + rx] = tile_data
+        return out
+
+
+
 # =====================================================================
 # 1. HELPERS: DATE PARSING & PRIORS
 # =====================================================================
@@ -1786,10 +1865,10 @@ class ProcessingPipelineS1S2:
 
                 mask = np.ones((ysize, xsize), dtype=bool)
                 if ds_s1:
-                    b1_s1 = ds_s1.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    b1_s1 = safe_read_tile(ds_s1, x, y, xsize, ysize, band_idx=1)
                     mask = mask & (b1_s1 != 0) & (b1_s1 != -9999) & (~np.isnan(b1_s1))
                 if ds_s2:
-                    b1_s2 = ds_s2.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    b1_s2 = safe_read_tile(ds_s2, x, y, xsize, ysize, band_idx=1)
                     mask = mask & (b1_s2 > 0) & (~np.isnan(b1_s2))
 
                 out_ds.GetRasterBand(1).WriteArray(mask.astype(np.uint8), x, y)
@@ -2195,7 +2274,7 @@ class ProcessingPipelineS1S2:
                     accum_counts[sid] += int(counts[idx])
 
                 if ds_s1:
-                    s1_tile = np.nan_to_num(ds_s1.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
+                    s1_tile = safe_read_tile(ds_s1, x, y, xsize, ysize)
                     if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
                     # Convert SAR dB to linear power scale for unbiased physical aggregation
                     s1_tile_lin = np.power(10.0, np.clip(s1_tile, -45.0, 15.0) / 10.0)
@@ -2208,7 +2287,7 @@ class ProcessingPipelineS1S2:
                             accum_s1_sq_sums[sid][b] += float(sq_sums[idx])
 
                 if ds_s2:
-                    s2_tile = np.nan_to_num(ds_s2.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
+                    s2_tile = safe_read_tile(ds_s2, x, y, xsize, ysize)
                     if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
                     for b in range(nbands_s2):
                         b_vals = s2_tile[b].ravel()
@@ -2517,8 +2596,8 @@ class ProcessingPipelineS1S2:
                     if producer_error[0] is not None:
                         break
                     tile_cnt = idx + 1
-                    sub_seg = seg_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
-                    foot_arr = foot_ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    sub_seg = safe_read_tile(seg_ds, x, y, xsize, ysize, band_idx=1, dtype=np.int32)
+                    foot_arr = safe_read_tile(foot_ds, x, y, xsize, ysize, band_idx=1, dtype=np.uint8)
 
                     u_all, inv_arr = np.unique(sub_seg, return_inverse=True)
                     has_zero = (len(u_all) > 0 and u_all[0] == 0)
@@ -2553,7 +2632,7 @@ class ProcessingPipelineS1S2:
                     s1_stds = None
                     b_s1 = None
                     if ds_s1:
-                        s1_tile = np.nan_to_num(ds_s1.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
+                        s1_tile = safe_read_tile(ds_s1, x, y, xsize, ysize)
                         if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
                         s1_tile_lin = np.power(10.0, np.clip(s1_tile, -45.0, 15.0) / 10.0)
                         s1_means = np.zeros((len(u_sids), nbands_s1), dtype=np.float32)
@@ -2578,7 +2657,7 @@ class ProcessingPipelineS1S2:
                     s2_stds = None
                     b_s2 = None
                     if ds_s2:
-                        s2_tile = np.nan_to_num(ds_s2.ReadAsArray(x, y, xsize, ysize).astype(np.float32))
+                        s2_tile = safe_read_tile(ds_s2, x, y, xsize, ysize)
                         if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
                         s2_means = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
                         s2_stds = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
@@ -2850,11 +2929,11 @@ class ProcessingPipelineS1S2:
 
                 combined_mask = np.ones((ysize, xsize), dtype=bool)
                 if ds_foot:
-                    foot_arr = ds_foot.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    foot_arr = safe_read_tile(ds_foot, x, y, xsize, ysize, band_idx=1, dtype=np.uint8)
                     combined_mask = combined_mask & (foot_arr > 0)
 
                 if ds_mask:
-                    mask_arr = ds_mask.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
+                    mask_arr = safe_read_tile(ds_mask, x, y, xsize, ysize, band_idx=1, dtype=np.uint8)
                     combined_mask = combined_mask & (mask_arr > 0)
 
                 cls_arr[~combined_mask] = 0
@@ -3319,7 +3398,7 @@ def main():
             main_menu(pipeline)
         else:
             choice = args.stage.strip().upper()
-            if choice in ['A', 'ALL']:
+            if choice == 'A':
                 pipeline.run_all()
             elif choice in ['1', '0']: pipeline.stage_1_generate_footprint(True)
             elif choice == '2': pipeline.stage_2_segmentation(True)
