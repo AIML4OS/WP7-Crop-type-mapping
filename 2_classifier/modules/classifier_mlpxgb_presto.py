@@ -735,7 +735,18 @@ class EnsembleClassifier:
         xgb_le.fit(self.xgb_classes_)
         y_xgb = xgb_le.transform(y_enc)
 
-        self.xgb_model.fit(X_imputed, y_xgb)
+        try:
+            self.xgb_model.fit(X_imputed, y_xgb)
+        except Exception as e:
+            print(f"  [WARNING] XGBoost fitting encountered an error: {e}. Falling back to HistGradientBoostingClassifier...")
+            from sklearn.ensemble import HistGradientBoostingClassifier
+            self.xgb_model = HistGradientBoostingClassifier(
+                max_iter=300,
+                learning_rate=0.08,
+                max_depth=7,
+                random_state=42
+            )
+            self.xgb_model.fit(X_imputed, y_xgb)
         print("  [Fusion Complete] Unified MLP + XGBoost Ensemble successfully fitted.")
         return self
 
