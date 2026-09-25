@@ -3330,17 +3330,28 @@ def main():
             elif choice == '7': pipeline.stage_7_mask_classification(True)
             elif choice == '8': pipeline.stage_8_calculate_metrics()
 
-    if not args.track:
-        if args.country:
-            c_dir = base_dir / args.country.upper()
-            if c_dir.exists():
-                orbs = [d.name for d in c_dir.glob("orbit_*") if d.is_dir()]
-                for o in orbs:
-                    _exec_pipeline(f"{args.country.upper()}/{o}")
-                return
-        parser.error("Either --track (-t) or --country (-c) must be specified.")
+    target_tracks = []
+    country_candidate = args.country.upper() if args.country else None
+    if not country_candidate and args.track:
+        norm_t = args.track.replace('\\', '/')
+        if '/' not in norm_t:
+            country_candidate = norm_t.upper()
 
-    _exec_pipeline(args.track)
+    if country_candidate:
+        c_dir = base_dir / country_candidate
+        if c_dir.exists():
+            orbs = sorted([d.name for d in c_dir.glob("orbit_*") if d.is_dir()])
+            if orbs:
+                target_tracks = [f"{country_candidate}/{o}" for o in orbs]
+
+    if not target_tracks:
+        if args.track:
+            target_tracks = [args.track.replace('\\', '/')]
+        else:
+            parser.error("Either --track (-t) or --country (-c) must be specified.")
+
+    for tr in target_tracks:
+        _exec_pipeline(tr)
 
 
 if __name__ == '__main__':

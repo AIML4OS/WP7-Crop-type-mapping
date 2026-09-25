@@ -463,47 +463,43 @@ Examples:
 
     slic_rag_enabled = args.enable_slic_rag and not args.no_slic_rag
 
-    if not args.track:
-        if args.country:
-            # Run for all orbits in country sequentially
-            country_dir = BASE_DIR / args.country.upper()
-            if country_dir.exists():
-                orbits = [d.name for d in country_dir.glob("orbit_*") if d.is_dir()]
-                for orb_name in orbits:
-                    track_path = f"{args.country.upper()}/{orb_name}"
-                    run_pipeline(
-                        track=track_path,
-                        seg_mode=args.seg_mode,
-                        classifier_model=args.classifier,
-                        stage=args.stage,
-                        mlp_weight=args.mlp_weight,
-                        s1_override=args.s1_raster,
-                        s2_override=args.s2_raster,
-                        lpis_vector=args.lpis_vector,
-                        slic_segment_ha=args.slic_segment_ha,
-                        slic_compactness=args.slic_compactness,
-                        slic_rag_thresh=args.slic_rag_thresh,
-                        enable_slic_rag=slic_rag_enabled,
-                        overwrite=args.overwrite
-                    )
-                return
-        parser.error("Either --track (-t) or --country (-c) must be specified.")
+    target_tracks = []
+    country_candidate = args.country.upper() if args.country else None
+    if not country_candidate and args.track:
+        norm_t = args.track.replace('\\', '/')
+        if '/' not in norm_t:
+            country_candidate = norm_t.upper()
 
-    run_pipeline(
-        track=args.track,
-        seg_mode=args.seg_mode,
-        classifier_model=args.classifier,
-        stage=args.stage,
-        mlp_weight=args.mlp_weight,
-        s1_override=args.s1_raster,
-        s2_override=args.s2_raster,
-        lpis_vector=args.lpis_vector,
-        slic_segment_ha=args.slic_segment_ha,
-        slic_compactness=args.slic_compactness,
-        slic_rag_thresh=args.slic_rag_thresh,
-        enable_slic_rag=slic_rag_enabled,
-        overwrite=args.overwrite
-    )
+    if country_candidate:
+        country_dir = BASE_DIR / country_candidate
+        if country_dir.exists():
+            orbits = sorted([d.name for d in country_dir.glob("orbit_*") if d.is_dir()])
+            if orbits:
+                logging.info(f"Discovered {len(orbits)} orbit tracks for {country_candidate}: {orbits}")
+                target_tracks = [f"{country_candidate}/{orb}" for orb in orbits]
+
+    if not target_tracks:
+        if args.track:
+            target_tracks = [args.track.replace('\\', '/')]
+        else:
+            parser.error("Either --track (-t) or --country (-c) must be specified.")
+
+    for tr in target_tracks:
+        run_pipeline(
+            track=tr,
+            seg_mode=args.seg_mode,
+            classifier_model=args.classifier,
+            stage=args.stage,
+            mlp_weight=args.mlp_weight,
+            s1_override=args.s1_raster,
+            s2_override=args.s2_raster,
+            lpis_vector=args.lpis_vector,
+            slic_segment_ha=args.slic_segment_ha,
+            slic_compactness=args.slic_compactness,
+            slic_rag_thresh=args.slic_rag_thresh,
+            enable_slic_rag=slic_rag_enabled,
+            overwrite=args.overwrite
+        )
 
 
 if __name__ == '__main__':
