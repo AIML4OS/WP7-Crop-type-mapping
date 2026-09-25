@@ -3319,7 +3319,7 @@ def main():
             main_menu(pipeline)
         else:
             choice = args.stage.strip().upper()
-            if choice == 'A':
+            if choice in ['A', 'ALL']:
                 pipeline.run_all()
             elif choice in ['1', '0']: pipeline.stage_1_generate_footprint(True)
             elif choice == '2': pipeline.stage_2_segmentation(True)
