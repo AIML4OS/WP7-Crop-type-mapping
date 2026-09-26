@@ -814,7 +814,8 @@ class PrestoMultimodalExtractor:
         batch_s1_vv_vh: Optional[torch.Tensor],
         batch_s2_9bands: Optional[torch.Tensor],
         batch_latlons: torch.Tensor,
-        months_tensor: torch.Tensor
+        months_tensor: torch.Tensor,
+        chunk_size: int = 4096
     ) -> np.ndarray:
         """Computes true multimodal joint cross-attention embeddings across S1 + S2 simultaneously."""
         if batch_s2_9bands is not None:
@@ -823,6 +824,17 @@ class PrestoMultimodalExtractor:
             B, T, _ = batch_s1_vv_vh.shape
         else:
             raise ValueError("At least one modality (S1 or S2) must be present.")
+
+        if B > chunk_size:
+            out_list = []
+            for i in range(0, B, chunk_size):
+                end_i = min(i + chunk_size, B)
+                s1_sub = batch_s1_vv_vh[i:end_i] if batch_s1_vv_vh is not None else None
+                s2_sub = batch_s2_9bands[i:end_i] if batch_s2_9bands is not None else None
+                ll_sub = batch_latlons[i:end_i]
+                out_chunk = self.get_joint_embeddings(s1_sub, s2_sub, ll_sub, months_tensor, chunk_size=chunk_size)
+                out_list.append(out_chunk)
+            return np.concatenate(out_list, axis=0)
 
         x = torch.zeros(B, T, 17, dtype=torch.float32, device=self.device)
         mask = torch.ones(B, T, 17, dtype=torch.float32, device=self.device)
@@ -881,8 +893,16 @@ class PrestoMultimodalExtractor:
             )
         return features.cpu().numpy()
 
-    def get_s1_embeddings(self, batch_s1_vv_vh: torch.Tensor, batch_latlons: torch.Tensor, months_tensor: torch.Tensor) -> np.ndarray:
+    def get_s1_embeddings(self, batch_s1_vv_vh: torch.Tensor, batch_latlons: torch.Tensor, months_tensor: torch.Tensor, chunk_size: int = 4096) -> np.ndarray:
         B, T, _ = batch_s1_vv_vh.shape
+        if B > chunk_size:
+            out_list = []
+            for i in range(0, B, chunk_size):
+                end_i = min(i + chunk_size, B)
+                out_chunk = self.get_s1_embeddings(batch_s1_vv_vh[i:end_i], batch_latlons[i:end_i], months_tensor, chunk_size=chunk_size)
+                out_list.append(out_chunk)
+            return np.concatenate(out_list, axis=0)
+
         x = torch.zeros(B, T, 17, dtype=torch.float32, device=self.device)
         x[:, :, 0] = batch_s1_vv_vh[:, :, 0] # VV
         x[:, :, 1] = batch_s1_vv_vh[:, :, 1] # VH
@@ -904,8 +924,16 @@ class PrestoMultimodalExtractor:
             )
         return features.cpu().numpy()
 
-    def get_s2_embeddings(self, batch_s2_9bands: torch.Tensor, batch_latlons: torch.Tensor, months_tensor: torch.Tensor) -> np.ndarray:
+    def get_s2_embeddings(self, batch_s2_9bands: torch.Tensor, batch_latlons: torch.Tensor, months_tensor: torch.Tensor, chunk_size: int = 4096) -> np.ndarray:
         B, T, _ = batch_s2_9bands.shape
+        if B > chunk_size:
+            out_list = []
+            for i in range(0, B, chunk_size):
+                end_i = min(i + chunk_size, B)
+                out_chunk = self.get_s2_embeddings(batch_s2_9bands[i:end_i], batch_latlons[i:end_i], months_tensor, chunk_size=chunk_size)
+                out_list.append(out_chunk)
+            return np.concatenate(out_list, axis=0)
+
         x = torch.zeros(B, T, 17, dtype=torch.float32, device=self.device)
 
         b2 = batch_s2_9bands[:, :, 0]
@@ -2824,6 +2852,8 @@ class ProcessingPipelineS1S2:
             sys.stdout.flush()
 
             batch_queue.task_done()
+            if HAS_TORCH and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         producer_thread.join()
         if producer_error[0] is not None:
