@@ -4,28 +4,23 @@ This toolbox provides an automated, scientific-grade preprocessing pipeline for 
 
 ---
 
-## Scientific methodology & radar physics
+## Scientific methodology & radar remote sensing
 
 ### 1. Radar backscatter mechanisms in agriculture
-Sentinel-1 operates at C-band microwave frequency ($f = 5.405\text{ GHz}$, wavelength $\lambda \approx 5.55\text{ cm}$). Unlike optical sensors, microwaves penetrate clouds, haze, and rain, interacting directly with the structural and dielectric properties of the vegetation canopy and soil:
-* **$VV$ polarization (vertical transmit / vertical receive)**: Dominantly sensitive to surface roughness, soil moisture, and vertical canopy elements (e.g. cereal stems in wheat and barley).
-* **$VH$ polarization (vertical transmit / horizontal receive)**: Cross-polarization characterized by high sensitivity to volume scattering within the crop canopy, serving as a direct indicator of biomass accumulation, leaf density, and canopy closure.
-* **$VH/VV$ polarization ratio & cross-ratio**: Normalizes soil moisture variations, highlighting crop phenological transitions, stem elongation, and heading phases.
+Sentinel-1 operates at C-band microwave frequency (5.405 GHz, wavelength ~5.55 cm). Unlike optical sensors, microwaves penetrate clouds, haze, and rain, interacting directly with the structural and dielectric properties of the vegetation canopy and soil:
+* **VV polarization (vertical transmit / vertical receive)**: Dominantly sensitive to surface roughness, soil moisture, and vertical canopy elements (e.g. cereal stems in wheat and barley).
+* **VH polarization (vertical transmit / horizontal receive)**: Cross-polarization characterized by high sensitivity to volume scattering within the crop canopy, serving as a direct indicator of biomass accumulation, leaf density, and canopy closure.
+* **VH/VV polarization ratio & cross-ratio**: Normalizes soil moisture variations, highlighting crop phenological transitions, stem elongation, and heading phases.
 
-### 2. Fundamental radar equations and polarimetry
-The received radar backscatter power $P_r$ from a distributed agricultural target is given by:
-
-$$P_r = \frac{P_t G^2 \lambda^2 \sigma^0 A_{\text{ground}}}{(4\pi)^3 R^4}$$
-
-* **Calibration to physical backscatter ($\sigma^0$)**:
-  $$\sigma^0_i = \frac{|DN_i|^2}{A_i^2}$$
-* **Radar Vegetation Index (RVI)**:
-  $$\text{RVI} = \frac{4 \cdot \sigma^0_{VH}}{\sigma^0_{VV} + \sigma^0_{VH}}$$
-* **Polarimetric Cross-Ratio (CR)**:
-  $$\text{CR}_{\text{dB}} = \sigma^0_{VH,\text{dB}} - \sigma^0_{VV,\text{dB}} = 10 \log_{10}\left(\frac{\sigma^0_{VH}}{\sigma^0_{VV}}\right)$$
+### 2. Radar backscatter calibration and polarimetric indices
+The pipeline performs radiometric calibration and computes key agricultural polarimetric indices:
+* **Calibration to physical backscatter (Sigma0)**: Converts raw digital numbers (DN) into normalized radar cross section (Sigma0) using sensor look-up tables (LUT).
+* **Decibel transformation (dB)**: Converts linear backscatter into decibels: `dB = 10 * log10(Sigma0)`, standardizing the dynamic range typically between -28 dB and 0 dB.
+* **Radar Vegetation Index (RVI)**: Measures canopy volume scattering relative to total backscatter: `RVI = 4 * VH / (VV + VH)`.
+* **Polarimetric cross-ratio (CR)**: Ratio of cross-polarized to co-polarized backscatter: `CR [dB] = VH [dB] - VV [dB]`.
 
 ### 3. Multi-temporal decorrelation & winter freeze filtering
-During freezing temperatures, water transitions to ice, causing a dramatic drop in the dielectric constant ($\varepsilon_{\text{water}} \approx 80 \rightarrow \varepsilon_{\text{ice}} \approx 3.15$). This leads to an artificial backscatter drop of $4\text{ to }8\text{ dB}$. The pipeline includes an optional `--exclude_winter` filter that removes scenes between December 1 and February 14 to avoid training distortions.
+During freezing temperatures, water transitions to ice, causing a dramatic drop in the dielectric constant (from ~80 in liquid water to ~3.15 in ice). This leads to an artificial backscatter drop of 4 to 8 dB. The pipeline includes an optional `--exclude_winter` filter that removes scenes between December 1 and February 14 to avoid training distortions.
 
 ---
 
@@ -76,7 +71,7 @@ During freezing temperatures, water transitions to ice, causing a dramatic drop 
                      | [Output product: 1_input_stacks/]                        |
                      | {COUNTRY}_orbit_{ORBIT}_{END}_{START}_VH_VV.tif          |
                      | (Dual-pol multi-temporal BigTIFF, 10m, EPSG:3857)        |
-                     +----------------------------------------------------------+
+                     +----------------------------+-----------------------------+
 ```
 
 ---
@@ -85,10 +80,9 @@ During freezing temperatures, water transitions to ice, causing a dramatic drop 
 
 ### Stage 1: Radiometric calibration & slice assembly (`s1_calibration_*.py`)
 * **Precise orbit state vectors (POEORB)**: Automatically fetched from ESA servers with 5 cm positioning accuracy, updating satellite velocity and state vectors.
-* **Thermal noise removal (TNR)**: Subtracts thermal antenna noise patterns along range lines, critical for low-intensity cross-polarization ($VH$).
+* **Thermal noise removal (TNR)**: Subtracts thermal antenna noise patterns along range lines, critical for low-intensity cross-polarization (VH).
 * **Border noise removal (BNR)**: Masks radiometric artifacts and low-intensity sampling invalidities along slice edges.
-* **Calibration to $\sigma^0$**: Converts raw digital numbers ($DN$) into physical radar backscatter coefficient:
-  $$\sigma^0 = \frac{|DN|^2}{A_i^2}$$
+* **Calibration to Sigma0**: Converts raw digital numbers (DN) into physical radar backscatter coefficient (Sigma0) using sensor calibration look-up tables.
 * **Slice assembly**: Merges consecutive along-track radar frames acquired on the same date into a seamless track strip.
 
 ### Stage 2: Multi-temporal coregistration (`s1_coregistration.py`)
@@ -98,8 +92,8 @@ During freezing temperatures, water transitions to ice, causing a dramatic drop 
 ### Stage 3: Despeckling, terrain correction, stacking & clipping (`s1_stack_clip.py`)
 * **Multi-temporal speckle filtering**: Suppresses multiplicative radar granular noise across the time series while preserving fine agricultural field boundaries, crop texture, and linear parcel features.
 * **Range Doppler terrain correction**: Orthorectifies radar geometry distortions (foreshortening, layover, shadow) using the Copernicus 30 m global DEM and Earth gravitational model (EGM96).
-* **Decibel transformation**: Converts backscatter into decibels: $\sigma^0_{\text{dB}} = 10 \log_{10}(\sigma^0)$, standardizing signal dynamic range (typically $-28\text{ dB}$ to $0\text{ dB}$).
-* **BigTIFF generation & pyramids**: Exports tiled BigTIFF (`COMPRESS=DEFLATE`, `TILED=YES`) in `EPSG:3857` at an exact $10.0\text{ m}$ pixel resolution and generates 6 pyramid overview layers (`[2, 4, 8, 16, 32, 64]`) for instant rendering.
+* **Decibel transformation**: Converts backscatter into decibels: `dB = 10 * log10(Sigma0)`, standardizing signal dynamic range (typically -28 dB to 0 dB).
+* **BigTIFF generation & pyramids**: Exports tiled BigTIFF (`COMPRESS=DEFLATE`, `TILED=YES`) in `EPSG:3857` at an exact 10.0 m pixel resolution and generates 6 pyramid overview layers (`[2, 4, 8, 16, 32, 64]`) for instant rendering.
 
 ---
 
@@ -109,7 +103,8 @@ During freezing temperatures, water transitions to ice, causing a dramatic drop 
 * **`config_s1.json`**: Active configuration containing CDSE credentials, SNAP paths, and working directories.
 * **`config_s1.example.json`**: Template configuration file.
 * **`modules/`**:
-  * `s1_calibration_creodias.py`: Fast calibration from local CreoDIAS COG repository.
+  * `s1_calibration_cog.py`: High-speed calibration from local CreoDIAS Cloud-Optimized GeoTIFF (COG) repository.
+  * `s1_calibration_creodias.py`: Calibration from local CreoDIAS SAFE archives.
   * `s1_calibration_cdse.py`: Automated retrieval and calibration from CDSE API.
   * `s1_coregistration.py`: Multi-temporal coregistration using ESA SNAP GPT (`CreateStack`).
   * `s1_stack_clip.py`: Multi-temporal speckle filtering, Range Doppler terrain correction, GDAL BigTIFF stacking, and regional clipping.
@@ -132,7 +127,7 @@ python run_s1_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --stage A
 python run_s1_preprocessor.py --country NL -s 2024-10-15 -e 2025-09-15 --stage A
 
 # Full automated run for Poland with winter freeze exclusion:
-python run_s1_preprocessor.py --country PL --exclude_winter --stage A
+python run_s1_preprocessor.py --country PL -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
 ```
 
 ### 3. Single orbit track execution
@@ -152,10 +147,12 @@ python run_s1_preprocessor.py --track PT/orbit_52 --stage 3
 | :--- | :---: | :---: | :--- |
 | `-t, --track` | string | `None` | Satellite track identifier (e.g. `PT/orbit_52`, `NL/orbit_88`). |
 | `-c, --country` | string | `None` | Country code (e.g. `PT`, `NL`, `PL`, `ES`, `FR`, `DE`). |
-| `-s, --start_date` | string | `2024-10-15` | Start date of agricultural season (`YYYY-MM-DD`). |
-| `-e, --end_date` | string | `2025-09-15` | End date of agricultural season (`YYYY-MM-DD`). |
-| `--source` | choice | `cog` | Data source: `cog` (CreoDIAS local repository) or `cdse` (Copernicus API). |
+| `-o, --orbit` | int | `None` | Specific relative orbit number (e.g. `52`, `125`, `88`). |
+| `-s, --start_date` | string | `None` | Start date of agricultural season (`YYYY-MM-DD`, required for Stage 1/A). |
+| `-e, --end_date` | string | `None` | End date of agricultural season (`YYYY-MM-DD`, required for Stage 1/A). |
+| `--source` | choice | `auto` | Data source: `auto` (auto-detect local repo), `cog` (CreoDIAS COG), `creodias` (CreoDIAS SAFE), or `cdse` (Copernicus API). |
 | `--exclude_winter` | flag | `False` | Exclude winter freeze observations between December 1 and February 14. |
+| `--threads` | int | `4` | Worker threads for parallel processing (default: 4). |
 | `--stage` | string | `None` | Stage to execute: `A` (all stages), `1` (calibration), `2` (coregistration), `3` (stack & clip). |
 | `--overwrite` | flag | `False` | Force recomputation of already existing output files. |
 
@@ -163,11 +160,11 @@ python run_s1_preprocessor.py --track PT/orbit_52 --stage 3
 
 ## Transient disk space & cleanup guidelines
 
-Sentinel-1 preprocessing produces large intermediate products during calibration and stacking:
-* **`calibrated/`** ($\sim 250\text{ GB}$ per orbit): Calibrated individual slices.
-* **`slice_assembly/`** ($\sim 250\text{ GB}$ per orbit): Assembled daily tracks.
-* **`wrapped/`** ($\sim 250\text{ GB}$ per orbit): Coregistered multi-temporal stack.
-* **`1_input_stacks/`** ($\sim 80\text{ to }120\text{ GB}$ per orbit): Final compact BigTIFF stack.
+Sentinel-1 preprocessing produces intermediate products during calibration and stacking:
+* **`calibrated/`** (~250 GB per orbit): Calibrated individual slices.
+* **`slice_assembly/`** (~250 GB per orbit): Assembled daily tracks.
+* **`wrapped/`** (~250 GB per orbit): Coregistered multi-temporal stack.
+* **`1_input_stacks/`** (~80 to 120 GB per orbit): Final compact BigTIFF stack.
 
 > [!TIP]
-> Once Stage 3 finishes and the final BigTIFF is created in `1_input_stacks/`, all temporary folders (`calibrated/`, `slice_assembly/`, `wrapped/`) can be safely deleted to free $\sim 750\text{ GB}$ of disk space per orbit.
+> Once Stage 3 finishes and the final BigTIFF is created in `1_input_stacks/`, all temporary folders (`calibrated/`, `slice_assembly/`, `wrapped/`) can be safely deleted to free ~750 GB of disk space per orbit.

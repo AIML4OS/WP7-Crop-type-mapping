@@ -4,7 +4,7 @@
     "password": "your_password_here"
   },
   "paths": {
-    "working_dir": "D:/AIML_CropMapper_Cloud/workingDir",
+    "working_dir": "D:/AIML_CropMapper_Cloud/workingDirs",
     "aux_dir": "D:/AIML_CropMapper_Cloud/auxiliary_files",
     "s2_repo_path": "Y:/Sentinel-2/MSI/L2A"
   },
