@@ -167,4 +167,4 @@ Sentinel-1 preprocessing produces intermediate products during calibration and s
 * **`1_input_stacks/`** (~80 to 120 GB per orbit): Final compact BigTIFF stack.
 
 > [!TIP]
-> Once Stage 3 finishes and the final BigTIFF is created in `1_input_stacks/`, all temporary folders (`calibrated/`, `slice_assembly/`, `wrapped/`) can be safely deleted to free ~750 GB of disk space per orbit.
+> Stage 3 automatically removes the uncompressed `S1_final_preprocessing/` folder (~300 to 450 GB per orbit) once the compressed BigTIFF is verified. The remaining intermediate folders (`calibrated/`, `slice_assembly/`, `wrapped/`) can also be safely deleted to free an additional ~300 to 400 GB per orbit.
