@@ -350,22 +350,59 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
                 
             c_stack = np.stack(c_stack, axis=0)
             cf_stack = np.stack(cf_stack, axis=0)
-            
-            cf_stack[np.isnan(cf_stack)] = -np.inf
-            idx = np.argmax(cf_stack, axis=0)
-            final_block = np.take_along_axis(c_stack, idx[None,:,:], axis=0)[0]
-            final_block[np.all(np.isneginf(cf_stack), axis=0)] = 0
-            
+
+            method_norm = (method or 'confidence').lower()
+            if method_norm == 'priority':
+                # First valid non-zero prediction in track order wins
+                valid_m = (c_stack > 0) & (~np.isnan(cf_stack))
+                idx = np.argmax(valid_m, axis=0)
+                final_block = np.take_along_axis(c_stack, idx[None, :, :], axis=0)[0]
+                final_block[~np.any(valid_m, axis=0)] = 0
+            elif method_norm == 'majority':
+                # Majority vote across overlapping orbits, with max-confidence tie-breaking
+                cf_clean = np.where(np.isnan(cf_stack), -np.inf, cf_stack)
+                idx_conf = np.argmax(cf_clean, axis=0)
+                final_block = np.take_along_axis(c_stack, idx_conf[None, :, :], axis=0)[0]
+                final_block[np.all(np.isneginf(cf_clean), axis=0)] = 0
+                valid_counts = np.sum(c_stack > 0, axis=0)
+                overlap_mask = valid_counts >= 2
+                if np.any(overlap_mask):
+                    ov_classes = c_stack[:, overlap_mask]  # (K, N_ov)
+                    ov_confs = np.where(np.isnan(cf_stack[:, overlap_mask]), 0.0, cf_stack[:, overlap_mask])
+                    u_classes = [int(u) for u in np.unique(ov_classes) if u > 0]
+                    if len(u_classes) > 1:
+                        best_cls = np.zeros(ov_classes.shape[1], dtype=np.int32)
+                        best_score = np.full(ov_classes.shape[1], -1.0, dtype=np.float32)
+                        for uc in u_classes:
+                            m_uc = (ov_classes == uc)
+                            # Score combines vote count (primary) + mean confidence (tie-breaker in [0, 1])
+                            score_uc = np.sum(m_uc, axis=0).astype(np.float32) + np.max(np.where(m_uc, ov_confs, 0.0), axis=0) * 0.99
+                            better = score_uc > best_score
+                            best_score[better] = score_uc[better]
+                            best_cls[better] = uc
+                        final_block[overlap_mask] = best_cls
+            else:
+                # Default: pixel-wise maximum confidence selection ('confidence')
+                cf_stack[np.isnan(cf_stack)] = -np.inf
+                idx = np.argmax(cf_stack, axis=0)
+                final_block = np.take_along_axis(c_stack, idx[None, :, :], axis=0)[0]
+                final_block[np.all(np.isneginf(cf_stack), axis=0)] = 0
+
             band_out.WriteArray(final_block, x, y)
 
     ds_out.FlushCache()
-    
+
     # --- apply morphological sieve filter to restore objects -------------
     print("Applying Sieve Filter to remove slivers and isolated pixels...")
     # Using threshold of 50 pixels (approx field size depending on resolution)
     # 8-connectedness is generally preferred for diagonals
     gdal.SieveFilter(band_out, None, band_out, 50, 8, callback=None)
     ds_out.FlushCache()
+    try:
+        print("Building multi-scale pyramid overviews [2, 4, 8, 16, 32, 64]...")
+        ds_out.BuildOverviews('NEAREST', [2, 4, 8, 16, 32, 64])
+    except Exception:
+        pass
     print(f"Merged classification saved: {out_tif}")
 
     # --- compute metrics & areas --------------------------------------------
@@ -727,6 +764,10 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
         sh.column_dimensions[col_letter].width = max(max_len + 4, 16)
 
     wb.save(str(xlsx))
+    ds_out = None
+    ds_cls_list = None
+    ds_conf_list = None
+    ds0 = None
     print(f"Final metrics saved: {xlsx}")
 
 
@@ -735,12 +776,14 @@ def main():
     parser.add_argument('--track', required=True, help='Country code or base track prefix (e.g. NL, PL, FR)')
     parser.add_argument('--suffix', default='', help='Optional suffix of classification files')
     parser.add_argument('--seg_mode', default='slic', help='Segmentation mode (slic, sam, lpis)')
+    parser.add_argument('--method', default='confidence', choices=['confidence', 'priority', 'majority'], help='Merging strategy')
     args = parser.parse_args()
 
     run_merge_for_country(
         country=args.track,
         seg_mode=args.seg_mode,
-        suffix=args.suffix
+        suffix=args.suffix,
+        method=args.method
     )
 
 

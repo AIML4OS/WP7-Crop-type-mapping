@@ -492,11 +492,12 @@ def compute_vegetation_and_sar_indices(
             b4 = s2_means[:, base_idx + 2] / 10000.0
             b5 = s2_means[:, base_idx + 3] / 10000.0
             b6 = s2_means[:, base_idx + 4] / 10000.0
+            b7 = s2_means[:, base_idx + 5] / 10000.0
             b8a = s2_means[:, base_idx + 6] / 10000.0
             b11 = s2_means[:, base_idx + 7] / 10000.0
 
-            ndre1 = (b8a - b5) / (b8a + b5 + 1e-6)
-            ndre2 = (b6 - b5) / (b6 + b5 + 1e-6)
+            ndre1 = (b6 - b5) / (b6 + b5 + 1e-6)
+            ndre2 = (b7 - b5) / (b7 + b5 + 1e-6)
             ndvi = (b8a - b4) / (b8a + b4 + 1e-6)
             ndwi = (b8a - b11) / (b8a + b11 + 1e-6)
 
@@ -504,7 +505,11 @@ def compute_vegetation_and_sar_indices(
             ndre2_list.append(ndre2)
             ndvi_list.append(ndvi)
             ndwi_list.append(ndwi)
-            feat_names.extend([f"ndre1_d{d}", f"ndre2_d{d}", f"ndvi_d{d}", f"ndwi_d{d}"])
+
+        feat_names.extend([f"ndre1_d{d}" for d in range(num_dates_s2)])
+        feat_names.extend([f"ndre2_d{d}" for d in range(num_dates_s2)])
+        feat_names.extend([f"ndvi_d{d}" for d in range(num_dates_s2)])
+        feat_names.extend([f"ndwi_d{d}" for d in range(num_dates_s2)])
 
         ndre1_arr = np.column_stack(ndre1_list)
         ndre2_arr = np.column_stack(ndre2_list)
@@ -548,7 +553,9 @@ def compute_vegetation_and_sar_indices(
 
             rvi_list.append(rvi)
             cr_list.append(cr)
-            feat_names.extend([f"rvi_d{d}", f"cr_d{d}"])
+
+        feat_names.extend([f"rvi_d{d}" for d in range(num_dates_s1)])
+        feat_names.extend([f"cr_d{d}" for d in range(num_dates_s1)])
 
         rvi_arr = np.column_stack(rvi_list)
         cr_arr = np.column_stack(cr_list)
@@ -588,14 +595,22 @@ def compute_vegetation_and_sar_indices(
 def _clean_label_noise(X: np.ndarray, y: np.ndarray, classes: np.ndarray, prune_pct: float = 0.02) -> np.ndarray:
     """
     Filters out extreme multivariate feature outliers per crop class to sanitize training boundaries.
+    Applies robust median/IQR feature normalization before computing Euclidean distance so high-magnitude
+    optical reflectance bands (0..10000) do not dominate over SAR dB and Presto embeddings.
     """
     keep_mask = np.ones(len(y), dtype=bool)
     pruned_count = 0
+    X_clean = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+    med_global = np.median(X_clean, axis=0)
+    q75, q25 = np.percentile(X_clean, [75, 25], axis=0)
+    scale_global = np.maximum(q75 - q25, 1e-5)
+    X_norm = (X_clean - med_global) / scale_global
+
     for c in classes:
         idx = np.where(y == c)[0]
         if len(idx) < 40:
             continue
-        X_c = X[idx]
+        X_c = X_norm[idx]
         centroid = np.median(X_c, axis=0)
         dist = np.linalg.norm(X_c - centroid, axis=1)
         cutoff = np.percentile(dist, 100.0 * (1.0 - prune_pct))
@@ -717,12 +732,15 @@ class EnsembleClassifier:
         self.imputer = SimpleImputer(strategy='mean')
 
     def fit(self, X, y):
+        X_sanitized = np.where(np.isfinite(X), X, np.nan)
+        X_imputed = self.imputer.fit_transform(X_sanitized)
+        X_imputed = np.nan_to_num(X_imputed, nan=0.0, posinf=0.0, neginf=0.0)
+
         print("  [Fusion 1/2] Training PyTorch Deep MLP Model...")
-        self.mlp_model.fit(X, y)
+        self.mlp_model.fit(X_imputed, y)
         self.classes_ = self.mlp_model.classes_
 
         print("  [Fusion 2/2] Training XGBoost Gradient Boosted Trees Model...")
-        X_imputed = self.imputer.fit_transform(X)
 
         le = getattr(self.mlp_model, 'le', None)
         if le is None:
@@ -751,8 +769,10 @@ class EnsembleClassifier:
         return self
 
     def predict_proba(self, X):
-        p_mlp = self.mlp_model.predict_proba(X)
-        X_imputed = self.imputer.transform(X)
+        X_sanitized = np.where(np.isfinite(X), X, np.nan)
+        X_imputed = self.imputer.transform(X_sanitized)
+        X_imputed = np.nan_to_num(X_imputed, nan=0.0, posinf=0.0, neginf=0.0)
+        p_mlp = self.mlp_model.predict_proba(X_imputed)
         p_xgb_raw = self.xgb_model.predict_proba(X_imputed)
 
         p_xgb = np.zeros((X.shape[0], len(self.classes_)), dtype=np.float32)
@@ -840,9 +860,20 @@ class PrestoMultimodalExtractor:
         mask = torch.ones(B, T, 17, dtype=torch.float32, device=self.device)
 
         if batch_s1_vv_vh is not None:
-            t_s1 = min(T, batch_s1_vv_vh.shape[1])
-            x[:, :t_s1, 0] = batch_s1_vv_vh[:, :t_s1, 0].to(self.device)
-            x[:, :t_s1, 1] = batch_s1_vv_vh[:, :t_s1, 1].to(self.device)
+            s1_dev = batch_s1_vv_vh.to(self.device)
+            s1_t = s1_dev.shape[1]
+            if s1_t == T:
+                s1_aligned = s1_dev
+            elif s1_t > 1 and T > 1:
+                # Temporally resample S1 trajectory across the full season onto the T target timesteps
+                s1_aligned = torch.nn.functional.interpolate(
+                    s1_dev.permute(0, 2, 1), size=T, mode='linear', align_corners=True
+                ).permute(0, 2, 1)
+            else:
+                s1_aligned = s1_dev[:, :min(T, s1_t), :]
+            t_s1 = s1_aligned.shape[1]
+            x[:, :t_s1, 0] = s1_aligned[:, :t_s1, 0]
+            x[:, :t_s1, 1] = s1_aligned[:, :t_s1, 1]
             mask[:, :t_s1, 0:2] = 0.0
 
         if batch_s2_9bands is not None:
@@ -2192,22 +2223,59 @@ class ProcessingPipelineS1S2:
         crop_col = 'crop_id' if 'crop_id' in gdf.columns else 'code'
         gdf['crop_id'] = gdf[crop_col].astype(int)
 
+        # Assign segment IDs if segmentation raster exists so points inside the same parcel never split across train/control
+        seg_ids = np.arange(len(gdf), dtype=np.int64) + 1_000_000_000
+        if self.seg_tif and self.seg_tif.exists():
+            try:
+                seg_ds = gdal.Open(str(self.seg_tif), gdal.GA_ReadOnly)
+                if seg_ds is not None:
+                    seg_band = seg_ds.GetRasterBand(1)
+                    cols, rows = seg_ds.RasterXSize, seg_ds.RasterYSize
+                    inv_gt = gdal.InvGeoTransform(seg_ds.GetGeoTransform())
+                    proj = seg_ds.GetProjection()
+                    if proj and gdf.crs:
+                        from pyproj import CRS
+                        target_crs = CRS.from_wkt(proj)
+                        gdf_proj = gdf.to_crs(target_crs) if gdf.crs != target_crs else gdf
+                    else:
+                        gdf_proj = gdf
+                    xs = gdf_proj.geometry.x.values if hasattr(gdf_proj.geometry, 'x') else gdf_proj.geometry.centroid.x.values
+                    ys = gdf_proj.geometry.y.values if hasattr(gdf_proj.geometry, 'y') else gdf_proj.geometry.centroid.y.values
+                    pxs = (inv_gt[0] + inv_gt[1] * xs + inv_gt[2] * ys).astype(int)
+                    pys = (inv_gt[3] + inv_gt[4] * xs + inv_gt[5] * ys).astype(int)
+                    for i, (px, py) in enumerate(zip(pxs, pys)):
+                        if 0 <= px < cols and 0 <= py < rows:
+                            arr = seg_band.ReadAsArray(int(px), int(py), 1, 1)
+                            if arr is not None and int(arr[0, 0]) > 0:
+                                seg_ids[i] = int(arr[0, 0])
+                    seg_ds = None
+            except Exception as e:
+                print(f"    [WARNING] Could not group sample split by segment ID: {e}")
+
+        gdf['_seg_group'] = seg_ids
+        rng = np.random.RandomState(random_state)
+
         train_dfs, val_dfs = [], []
         for cid, group in gdf.groupby('crop_id'):
-            if len(group) == 1:
+            unique_segs = group['_seg_group'].unique()
+            if len(unique_segs) <= 1:
                 train_dfs.append(group)
             else:
-                train_g = group.sample(frac=learn_frac, random_state=random_state)
-                val_g = group.drop(train_g.index)
-                train_dfs.append(train_g)
-                val_dfs.append(val_g)
+                perm_segs = rng.permutation(unique_segs)
+                n_train = max(1, int(round(len(perm_segs) * learn_frac)))
+                if n_train >= len(perm_segs):
+                    n_train = len(perm_segs) - 1
+                train_seg_set = set(perm_segs[:n_train])
+                is_train = group['_seg_group'].isin(train_seg_set)
+                train_dfs.append(group[is_train])
+                val_dfs.append(group[~is_train])
 
-        gdf_train = pd.concat(train_dfs)
-        gdf_val = pd.concat(val_dfs)
+        gdf_train = pd.concat(train_dfs).drop(columns=['_seg_group'])
+        gdf_val = pd.concat(val_dfs).drop(columns=['_seg_group']) if val_dfs else gdf_train.iloc[0:0].copy()
 
         gdf_train.to_file(str(self.learn_shp), engine="pyogrio")
         gdf_val.to_file(str(self.control_shp), engine="pyogrio")
-        print(f"    Split {len(gdf)} points -> {len(gdf_train)} train, {len(gdf_val)} validation.")
+        print(f"    Split {len(gdf)} points (parcel-grouped) -> {len(gdf_train)} train, {len(gdf_val)} validation.")
 
     # --- Stage 4: Multimodal Feature Extraction ---
     # --- Stage 4: Multimodal Feature Extraction (Enhanced Vectorized Chunk I/O) ---
@@ -2852,10 +2920,10 @@ class ProcessingPipelineS1S2:
             sys.stdout.flush()
 
             batch_queue.task_done()
-            if HAS_TORCH and torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
         producer_thread.join()
+        if HAS_TORCH and torch.cuda.is_available():
+            torch.cuda.empty_cache()
         if producer_error[0] is not None:
             raise producer_error[0]
 
@@ -3043,7 +3111,7 @@ class ProcessingPipelineS1S2:
         gt = ds.GetGeoTransform()
         inv_gt = gdal.InvGeoTransform(gt)
         cols, rows = ds.RasterXSize, ds.RasterYSize
-        cls_arr = ds.GetRasterBand(1).ReadAsArray()
+        band_cls = ds.GetRasterBand(1)
         ras_proj = ds.GetProjection()
 
         if ras_proj and gdf_val.crs:
@@ -3070,10 +3138,12 @@ class ProcessingPipelineS1S2:
         y_pred = []
         for cid, px, py in zip(gdf_val['crop_id'].values, pxs, pys):
             if 0 <= px < cols and 0 <= py < rows:
-                pred = cls_arr[py, px]
+                val_arr = band_cls.ReadAsArray(int(px), int(py), 1, 1)
+                pred = int(val_arr[0, 0]) if val_arr is not None else 0
                 if pred > 0:
                     y_true.append(cid)
                     y_pred.append(pred)
+        ds = None
 
         if not y_true:
             print("    [WARNING] No validation points fell on valid classified pixels.")

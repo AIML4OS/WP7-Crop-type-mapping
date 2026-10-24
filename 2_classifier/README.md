@@ -47,21 +47,22 @@ The classification suite combines handcrafted physical remote sensing features w
 ```
 
 #### Tier 1: Handcrafted temporal, spectral & object texture features (100D feature suite)
-* **Sentinel-1 SAR temporal moments**: For each polarization (VV, VH) and cross-ratio (VH/VV), the pipeline extracts statistical moments across the agricultural calendar:
-  Mean, Standard Deviation (Std), Minimum (Min), Maximum (Max), and Dynamic Range (Max - Min).
+* **Sentinel-1 SAR temporal moments**: For each polarization (VV, VH) and cross-ratio (VH/VV), the pipeline extracts statistical moments across the agricultural calendar (aggregated in the physical linear power domain before converting back to dB):
+  Mean, Coefficient of Variation (CV = Std / Mean), Minimum (Min), Maximum (Max), and Dynamic Range (Max - Min).
   These metrics capture surface roughness, canopy closure speed, and abrupt drops in backscatter caused by harvesting.
 * **Specialized SAR phenological indices (RVI & Dual-Pol vegetation metrics)**:
-  `RVI = 4 * VH / (VV + VH)`
+  `RVI = 4 * VH / (VV + VH)` and `CR = VH_dB - VV_dB`
   Tracks canopy volume fraction and vegetative biomass accumulation independent of soil surface dielectric variations.
-* **Seasonal SAR backscatter dynamics (Delta_VH)**:
+* **Seasonal SAR backscatter dynamics (Delta_VH & Delta_VV)**:
   `Delta_VH = VH_summer - VH_spring`
   Differentiates winter cereals (established autumn canopy) from spring-sown crops (bare soil in early spring transitioning to lush vegetation by mid-summer).
-* **Intra-object texture variance & dispersion (field-level std & IQR)**:
-  Captures internal parcel spatial heterogeneity: `std` and `IQR` (interquartile range) for VH backscatter and NDVI reflectances. Distinguishes dense uniform field canopies (wheat, barley) from wide-row crops (maize, sugar beets) and structured woody vegetation (vineyards, orchards, olive groves).
-* **Sentinel-2 multi-spectral trajectories**: Standardized 14-DOY reflectances across 9 spectral bands (14 x 9 = 126 features) plus time-series vegetation indices (NDVI, NDRE1, NDRE2, NDWI) tracking chlorophyll absorption, red-edge shift, and canopy moisture.
+* **Intra-object texture variance & dispersion (field-level std & CV)**:
+  Captures internal parcel spatial heterogeneity: scale-invariant SAR Coefficient of Variation (`CV`) and optical intra-parcel standard deviation (`s2_intra_std`, `ndvi_intra_std`). Distinguishes dense uniform field canopies (wheat, barley) from wide-row crops (maize, sugar beets) and structured woody vegetation (vineyards, orchards, olive groves).
+* **Sentinel-2 multi-spectral trajectories & Red-Edge indices**: Standardized 14-DOY reflectances across 9 spectral bands (14 x 9 = 126 features) plus biophysical time-series vegetation indices (`NDVI = (B8A - B04)/(B8A + B04)`, `NDRE1 = (B06 - B05)/(B06 + B05)`, `NDRE2 = (B07 - B05)/(B07 + B05)`, `NDWI = (B8A - B11)/(B8A + B11)`) tracking chlorophyll absorption, red-edge inflection shift across `B05`/`B06`/`B07`, and canopy moisture.
 
-#### Tier 2: NASA Harvest Presto 256-dimensional foundation embeddings
-NASA Harvest Presto encodes raw multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into two 128-dimensional latent vectors:
+#### Tier 2: NASA Harvest Presto 384-dimensional foundation embeddings (Joint + S1 + S2)
+NASA Harvest Presto encodes multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into three 128-dimensional latent vectors (384 dimensions total):
+* `E_Joint` (128 dimensions): True multimodal cross-attention across temporally aligned S1 SAR + S2 optical + NDVI trajectories (with linear temporal resampling of S1 onto the target S2 DOY sequence so full-season radar and optical observations are synchronized).
 * `E_S1` (128 dimensions): SAR temporal dynamics.
 * `E_S2` (128 dimensions): Optical multispectral phenology.
 

@@ -116,14 +116,16 @@ To eliminate hundreds of gigabytes of duplicate downloads and redundant time-ser
 
 ### Stage 1: Granule extraction and SCL cloud masking (`s2_download_cdse.py`, `s2_extract_creodias.py`)
 * Extracts Sentinel-2 L2A BOA surface reflectance granules directly into the shared repository `workingDirs/{COUNTRY}/S2/{TILE}_tif/`.
+* **Native multi-resolution extraction (10 m + 20 m)**: Automatically extracts visible bands (`B02`, `B03`, `B04`) from `R10m` at their full native 10 m spatial resolution (`10980 x 10980` px) when available, while extracting Red-Edge, NIR, and SWIR bands (`B05`, `B06`, `B07`, `B8A`, `B11`, `B12`) and `SCL` from `R20m` (`5490 x 5490` px).
 * Evaluates the Scene Classification Layer (SCL) and applies strict pixel-level masking:
-  * **Retained classes (valid)**: `4` (Vegetation), `5` (Bare soil), `6` (Water), `7` (Unclassified).
-  * **Masked classes (invalid)**: `0` (No data), `1` (Saturated / defective), `2` (Dark features), `3` (Cloud shadows), `8` (Cloud medium probability), `9` (Cloud high probability), `10` (Thin cirrus), `11` (Snow / ice).
+  * **Retained classes (valid)**: `2` (Dark area pixels), `4` (Vegetation), `5` (Bare soil), `6` (Water), `7` (Unclassified).
+  * **Masked classes (invalid)**: `0` (No data), `1` (Saturated / defective), `3` (Cloud shadows), `8` (Cloud medium probability), `9` (Cloud high probability), `10` (Thin cirrus), `11` (Snow / ice).
 * **Incremental skip**: Scans local directories before issuing download requests; already converted granules are skipped instantly.
 
 ### Stage 2: 14-DOY synthetic time-series interpolation (`s2_time_series.py`)
 * Implements multi-core parallel temporal interpolation in pure Python/NumPy across `workingDirs/{COUNTRY}/S2/{TILE}/_synthetic_s2/`.
-* For each pixel, reconstructs missing cloud-covered observations using forward/backward temporal linear interpolation between nearest cloud-free dates across the agricultural calendar.
+* **Resolution-aware dynamic SCL resampling & bounded caching**: Dynamically adapts to each spectral band's native grid (`10980 x 10980` for 10 m bands or `5490 x 5490` for 20 m bands), resampling the 20 m `SCL` cloud mask on-the-fly with a bounded LRU cache (`<= 24` masks) to keep system RAM consumption minimal.
+* For each pixel, reconstructs missing cloud-covered observations using forward/backward temporal linear interpolation between nearest cloud-free dates across the agricultural calendar, followed by optional Whittaker penalized least-squares temporal smoothing (`--enable_whittaker`).
 * Automatically skips tiles that already have all 14 DOYs completed.
 
 ### Stage 3: SAR grid matching and BigTIFF stacking (`s2_mosaic_stack.py`)

@@ -438,13 +438,15 @@ def generate_s2_time_series_for_tile(
                 'orb_weight': orb_w
             })
 
-        # Cache SCL clear masks per DOY so they are read only once across all 9 spectral bands
-        scl_cache: Dict[str, Optional[np.ndarray]] = {}
+        # Cache SCL clear masks per DOY & resolution (bounded to 24 entries to cap memory usage)
+        scl_cache: Dict[Tuple[str, int, int], Optional[np.ndarray]] = {}
 
-        def _load_scl_mask(b02_p: Path) -> Optional[np.ndarray]:
-            k = str(b02_p)
+        def _load_scl_mask(b02_p: Path, target_w: int, target_h: int) -> Optional[np.ndarray]:
+            k = (str(b02_p), target_w, target_h)
             if k in scl_cache:
                 return scl_cache[k]
+            if len(scl_cache) >= 24:
+                scl_cache.pop(next(iter(scl_cache)))
             scl_p = get_scl_path_for_acq(b02_p)
             if not scl_p:
                 scl_cache[k] = None
@@ -453,7 +455,10 @@ def generate_s2_time_series_for_tile(
             if not ds_scl:
                 scl_cache[k] = None
                 return None
-            scl_arr = ds_scl.GetRasterBand(1).ReadAsArray()
+            scl_arr = ds_scl.GetRasterBand(1).ReadAsArray(
+                0, 0, ds_scl.RasterXSize, ds_scl.RasterYSize,
+                buf_xsize=target_w, buf_ysize=target_h
+            )
             ds_scl = None
             if scl_arr is None:
                 scl_cache[k] = None
@@ -467,10 +472,24 @@ def generate_s2_time_series_for_tile(
             if not overwrite and out_band_file.exists() and out_band_file.stat().st_size > 1024:
                 continue
 
-            accum_clear_num = np.zeros((raster_h, raster_w), dtype=np.float32)
-            accum_clear_den = np.zeros((raster_h, raster_w), dtype=np.float32)
-            accum_fallback_num = np.zeros((raster_h, raster_w), dtype=np.float32)
-            accum_fallback_den = np.zeros((raster_h, raster_w), dtype=np.float32)
+            # Resolve native dimensions and geotransform for this specific band (supports mixed 10m B02-B04 and 20m B05-B12)
+            band_w, band_h, band_gt, band_proj = raster_w, raster_h, geo_trans, proj_wkt
+            for acq_probe in acquisitions:
+                p_probe = get_band_path_for_acq(acq_probe['b02_path'], band)
+                if p_probe.exists():
+                    ds_probe = gdal.Open(str(p_probe))
+                    if ds_probe:
+                        band_w = ds_probe.RasterXSize
+                        band_h = ds_probe.RasterYSize
+                        band_gt = ds_probe.GetGeoTransform()
+                        band_proj = ds_probe.GetProjection()
+                        ds_probe = None
+                        break
+
+            accum_clear_num = np.zeros((band_h, band_w), dtype=np.float32)
+            accum_clear_den = np.zeros((band_h, band_w), dtype=np.float32)
+            accum_fallback_num = np.zeros((band_h, band_w), dtype=np.float32)
+            accum_fallback_den = np.zeros((band_h, band_w), dtype=np.float32)
 
             for cfg in orbit_configs:
                 orb_w = cfg['orb_weight']
@@ -478,16 +497,19 @@ def generate_s2_time_series_for_tile(
                 after_cands = cfg['after_cands']
 
                 # 1. Build seamless composite before target_doy with SCL filtering
-                arr_before = np.zeros((raster_h, raster_w), dtype=np.float32)
-                doy_before = np.zeros((raster_h, raster_w), dtype=np.float32)
+                arr_before = np.zeros((band_h, band_w), dtype=np.float32)
+                doy_before = np.zeros((band_h, band_w), dtype=np.float32)
                 for acq in before_cands[:10]:
                     p = get_band_path_for_acq(acq['b02_path'], band)
                     if p.exists():
                         ds = gdal.Open(str(p))
                         if ds:
-                            arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                            arr_i = ds.GetRasterBand(1).ReadAsArray(
+                                0, 0, ds.RasterXSize, ds.RasterYSize,
+                                buf_xsize=band_w, buf_ysize=band_h
+                            ).astype(np.float32)
                             ds = None
-                            clear_m = _load_scl_mask(acq['b02_path'])
+                            clear_m = _load_scl_mask(acq['b02_path'], band_w, band_h)
                             valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
                             mask_fill = (arr_before == 0) & valid
                             arr_before[mask_fill] = arr_i[mask_fill]
@@ -496,8 +518,8 @@ def generate_s2_time_series_for_tile(
                                 break
 
                 # Fallback before target_doy if persistent clouds
-                arr_before_fb = np.zeros((raster_h, raster_w), dtype=np.float32)
-                doy_before_fb = np.zeros((raster_h, raster_w), dtype=np.float32)
+                arr_before_fb = np.zeros((band_h, band_w), dtype=np.float32)
+                doy_before_fb = np.zeros((band_h, band_w), dtype=np.float32)
                 arr_before_fb[:] = arr_before
                 doy_before_fb[:] = doy_before
                 if not np.all(arr_before > 0):
@@ -506,7 +528,10 @@ def generate_s2_time_series_for_tile(
                         if p.exists():
                             ds = gdal.Open(str(p))
                             if ds:
-                                arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                                arr_i = ds.GetRasterBand(1).ReadAsArray(
+                                    0, 0, ds.RasterXSize, ds.RasterYSize,
+                                    buf_xsize=band_w, buf_ysize=band_h
+                                ).astype(np.float32)
                                 ds = None
                                 mask_fill = (arr_before_fb == 0) & (arr_i > 0)
                                 arr_before_fb[mask_fill] = arr_i[mask_fill]
@@ -515,16 +540,19 @@ def generate_s2_time_series_for_tile(
                                     break
 
                 # 2. Build seamless composite after target_doy with SCL filtering
-                arr_after = np.zeros((raster_h, raster_w), dtype=np.float32)
-                doy_after = np.zeros((raster_h, raster_w), dtype=np.float32)
+                arr_after = np.zeros((band_h, band_w), dtype=np.float32)
+                doy_after = np.zeros((band_h, band_w), dtype=np.float32)
                 for acq in after_cands[:10]:
                     p = get_band_path_for_acq(acq['b02_path'], band)
                     if p.exists():
                         ds = gdal.Open(str(p))
                         if ds:
-                            arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                            arr_i = ds.GetRasterBand(1).ReadAsArray(
+                                0, 0, ds.RasterXSize, ds.RasterYSize,
+                                buf_xsize=band_w, buf_ysize=band_h
+                            ).astype(np.float32)
                             ds = None
-                            clear_m = _load_scl_mask(acq['b02_path'])
+                            clear_m = _load_scl_mask(acq['b02_path'], band_w, band_h)
                             valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
                             mask_fill = (arr_after == 0) & valid
                             arr_after[mask_fill] = arr_i[mask_fill]
@@ -533,8 +561,8 @@ def generate_s2_time_series_for_tile(
                                 break
 
                 # Fallback after target_doy if persistent clouds
-                arr_after_fb = np.zeros((raster_h, raster_w), dtype=np.float32)
-                doy_after_fb = np.zeros((raster_h, raster_w), dtype=np.float32)
+                arr_after_fb = np.zeros((band_h, band_w), dtype=np.float32)
+                doy_after_fb = np.zeros((band_h, band_w), dtype=np.float32)
                 arr_after_fb[:] = arr_after
                 doy_after_fb[:] = doy_after
                 if not np.all(arr_after > 0):
@@ -543,7 +571,10 @@ def generate_s2_time_series_for_tile(
                         if p.exists():
                             ds = gdal.Open(str(p))
                             if ds:
-                                arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                                arr_i = ds.GetRasterBand(1).ReadAsArray(
+                                    0, 0, ds.RasterXSize, ds.RasterYSize,
+                                    buf_xsize=band_w, buf_ysize=band_h
+                                ).astype(np.float32)
                                 ds = None
                                 mask_fill = (arr_after_fb == 0) & (arr_i > 0)
                                 arr_after_fb[mask_fill] = arr_i[mask_fill]
@@ -552,7 +583,7 @@ def generate_s2_time_series_for_tile(
                                     break
 
                 # Interpolate clear pixels
-                interp_clear = np.zeros((raster_h, raster_w), dtype=np.float32)
+                interp_clear = np.zeros((band_h, band_w), dtype=np.float32)
                 both_c = (arr_before > 0) & (arr_after > 0)
                 only_bc = (arr_before > 0) & (arr_after == 0)
                 only_ac = (arr_before == 0) & (arr_after > 0)
@@ -567,7 +598,7 @@ def generate_s2_time_series_for_tile(
                 accum_clear_den[valid_clear] += orb_w
 
                 # Interpolate fallback pixels
-                interp_fb = np.zeros((raster_h, raster_w), dtype=np.float32)
+                interp_fb = np.zeros((band_h, band_w), dtype=np.float32)
                 both_fb = (arr_before_fb > 0) & (arr_after_fb > 0)
                 only_bfb = (arr_before_fb > 0) & (arr_after_fb == 0)
                 only_afb = (arr_before_fb == 0) & (arr_after_fb > 0)
@@ -582,7 +613,7 @@ def generate_s2_time_series_for_tile(
                 accum_fallback_den[valid_fb] += orb_w
 
             # Combine multi-orbit clear observations, or fallback if all clouded
-            final_interp = np.zeros((raster_h, raster_w), dtype=np.float32)
+            final_interp = np.zeros((band_h, band_w), dtype=np.float32)
             has_clear = (accum_clear_den > 0)
             has_fb = (accum_fallback_den > 0) & (~has_clear)
 
@@ -597,9 +628,12 @@ def generate_s2_time_series_for_tile(
                     if p.exists():
                         ds = gdal.Open(str(p))
                         if ds:
-                            arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                            arr_i = ds.GetRasterBand(1).ReadAsArray(
+                                0, 0, ds.RasterXSize, ds.RasterYSize,
+                                buf_xsize=band_w, buf_ysize=band_h
+                            ).astype(np.float32)
                             ds = None
-                            clear_m = _load_scl_mask(acq['b02_path'])
+                            clear_m = _load_scl_mask(acq['b02_path'], band_w, band_h)
                             valid = (arr_i > 0) & (clear_m if clear_m is not None else True)
                             fill_m = zero_mask & valid
                             final_interp[fill_m] = arr_i[fill_m]
@@ -612,7 +646,10 @@ def generate_s2_time_series_for_tile(
                         if p.exists():
                             ds = gdal.Open(str(p))
                             if ds:
-                                arr_i = ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+                                arr_i = ds.GetRasterBand(1).ReadAsArray(
+                                    0, 0, ds.RasterXSize, ds.RasterYSize,
+                                    buf_xsize=band_w, buf_ysize=band_h
+                                ).astype(np.float32)
                                 ds = None
                                 fill_m = zero_mask & (arr_i > 0)
                                 final_interp[fill_m] = arr_i[fill_m]
@@ -624,11 +661,11 @@ def generate_s2_time_series_for_tile(
 
             driver = gdal.GetDriverByName('GTiff')
             out_ds = driver.Create(
-                str(out_band_file), raster_w, raster_h, 1, gdal.GDT_UInt16,
+                str(out_band_file), band_w, band_h, 1, gdal.GDT_UInt16,
                 options=['COMPRESS=LZW', 'TILED=YES']
             )
-            out_ds.SetGeoTransform(geo_trans)
-            out_ds.SetProjection(proj_wkt)
+            out_ds.SetGeoTransform(band_gt)
+            out_ds.SetProjection(band_proj)
             out_ds.GetRasterBand(1).WriteArray(final_arr)
             out_ds.GetRasterBand(1).SetNoDataValue(0)
             out_ds = None

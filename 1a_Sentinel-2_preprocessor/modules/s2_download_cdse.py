@@ -415,15 +415,27 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
 
     stem_name = safe_dir.stem
     b02_str = str(b02_file)
+    img_data_dir = b02_file.parent.parent if b02_file.parent.name in ('R20m', 'R10m') else b02_file.parent
+    r10m_dir = img_data_dir / 'R10m'
+    r20m_dir = img_data_dir / 'R20m'
     success = True
     for band in S2_BANDS_20M:
-        band_src = Path(b02_str.replace('_B02_20m', f'_{band}_20m'))
+        band_src = None
+        # Prefer native 10m resolution from R10m for B02, B03, B04 when available
+        if band in ('B02', 'B03', 'B04') and r10m_dir.exists():
+            cands_10m = list(r10m_dir.glob(f"*_{band}_10m.jp2")) + list(r10m_dir.glob(f"*_{band}_10m.tif"))
+            if cands_10m:
+                band_src = cands_10m[0]
+
+        if band_src is None or not band_src.exists():
+            band_src = Path(b02_str.replace('_B02_20m', f'_{band}_20m').replace('_B02_10m', f'_{band}_20m'))
         if not band_src.exists():
             band_src = Path(b02_str.replace('B02', band))
         if not band_src.exists():
-            candidates = list(b02_file.parent.glob(f"*_{band}_20m.jp2"))
+            search_dir = r20m_dir if r20m_dir.exists() else b02_file.parent
+            candidates = list(search_dir.glob(f"*_{band}_20m.jp2"))
             if not candidates:
-                candidates = list(b02_file.parent.glob(f"*{band}*.jp2"))
+                candidates = list(search_dir.glob(f"*{band}*.jp2"))
             if candidates:
                 band_src = candidates[0]
             else:
