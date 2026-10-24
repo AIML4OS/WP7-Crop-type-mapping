@@ -256,7 +256,6 @@ def process_track(
     overwrite: bool = False,
     engine: str = "python",
     filter_window: int = 7,
-    temporal_mode: str = "raw",
 ):
     """Programmatic API for single track stacking & clipping."""
     track_clean = track.replace("\\", "/")
@@ -270,7 +269,6 @@ def process_track(
             overwrite=overwrite,
             engine=engine,
             filter_window=filter_window,
-            temporal_mode=temporal_mode,
         )
     return stack_and_clip(track)
 
@@ -281,7 +279,6 @@ def process_orbit_stack_and_clip(
     overwrite: bool = False,
     engine: str = "python",
     filter_window: int = 7,
-    temporal_mode: str = "raw",
 ):
     """Programmatic API for Stage 3 despeckling, NUTS2 clipping, and BigTIFF stacking."""
     c = country.upper()
@@ -309,7 +306,6 @@ def process_orbit_stack_and_clip(
             work_dir=pathlib.Path(WORKING_DIR),
             overwrite=overwrite,
             filter_window=filter_window,
-            temporal_mode=temporal_mode,
         )
     else:
         return stack_and_clip(track)
@@ -320,7 +316,6 @@ def main():
     parser.add_argument('-t', '--track', nargs='+', required=True, help="Track path(s) to process, e.g. PL/orbit_29")
     parser.add_argument('--engine', choices=['python', 'snap', 'auto'], default='python', help="Processing engine: 'python' (pure Python, default) or 'snap' (ESA SNAP GPT).")
     parser.add_argument('--filter_window', type=int, default=7, help="Multi-temporal Quegan speckle filter window size (default: 7).")
-    parser.add_argument('--temporal_mode', choices=['raw', 'doy'], default='raw', help="Temporal output grid: 'raw' (all acquisition dates) or 'doy' (14 standardized regional DOYs).")
     parser.add_argument('--overwrite', action='store_true', help="Force recreation of the final BigTIFF stack.")
     args = parser.parse_args()
 
@@ -333,7 +328,6 @@ def main():
             overwrite=args.overwrite,
             engine=args.engine,
             filter_window=args.filter_window,
-            temporal_mode=args.temporal_mode,
         )
 
 

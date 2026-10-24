@@ -821,7 +821,7 @@ class PrestoMultimodalExtractor:
             import presto_model as single_file_presto
         except ImportError:
             import single_file_presto
-        self.model = single_file_presto.Presto.construct(max_sequence_length=36)
+        self.model = single_file_presto.Presto.construct(max_sequence_length=72)
         state_dict = torch.load(self.weights_path, map_location=self.device)
         state_dict.pop('encoder.pos_embed', None)
         state_dict.pop('decoder.pos_embed', None)
@@ -837,11 +837,18 @@ class PrestoMultimodalExtractor:
         months_tensor: torch.Tensor,
         chunk_size: int = 4096
     ) -> np.ndarray:
-        """Computes true multimodal joint cross-attention embeddings across S1 + S2 simultaneously."""
-        if batch_s2_9bands is not None:
-            B, T, _ = batch_s2_9bands.shape
+        """
+        Computes true multimodal joint cross-attention embeddings across S1 + S2 simultaneously.
+        Preserves the full native Sentinel-1 radar time series (primary dataset, T = max(T_s1, T_s2))
+        and temporally interpolates the cloud-free Sentinel-2 DOY composites onto the full S1 timeline.
+        """
+        if batch_s1_vv_vh is not None and batch_s2_9bands is not None:
+            B = batch_s1_vv_vh.shape[0]
+            T = max(batch_s1_vv_vh.shape[1], batch_s2_9bands.shape[1])
         elif batch_s1_vv_vh is not None:
             B, T, _ = batch_s1_vv_vh.shape
+        elif batch_s2_9bands is not None:
+            B, T, _ = batch_s2_9bands.shape
         else:
             raise ValueError("At least one modality (S1 or S2) must be present.")
 
@@ -865,7 +872,6 @@ class PrestoMultimodalExtractor:
             if s1_t == T:
                 s1_aligned = s1_dev
             elif s1_t > 1 and T > 1:
-                # Temporally resample S1 trajectory across the full season onto the T target timesteps
                 s1_aligned = torch.nn.functional.interpolate(
                     s1_dev.permute(0, 2, 1), size=T, mode='linear', align_corners=True
                 ).permute(0, 2, 1)
@@ -877,16 +883,27 @@ class PrestoMultimodalExtractor:
             mask[:, :t_s1, 0:2] = 0.0
 
         if batch_s2_9bands is not None:
-            t_s2 = min(T, batch_s2_9bands.shape[1])
-            b2 = batch_s2_9bands[:, :t_s2, 0].to(self.device)
-            b3 = batch_s2_9bands[:, :t_s2, 1].to(self.device)
-            b4 = batch_s2_9bands[:, :t_s2, 2].to(self.device)
-            b5 = batch_s2_9bands[:, :t_s2, 3].to(self.device)
-            b6 = batch_s2_9bands[:, :t_s2, 4].to(self.device)
-            b7 = batch_s2_9bands[:, :t_s2, 5].to(self.device)
-            b8a = batch_s2_9bands[:, :t_s2, 6].to(self.device)
-            b11 = batch_s2_9bands[:, :t_s2, 7].to(self.device)
-            b12 = batch_s2_9bands[:, :t_s2, 8].to(self.device)
+            s2_dev = batch_s2_9bands.to(self.device)
+            s2_t = s2_dev.shape[1]
+            if s2_t == T:
+                s2_aligned = s2_dev
+            elif s2_t > 1 and T > 1:
+                # Interpolate the 14 cloud-free S2 DOY composites onto the full S1 radar time series
+                s2_aligned = torch.nn.functional.interpolate(
+                    s2_dev.permute(0, 2, 1), size=T, mode='linear', align_corners=True
+                ).permute(0, 2, 1)
+            else:
+                s2_aligned = s2_dev[:, :min(T, s2_t), :]
+            t_s2 = s2_aligned.shape[1]
+            b2 = s2_aligned[:, :t_s2, 0]
+            b3 = s2_aligned[:, :t_s2, 1]
+            b4 = s2_aligned[:, :t_s2, 2]
+            b5 = s2_aligned[:, :t_s2, 3]
+            b6 = s2_aligned[:, :t_s2, 4]
+            b7 = s2_aligned[:, :t_s2, 5]
+            b8a = s2_aligned[:, :t_s2, 6]
+            b11 = s2_aligned[:, :t_s2, 7]
+            b12 = s2_aligned[:, :t_s2, 8]
             ndvi = (b8a - b4) / (b8a + b4 + 1e-6)
 
             x[:, :t_s2, 2] = b2

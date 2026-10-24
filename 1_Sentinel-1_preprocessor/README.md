@@ -66,7 +66,7 @@ The pipeline performs radiometric calibration and prepares physical backscatter 
 | - Multi-temporal master grid alignment          |   | - Range-Doppler TC (Copernicus 30m DEM)      |
 | Stage 3:                                        |   | Stage 3:                                     |
 | - Vectorized Multi-Temporal Quegan Despeckling  |   | - GDAL VRT assembly & NUTS2 cutline warp     |
-| - Optional 14-DOY temporal interpolation        |   | - Export DEFLATE BigTIFF & pyramid overviews |
+| - Preserves full native radar time series       |   | - Export DEFLATE BigTIFF & pyramid overviews |
 | - Linear-to-dB, NUTS2 clip & BigTIFF + pyramids |   |                                              |
 +------------------------+------------------------+   +----------------------+-----------------------+
                          |                                                   |
@@ -101,7 +101,7 @@ The pipeline performs radiometric calibration and prepares physical backscatter 
 
 ### Stage 3: Despeckling, stacking & NUTS2 clipping (`s1_stack_clip.py`)
 * Applies vectorized multi-temporal Quegan speckle filtering across all dates in linear power domain (window size configurable via `--filter_window`, default `7`).
-* Supports both raw acquisition dates (`--temporal_mode raw`) and 14 standardized regional agricultural DOY dates matching Sentinel-2 (`--temporal_mode doy`).
+* Preserves the **full native Sentinel-1 radar time series** across all acquired orbit passes (unlike Sentinel-2 which requires 14-DOY interpolation due to cloud cover).
 * Converts linear $\sigma^0$ into decibels ($\text{dB} = 10 \cdot \log_{10}(\sigma^0)$), clips to the official Eurostat GISCO NUTS2 national boundary in `EPSG:3857` at 10.0 m resolution, exports a tiled BigTIFF (`COMPRESS=DEFLATE`, `TILED=YES`, `BIGTIFF=YES`), and builds 6 pyramid overview levels (`[2, 4, 8, 16, 32, 64]`).
 
 ---
@@ -149,7 +149,7 @@ python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country NL --source cd
 python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --source cdse --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
 ```
 
-### 4. Running individual stages or 14-DOY temporal interpolation
+### 4. Running individual stages
 ```bash
 # Run Stage 1 only (calibration, Range-Doppler orthorectification & daily slice assembly):
 python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --source creodias --engine python -s 2024-10-15 -e 2025-09-15 --stage 1
@@ -157,11 +157,8 @@ python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --so
 # Run Stage 2 only (multi-temporal grid alignment):
 python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --engine python --stage 2
 
-# Run Stage 3 with default raw acquisition dates and 7x7 Quegan filter:
-python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --engine python --filter_window 7 --temporal_mode raw --stage 3
-
-# Run Stage 3 interpolating S1 onto the 14 standardized regional DOYs matching Sentinel-2:
-python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --engine python --temporal_mode doy --stage 3
+# Run Stage 3 only (full radar time-series stacking with 7x7 Multi-Temporal Quegan filter):
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --engine python --filter_window 7 --stage 3
 ```
 
 ### 5. Running with the legacy ESA SNAP GPT engine (`--engine snap`)
@@ -183,7 +180,6 @@ python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --so
 | `--source` | choice | `auto` | Data ingestion pathway: `auto` (detect local), `cog` (CreoDIAS COG), `creodias` (CreoDIAS SAFE), or `cdse` (Copernicus CDSE API). |
 | `--engine` | choice | `python` | SAR processing engine: `python` (Pure Python without SNAP), `snap` (ESA SNAP GPT), or `auto`. |
 | `--filter_window` | int | `7` | Window size (pixels) for the multi-temporal Quegan speckle filter in Python Stage 3. |
-| `--temporal_mode` | choice | `raw` | Output temporal stack mode in Python Stage 3: `raw` (all acquisition dates) or `doy` (14 standardized regional DOYs). |
 | `--exclude_winter` | flag | `False` | Exclude winter freeze observations between December 1 and February 14. |
 | `--threads` | int | `4` | Worker threads for parallel processing (default: 4). |
 | `--stage` | choice | `None` | Stage to execute: `A` (all stages), `1` (calibration), `2` (coregistration), `3` (stack & clip). |
@@ -196,6 +192,6 @@ python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --so
 * **Pure Python engine (`--engine python`)**:
   * **`slice_assembly/*.tif`** (~40 to 60 GB per orbit): Daily calibrated, Range-Doppler terrain-corrected linear $\sigma^0$ GeoTIFFs (`COMPRESS=DEFLATE`).
   * **`wrapped/python_stack_manifest.json`** (< 50 KB): Lightweight JSON coordinate alignment manifest (eliminates ~500 GB of SNAP `.dim`/`.data` intermediate files).
-  * **`1_input_stacks/`** (~80 to 120 GB per orbit in `raw` mode, ~45 GB in `doy` mode): Final multi-temporal BigTIFF stack with `.ovr` pyramids.
+  * **`1_input_stacks/`** (~80 to 120 GB per orbit): Final full-time-series multi-temporal BigTIFF stack with `.ovr` pyramids.
 * **ESA SNAP engine (`--engine snap`)**:
   * Produces intermediate BEAM-DIMAP `.dim`/`.data` folders in `calibrated/`, `slice_assembly/`, `wrapped/`, and `S1_final_preprocessing/` (~250 to 450 GB each; `wrapped/` and `S1_final_preprocessing/` are automatically cleaned after verification).

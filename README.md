@@ -191,9 +191,9 @@ To suppress residual cloud artifacts, shadow dips, and atmospheric fluctuations 
 ### NASA Harvest Presto geospatial foundation model
 
 **Presto** is a global geospatial transformer foundation model pre-trained on multi-sensor Earth observation time series:
-* **Multi-sensor joint tokenization & temporal S1-to-S2 alignment**: Simultaneously projects multi-temporal Sentinel-1 SAR (VV, VH) and Sentinel-2 optical reflectances (`B02`–`B12`) + dynamic `NDVI` into a unified high-dimensional latent space. When the number of SAR dates differs from the 14 optical DOYs, the S1 profile is linearly resampled along the temporal axis onto the target S2 DOYs so full-season radar and optical tokens are temporally synchronized.
+* **Multi-sensor joint tokenization preserving full S1 radar time series**: Simultaneously projects the **full native Sentinel-1 SAR time series (`VV`, `VH`)** and Sentinel-2 optical reflectances (`B02`–`B12`) + dynamic `NDVI` into a unified high-dimensional latent space. Sentinel-1 keeps 100% of its native acquisition dates (`T_s1`), while the 14 cloud-free Sentinel-2 DOY composites are linearly interpolated along the temporal axis onto the full S1 timeline so radar and optical tokens are temporally synchronized without losing any radar acquisitions.
 * **Sinusoidal spatio-temporal embeddings**: Encodes continuous geographic coordinates (latitude, longitude) and seasonal acquisition months, conditioning model attention on geographic and bioclimatic context.
-* **384-dimensional latent representation extraction**: Outputs three **128-dimensional multi-temporal token embeddings** (**384 dimensions total**): `E_Presto_Joint` (128d joint multimodal cross-attention), `E_Presto_S1` (128d SAR sequence), and `E_Presto_S2` (128d optical sequence), capturing complex non-linear phenological dynamics superior to standard handcrafted summary metrics.
+* **384-dimensional latent representation extraction**: Outputs three **128-dimensional multi-temporal token embeddings** (**384 dimensions total**): `E_Presto_Joint` (128d joint multimodal cross-attention), `E_Presto_S1` (128d full-series SAR sequence), and `E_Presto_S2` (128d optical sequence), capturing complex non-linear phenological dynamics superior to standard handcrafted summary metrics.
 
 ---
 
@@ -384,7 +384,7 @@ Located in `1_Sentinel-1_preprocessor/`, this toolbox transforms raw Copernicus 
     +--------------------------------------------------------------------------+
     |  Stage 3: Multi-temporal despeckling, NUTS2 clipping & BigTIFF stacking  |
     |  - Vectorized Multi-Temporal Quegan Speckle Filter in linear power domain|
-    |  - Optional 14-DOY temporal interpolation (--temporal_mode doy)          |
+    |  - Preserves full native Sentinel-1 radar time series (all dates)        |
     |  - Linear-to-dB, NUTS2 clipping (10.0m EPSG:3857) & DEFLATE BigTIFF      |
     +--------------------------------------------------------------------------+
 ```

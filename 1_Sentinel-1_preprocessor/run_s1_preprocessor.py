@@ -212,7 +212,6 @@ class Sentinel1Pipeline:
         source: str = "auto",
         engine: str = "python",
         filter_window: int = 7,
-        temporal_mode: str = "raw",
         threads: int = 4,
         overwrite: bool = False
     ):
@@ -226,7 +225,6 @@ class Sentinel1Pipeline:
         self.source = detect_s1_source() if source == "auto" else source.lower()
         self.engine = engine.lower()
         self.filter_window = filter_window
-        self.temporal_mode = temporal_mode.lower()
 
         if self.orbit:
             self.track = f"{self.country}/orbit_{self.orbit}"
@@ -344,7 +342,7 @@ class Sentinel1Pipeline:
         logging.info(f"\n============================================================")
         logging.info(
             f" [Stage 3/3] Sentinel-1 Multi-Temporal Despeckling, Stacking & Clipping "
-            f"(Engine: {self.engine.upper()} | Mode: {self.temporal_mode.upper()})"
+            f"(Engine: {self.engine.upper()})"
         )
         logging.info(f" Track: {self.track}")
         logging.info(f"============================================================")
@@ -358,7 +356,6 @@ class Sentinel1Pipeline:
                 overwrite=self.overwrite,
                 engine=self.engine,
                 filter_window=self.filter_window,
-                temporal_mode=self.temporal_mode,
             )
 
     def run_all(self):
@@ -552,7 +549,6 @@ Examples:
     parser.add_argument('--source', default='auto', choices=['auto', 'cog', 'creodias', 'cdse'], help="Data source: 'auto' (detect local), 'cog', 'creodias', 'cdse' (default: auto)")
     parser.add_argument('--engine', default='python', choices=['python', 'snap', 'auto'], help="SAR processing engine: 'python' (pure Python, default), 'snap' (ESA SNAP GPT), or 'auto'")
     parser.add_argument('--filter_window', type=int, default=7, help="Multi-temporal Quegan speckle filter window size for Python engine (default: 7)")
-    parser.add_argument('--temporal_mode', default='raw', choices=['raw', 'doy'], help="Temporal output grid for Python Stage 3: 'raw' (all dates) or 'doy' (14 standardized regional DOYs)")
     parser.add_argument('-s', '--start_date', default=None, help="Acquisition start date (YYYY-MM-DD, required for Stage 1/A)")
     parser.add_argument('-e', '--end_date', default=None, help="Acquisition end date (YYYY-MM-DD, required for Stage 1/A)")
     parser.add_argument('--exclude_winter', action='store_true', help="Exclude winter dormancy period (December 1 to February 14) from processing (default: False)")
@@ -593,7 +589,6 @@ Examples:
         source=args.source,
         engine=args.engine,
         filter_window=args.filter_window,
-        temporal_mode=args.temporal_mode,
         threads=args.threads,
         overwrite=args.overwrite
     )

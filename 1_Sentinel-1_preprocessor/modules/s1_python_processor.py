@@ -1063,16 +1063,13 @@ def process_orbit_stack_and_clip_python(
     aux_dir: pathlib.Path = None,
     overwrite: bool = False,
     filter_window: int = 7,
-    temporal_mode: str = "raw",
 ) -> pathlib.Path:
     """
     Pure Python Stage 3:
       1. Loads the coregistered daily slices from wrapped/python_stack_manifest.json.
-      2. Applies the Multi-Temporal Quegan Speckle Filter across the time series in
-         2048x2048 blocks.
-      3. Optionally interpolates onto the 14 standardized regional DOYs
-         (when temporal_mode == 'doy').
-      4. Converts linear Sigma0 to dB (10 * log10(Sigma0)), clips to the NUTS2
+      2. Applies the Multi-Temporal Quegan Speckle Filter across the full native radar
+         time series in 2048x2048 blocks.
+      3. Converts linear Sigma0 to dB (10 * log10(Sigma0)), clips to the NUTS2
          national boundary in EPSG:3857 (10.0m), exports the DEFLATE BigTIFF,
          and builds 6 external pyramid overview levels [2, 4, 8, 16, 32, 64].
     """
@@ -1113,18 +1110,8 @@ def process_orbit_stack_and_clip_python(
     master_gt = tuple(manifest["master_geotransform"])
     min_x, min_y, max_x, max_y = manifest["master_bbox"]
 
-    # Determine output temporal dates/descriptions
-    raw_dates = [datetime.datetime.strptime(r["date_str"], "%Y%m%d").date() for r in records]
-    if temporal_mode == "doy":
-        target_doys = get_regional_doys(c)
-        ref_year = raw_dates[-1].year
-        out_dates = [
-            (datetime.date(ref_year, 1, 1) + datetime.timedelta(days=d - 1))
-            for d in target_doys
-        ]
-    else:
-        out_dates = raw_dates
-
+    # Always preserve the full native Sentinel-1 radar time series
+    out_dates = [datetime.datetime.strptime(r["date_str"], "%Y%m%d").date() for r in records]
     num_out_dates = len(out_dates)
     total_bands = 2 * num_out_dates
 
@@ -1201,8 +1188,6 @@ def process_orbit_stack_and_clip_python(
 
     # Process in 2048x2048 spatial blocks
     block_size = 2048
-    raw_ordinal = np.array([d.toordinal() for d in raw_dates], dtype=np.float64)
-    out_ordinal = np.array([d.toordinal() for d in out_dates], dtype=np.float64)
 
     for y0 in range(0, master_h, block_size):
         bh = min(block_size, master_h - y0)
@@ -1249,24 +1234,6 @@ def process_orbit_stack_and_clip_python(
 
                 # Apply Multi-Temporal Quegan Speckle Filter in linear power domain
                 despeckled = quegan_multitemporal_filter(stack_lin, window_size=filter_window)
-
-                # Optional temporal interpolation onto standardized DOYs
-                if temporal_mode == "doy" and len(raw_dates) >= 2:
-                    interp_stack = np.zeros((num_out_dates, bh, bw), dtype=np.float32)
-                    for i_out, t_val in enumerate(out_ordinal):
-                        idx_r = int(np.searchsorted(raw_ordinal, t_val))
-                        if idx_r == 0:
-                            interp_stack[i_out] = despeckled[0]
-                        elif idx_r >= len(raw_ordinal):
-                            interp_stack[i_out] = despeckled[-1]
-                        else:
-                            t0, t1 = raw_ordinal[idx_r - 1], raw_ordinal[idx_r]
-                            w1 = float((t_val - t0) / max(t1 - t0, 1.0))
-                            v0, v1 = despeckled[idx_r - 1], despeckled[idx_r]
-                            both = (v0 > 0) & (v1 > 0)
-                            out_slice = np.where(both, (1.0 - w1) * v0 + w1 * v1, np.where(v0 > 0, v0, v1))
-                            interp_stack[i_out] = out_slice
-                    despeckled = interp_stack
 
                 # Convert linear Sigma0 to dB and mask with NUTS2
                 band_offset = 0 if pol_idx == 1 else num_out_dates

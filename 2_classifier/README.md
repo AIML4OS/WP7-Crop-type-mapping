@@ -20,8 +20,8 @@ The classification suite combines handcrafted physical remote sensing features w
 |  - S2 Biophysical Indices: Multi-temporal NDVI, NDRE1 (B06/B05), NDRE2 (B07/B05), NDWI & texture    |
 |                                                  |                                                 |
 |  [Tier 2: NASA Harvest Presto Geospatial Foundation Model Latent Embeddings (384D)]                 |
-|  - Joint S1+S2 Cross-Attention Representation: 128d embedding (temporally aligned S1->S2 DOYs)      |
-|  - S1 SAR Transformer Latent Representation:   128d multi-temporal token embedding                  |
+|  - Joint S1+S2 Cross-Attention Representation: 128d embedding (full S1 timeline + aligned S2 DOYs)  |
+|  - S1 SAR Transformer Latent Representation:   128d full-time-series token embedding                |
 |  - S2 Optical Transformer Latent Representation: 128d multi-temporal token embedding                |
 |                                                  |                                                 |
 |  [Concatenated High-Dimensional Feature Vector X (~550+ features)]                                 |
@@ -63,8 +63,8 @@ The classification suite combines handcrafted physical remote sensing features w
 
 #### Tier 2: NASA Harvest Presto 384-dimensional foundation embeddings (Joint + S1 + S2)
 NASA Harvest Presto encodes multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into three 128-dimensional latent vectors (384 dimensions total):
-* `E_Joint` (128 dimensions): True multimodal cross-attention across temporally aligned S1 SAR + S2 optical + NDVI trajectories (with linear temporal resampling of S1 onto the target S2 DOY sequence so full-season radar and optical observations are synchronized).
-* `E_S1` (128 dimensions): SAR temporal dynamics.
+* `E_Joint` (128 dimensions): True multimodal cross-attention preserving the **full native Sentinel-1 radar time series (`T_s1` dates)** as the primary timeline and temporally interpolating the 14 cloud-free Sentinel-2 DOY composites onto the full S1 sequence.
+* `E_S1` (128 dimensions): Full-resolution SAR temporal dynamics.
 * `E_S2` (128 dimensions): Optical multispectral phenology.
 
 #### Unified concatenated feature vector
