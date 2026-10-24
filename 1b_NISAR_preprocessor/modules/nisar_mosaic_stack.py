@@ -637,6 +637,25 @@ def stack_nisar_timeseries(
     proj = ds0.GetProjection()
     ds0 = None
 
+    if target_grid and "size" in target_grid and "extent" in target_grid:
+        t_cols, t_rows = target_grid["size"]
+        t_ext = target_grid["extent"]
+        t_epsg = int(target_grid.get("epsg", 3857))
+        if t_cols > 0 and t_rows > 0:
+            cols, rows = int(t_cols), int(t_rows)
+            gt = (
+                float(t_ext[0]),
+                (float(t_ext[2]) - float(t_ext[0])) / max(cols, 1),
+                0.0,
+                float(t_ext[3]),
+                0.0,
+                -(float(t_ext[3]) - float(t_ext[1])) / max(rows, 1)
+            )
+            srs_tgt = osr.SpatialReference()
+            srs_tgt.ImportFromEPSG(t_epsg)
+            srs_tgt.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            proj = srs_tgt.ExportToWkt()
+
     layer_defs = [
         ("HHHH_gamma0.tif", "NISAR_HHHH_dB", True),
         ("HVHV_gamma0.tif", "NISAR_HVHV_dB", True),
@@ -684,7 +703,31 @@ def stack_nisar_timeseries(
             if src_file.exists():
                 src_ds = gdal.Open(str(src_file), gdal.GA_ReadOnly)
                 if src_ds is not None:
-                    src_b = src_ds.GetRasterBand(1)
+                    s_cols, s_rows = src_ds.RasterXSize, src_ds.RasterYSize
+                    s_gt = src_ds.GetGeoTransform()
+                    same_grid = (
+                        s_cols == cols and s_rows == rows and
+                        abs(s_gt[0] - gt[0]) <= 5.0 and abs(s_gt[3] - gt[3]) <= 5.0
+                    )
+                    warped_ds = None
+                    if not same_grid:
+                        min_x = gt[0]
+                        max_y = gt[3]
+                        max_x = min_x + cols * gt[1]
+                        min_y = max_y + rows * gt[5]
+                        w_opts = gdal.WarpOptions(
+                            format="VRT",
+                            outputBounds=(min_x, min_y, max_x, max_y),
+                            width=cols,
+                            height=rows,
+                            dstSRS=proj,
+                            srcNodata=0.0,
+                            dstNodata=0.0,
+                            resampleAlg=gdal.GRA_Bilinear
+                        )
+                        warped_ds = gdal.Warp("", str(src_file), options=w_opts)
+                    active_ds = warped_ds if warped_ds is not None else src_ds
+                    src_b = active_ds.GetRasterBand(1)
                     for y in range(0, rows, tile_h):
                         cur_h = min(tile_h, rows - y)
                         arr = src_b.ReadAsArray(0, y, cols, cur_h)
@@ -700,6 +743,7 @@ def stack_nisar_timeseries(
                             db_arr[zero_db] = 1e-3
                             arr = db_arr
                         out_band.WriteArray(arr, 0, y)
+                    warped_ds = None
                     src_ds = None
             out_band.FlushCache()
             band_idx += 1
@@ -726,3 +770,4 @@ def stack_nisar_timeseries(
 
     logging.info(f"SUCCESS: NISAR Multi-Temporal Stack created at {output_stack_tif} ({total_bands} bands across {len(date_dirs)} dates)!")
     return output_stack_tif
+

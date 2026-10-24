@@ -98,13 +98,47 @@ logging.basicConfig(
 
 
 def get_country_shapefile(country_code: str) -> Optional[Path]:
-    country_dir = SHAPEFILES_DIR / country_code.upper()
+    c_up = country_code.upper()
+    country_dir = SHAPEFILES_DIR / c_up
     if country_dir.exists():
         shps = list(country_dir.glob("*.shp"))
         if shps:
             return shps[0]
-    shps = list(SHAPEFILES_DIR.glob(f"**/*{country_code.upper()}*.shp"))
-    return shps[0] if shps else None
+    shps = list(SHAPEFILES_DIR.glob(f"**/*{c_up}*.shp"))
+    if shps:
+        return shps[0]
+
+    # Automatic fallback: extract country boundary from Eurostat GISCO NUTS_RG_01M_2021_3857.geojson
+    geojson_path = SHAPEFILES_DIR / "NUTS_RG_01M_2021_3857.geojson"
+    if geojson_path.exists():
+        try:
+            country_dir.mkdir(parents=True, exist_ok=True)
+            out_shp = country_dir / f"NUTS2_{c_up}.shp"
+            src_ds = ogr.Open(str(geojson_path), 0)
+            if src_ds is not None:
+                src_lyr = src_ds.GetLayer()
+                src_lyr.SetAttributeFilter(f"CNTR_CODE = '{c_up}'")
+                drv = ogr.GetDriverByName("ESRI Shapefile")
+                if out_shp.exists():
+                    drv.DeleteDataSource(str(out_shp))
+                dst_ds = drv.CreateDataSource(str(out_shp))
+                dst_lyr = dst_ds.CreateLayer(f"NUTS2_{c_up}", src_lyr.GetSpatialRef(), ogr.wkbMultiPolygon)
+                cnt = 0
+                for feat in src_lyr:
+                    geom = feat.GetGeometryRef()
+                    if geom is not None:
+                        out_feat = ogr.Feature(dst_lyr.GetLayerDefn())
+                        out_feat.SetGeometry(geom.Clone())
+                        dst_lyr.CreateFeature(out_feat)
+                        out_feat = None
+                        cnt += 1
+                dst_ds = None
+                src_ds = None
+                if cnt > 0 and out_shp.exists():
+                    return out_shp
+        except Exception as e:
+            logging.warning(f"Could not extract country shapefile from GISCO GeoJSON for {c_up}: {e}")
+    return None
 
 
 def get_s1_raster_reference(track_dir: Path) -> Optional[Dict]:
@@ -189,10 +223,15 @@ def mosaic_single_band_doy(
         'multithread': True,
         'warpOptions': ["NUM_THREADS=ALL_CPUS"],
         'resampleAlg': gdal.GRA_Bilinear,
-        'creationOptions': ["COMPRESS=ZSTD", "PREDICTOR=2", "ZSTD_LEVEL=3", "TILED=YES", "BIGTIFF=YES", "NUM_THREADS=ALL_CPUS"],
-        'xRes': res_x,
-        'yRes': res_y
+        'creationOptions': ["COMPRESS=ZSTD", "PREDICTOR=2", "ZSTD_LEVEL=3", "TILED=YES", "BIGTIFF=YES", "NUM_THREADS=ALL_CPUS"]
     }
+
+    if output_bounds and target_width and target_height:
+        warp_options_kwargs['width'] = int(target_width)
+        warp_options_kwargs['height'] = int(target_height)
+    else:
+        warp_options_kwargs['xRes'] = res_x
+        warp_options_kwargs['yRes'] = res_y
 
     if ref_proj:
         warp_options_kwargs['dstSRS'] = ref_proj

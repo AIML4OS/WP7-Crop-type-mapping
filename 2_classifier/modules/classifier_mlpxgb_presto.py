@@ -1754,15 +1754,20 @@ class ProcessingPipelineS1S2:
             dstSRS=proj1,
             resampleAlg=gdal.GRA_NearestNeighbour
         )
-        ds_vrt = gdal.Warp(str(vrt_path), ds_s2_raw, options=warp_opts)
+        band_descs = [ds_s2_raw.GetRasterBand(b).GetDescription() for b in range(1, ds_s2_raw.RasterCount + 1)]
+        ds_s2_raw = None
+        ds_vrt = gdal.Warp(str(vrt_path), str(self.s2_ras), options=warp_opts)
         if ds_vrt:
-            for b in range(1, ds_s2_raw.RasterCount + 1):
-                desc = ds_s2_raw.GetRasterBand(b).GetDescription()
+            for b, desc in enumerate(band_descs, 1):
                 if desc:
                     ds_vrt.GetRasterBand(b).SetDescription(desc)
             ds_vrt.FlushCache()
             return ds_vrt
-        return ds_s2_raw
+        return gdal.Open(str(self.s2_ras), gdal.GA_ReadOnly)
+
+    @property
+    def has_nisar(self) -> bool:
+        return self.nisar_ras is not None and self.nisar_ras.exists()
 
     def _resolve_nisar_raster(self) -> Optional[Path]:
         """
@@ -1793,12 +1798,13 @@ class ProcessingPipelineS1S2:
                     if matches:
                         return matches[0]
 
-        # Cross-orbit discovery fallback within the same country
+        # Cross-orbit discovery fallback within the same country (only for country-wide NISAR stacks without another orbit_* tag)
         c_root = self.base_dir / self.country
         if c_root.exists():
             for cand in sorted(c_root.glob("orbit_*/1_input_stacks/*NISAR*.tif")):
                 if cand.is_file() and not cand.name.endswith(".tmp.tif") and not cand.name.endswith(".ovr"):
-                    return cand
+                    if "orbit_" not in cand.name.lower() or self.sanitized_track.lower() in cand.name.lower():
+                        return cand
 
         # Check if unstacked cycle mosaic folders exist (`nisar_cycle_mosaics` or `mozaika`)
         mosaic_dirs = [
@@ -1813,9 +1819,13 @@ class ProcessingPipelineS1S2:
                     nisar_mod_dir = _PROJECT_ROOT / "1b_NISAR_preprocessor" / "modules"
                     if str(nisar_mod_dir) not in sys.path:
                         sys.path.insert(0, str(nisar_mod_dir))
+                    from nisar_asf_search import get_s1_reference_grid
                     from nisar_mosaic_stack import stack_nisar_timeseries
+                    t_grid = get_s1_reference_grid(self.base_dir / self.track)
                     out_stack = self.proc_dir / f"{self.file_prefix}_NISAR_timeseries.tif"
-                    stacked = stack_nisar_timeseries(m_dir, out_stack, convert_gamma0_to_db=True, build_overviews=True)
+                    stacked = stack_nisar_timeseries(
+                        m_dir, out_stack, target_grid=t_grid, convert_gamma0_to_db=True, build_overviews=True
+                    )
                     if stacked and stacked.exists():
                         return stacked
                 except Exception as e:
@@ -1834,9 +1844,13 @@ class ProcessingPipelineS1S2:
                 nisar_mod_dir = _PROJECT_ROOT / "1b_NISAR_preprocessor" / "modules"
                 if str(nisar_mod_dir) not in sys.path:
                     sys.path.insert(0, str(nisar_mod_dir))
+                from nisar_asf_search import get_s1_reference_grid
                 from nisar_mosaic_stack import stack_nisar_timeseries
+                t_grid = get_s1_reference_grid(self.base_dir / self.track)
                 out_stack = self.proc_dir / f"{self.file_prefix}_NISAR_timeseries.tif"
-                stacked = stack_nisar_timeseries(self.nisar_ras, out_stack, convert_gamma0_to_db=True, build_overviews=True)
+                stacked = stack_nisar_timeseries(
+                    self.nisar_ras, out_stack, target_grid=t_grid, convert_gamma0_to_db=True, build_overviews=True
+                )
                 if stacked and stacked.exists():
                     self.nisar_ras = stacked
             except Exception as e:
@@ -1876,15 +1890,16 @@ class ProcessingPipelineS1S2:
             dstSRS=proj_ref,
             resampleAlg=gdal.GRA_Bilinear
         )
-        ds_vrt = gdal.Warp(str(vrt_path), ds_nisar_raw, options=warp_opts)
+        band_descs = [ds_nisar_raw.GetRasterBand(b).GetDescription() for b in range(1, ds_nisar_raw.RasterCount + 1)]
+        ds_nisar_raw = None
+        ds_vrt = gdal.Warp(str(vrt_path), str(self.nisar_ras), options=warp_opts)
         if ds_vrt:
-            for b in range(1, ds_nisar_raw.RasterCount + 1):
-                desc = ds_nisar_raw.GetRasterBand(b).GetDescription()
+            for b, desc in enumerate(band_descs, 1):
                 if desc:
                     ds_vrt.GetRasterBand(b).SetDescription(desc)
             ds_vrt.FlushCache()
             return ds_vrt
-        return ds_nisar_raw
+        return gdal.Open(str(self.nisar_ras), gdal.GA_ReadOnly)
 
     def _resolve_samples_shp(self) -> Optional[Path]:
         samples_base = self.aux_dir / 'shapefiles_samples'
@@ -2671,6 +2686,7 @@ class ProcessingPipelineS1S2:
         months_s1 = [parse_month_from_description(ds_s1.GetRasterBand(b).GetDescription()) for b in range(1, num_dates_s1 + 1)] if ds_s1 else [0]
         months_s2 = [parse_month_from_description(ds_s2.GetRasterBand(b).GetDescription()) for b in range(1, nbands_s2 + 1, 9)] if ds_s2 else [0]
         months_nisar = [parse_month_from_description(ds_nisar.GetRasterBand(b).GetDescription()) for b in range(1, nbands_nisar + 1, nisar_bpd)] if ds_nisar else [0]
+        nisar_is_db = ("db" in str(ds_nisar.GetRasterBand(1).GetDescription()).lower()) if (ds_nisar and nbands_nisar > 0) else True
         needs_s2_boa_offset = _check_s2_needs_boa_offset_correction(ds_s2)
         if needs_s2_boa_offset:
             print("    [BOA OFFSET HARMONIZATION] Detected legacy N0400+/N05xx S2 stack without BOA_ADD_OFFSET correction; subtracting 1000 DN offset on the fly.")
@@ -2713,8 +2729,12 @@ class ProcessingPipelineS1S2:
                 if ds_s1:
                     s1_tile = safe_read_tile(ds_s1, x, y, xsize, ysize)
                     if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
-                    # Convert SAR dB to linear power scale for unbiased physical aggregation
-                    s1_tile_lin = np.power(10.0, np.clip(s1_tile, -45.0, 15.0) / 10.0)
+                    # Convert SAR dB to linear power scale for unbiased physical aggregation (0.0 NoData -> 1e-4)
+                    s1_tile_lin = np.where(
+                        np.abs(s1_tile) > 1e-5,
+                        np.power(10.0, np.clip(s1_tile, -45.0, 15.0) / 10.0),
+                        1e-4
+                    )
                     for b in range(nbands_s1):
                         b_lin = s1_tile_lin[b].ravel()
                         sums = np.bincount(flat_inv, weights=b_lin)
@@ -2743,11 +2763,15 @@ class ProcessingPipelineS1S2:
                         b_mod = b % nisar_bpd
                         b_arr = nisar_tile[b]
                         if b_mod in (0, 1):
-                            # Power bands (HHHH, HVHV): handle both dB (< 0) and linear gamma0 (> 0)
-                            if np.any(b_arr < -0.5):
-                                b_vals = np.power(10.0, np.clip(b_arr, -45.0, 15.0) / 10.0).ravel()
+                            # Power bands (HHHH, HVHV): handle both dB (< 0) and linear gamma0 (> 0), mapping 0.0 NoData -> 1e-4
+                            if nisar_is_db or np.any(b_arr < -0.5):
+                                b_vals = np.where(
+                                    np.abs(b_arr) > 1e-5,
+                                    np.power(10.0, np.clip(b_arr, -45.0, 15.0) / 10.0),
+                                    1e-4
+                                ).ravel()
                             else:
-                                b_vals = np.clip(b_arr, 1e-6, 10.0).ravel()
+                                b_vals = np.where(b_arr > 1e-6, np.clip(b_arr, 1e-6, 10.0), 1e-4).ravel()
                         else:
                             b_vals = b_arr.ravel()
                         sums = np.bincount(flat_inv, weights=b_vals)
@@ -3078,6 +3102,7 @@ class ProcessingPipelineS1S2:
         months_s1 = [parse_month_from_description(ds_s1.GetRasterBand(b).GetDescription()) for b in range(1, num_dates_s1 + 1)] if ds_s1 else [0]
         months_s2 = [parse_month_from_description(ds_s2.GetRasterBand(b).GetDescription()) for b in range(1, nbands_s2 + 1, 9)] if ds_s2 else [0]
         months_nisar = [parse_month_from_description(ds_nisar.GetRasterBand(b).GetDescription()) for b in range(1, nbands_nisar + 1, nisar_bpd)] if ds_nisar else [0]
+        nisar_is_db = ("db" in str(ds_nisar.GetRasterBand(1).GetDescription()).lower()) if (ds_nisar and nbands_nisar > 0) else True
         needs_s2_boa_offset = _check_s2_needs_boa_offset_correction(ds_s2)
         if needs_s2_boa_offset:
             print("    [BOA OFFSET HARMONIZATION] Detected legacy N0400+/N05xx S2 stack without BOA_ADD_OFFSET correction; subtracting 1000 DN offset on the fly.")
@@ -3155,7 +3180,11 @@ class ProcessingPipelineS1S2:
                     if ds_s1:
                         s1_tile = safe_read_tile(ds_s1, x, y, xsize, ysize)
                         if s1_tile.ndim == 2: s1_tile = s1_tile[np.newaxis, ...]
-                        s1_tile_lin = np.power(10.0, np.clip(s1_tile, -45.0, 15.0) / 10.0)
+                        s1_tile_lin = np.where(
+                            np.abs(s1_tile) > 1e-5,
+                            np.power(10.0, np.clip(s1_tile, -45.0, 15.0) / 10.0),
+                            1e-4
+                        )
                         s1_means = np.zeros((len(u_sids), nbands_s1), dtype=np.float32)
                         s1_stds = np.zeros((len(u_sids), nbands_s1), dtype=np.float32)
                         for b in range(nbands_s1):
@@ -3211,10 +3240,14 @@ class ProcessingPipelineS1S2:
                             b_mod = b % nisar_bpd
                             b_arr = nisar_tile[b]
                             if b_mod in (0, 1):
-                                if np.any(b_arr < -0.5):
-                                    b_vals = np.power(10.0, np.clip(b_arr, -45.0, 15.0) / 10.0).ravel()
+                                if nisar_is_db or np.any(b_arr < -0.5):
+                                    b_vals = np.where(
+                                        np.abs(b_arr) > 1e-5,
+                                        np.power(10.0, np.clip(b_arr, -45.0, 15.0) / 10.0),
+                                        1e-4
+                                    ).ravel()
                                 else:
-                                    b_vals = np.clip(b_arr, 1e-6, 10.0).ravel()
+                                    b_vals = np.where(b_arr > 1e-6, np.clip(b_arr, 1e-6, 10.0), 1e-4).ravel()
                                 sums_n = np.bincount(flat_inv, weights=b_vals)
                                 sq_sums_n = np.bincount(flat_inv, weights=b_vals ** 2)
                                 m_n = sums_n[offset:] / valid_counts

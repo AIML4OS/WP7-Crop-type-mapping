@@ -78,7 +78,7 @@ NASA Harvest Presto encodes multi-temporal sequences using self-attention transf
 
 #### Unified concatenated feature vector
 The complete feature vector combines domain-specific physical interpretability with deep self-supervised representation learning into a unified vector:
-`X_fused = [ F_S1_stats_texture || F_S2_spectral_texture || E_Presto_S1 || E_Presto_S2 ]`
+`X_fused = [ F_S1_stats_texture || F_S2_spectral_texture || F_phys_indices (|| F_NISAR_L) || E_Presto_Joint || E_Presto_S1 || E_Presto_S2 (|| E_Presto_NISAR) ]`
 
 ---
 
@@ -242,7 +242,7 @@ Large-scale spatial inference across nationwide multi-temporal satellite stacks 
                                                   v
                      +----------------------------------------------------------+
                      | [Post-Processing, Pyramids & National Validation]        |
-                     | 1. Morphological sieve filtering (clump size < 50 px)    |
+                     | 1. Cropland-masked seam sieve filter (slivers < 4 px)    |
                      | 2. Multi-scale pyramid overviews [2, 4, 8, 16, 32, 64]   |
                      | 3. Aggregated national confusion matrix computation      |
                      +----------------------------+-----------------------------+

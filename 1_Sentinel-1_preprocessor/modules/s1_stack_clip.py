@@ -193,6 +193,29 @@ def stack_and_clip(track: str):
             out_file = out_dir / f"{region}_{sanitized_track}_{dr}_VH_VV.tif"
         shp_path = SHAPEFILES_DIR / region / f"NUTS2_{region}.shp"
         if not shp_path.exists():
+            geojson_path = SHAPEFILES_DIR / "NUTS_RG_01M_2021_3857.geojson"
+            if geojson_path.exists():
+                try:
+                    shp_path.parent.mkdir(parents=True, exist_ok=True)
+                    src_ds = ogr.Open(str(geojson_path), 0)
+                    if src_ds is not None:
+                        src_lyr = src_ds.GetLayer()
+                        src_lyr.SetAttributeFilter(f"CNTR_CODE = '{region}'")
+                        drv = ogr.GetDriverByName("ESRI Shapefile")
+                        dst_ds = drv.CreateDataSource(str(shp_path))
+                        dst_lyr = dst_ds.CreateLayer(f"NUTS2_{region}", src_lyr.GetSpatialRef(), ogr.wkbMultiPolygon)
+                        for feat in src_lyr:
+                            geom = feat.GetGeometryRef()
+                            if geom is not None:
+                                out_feat = ogr.Feature(dst_lyr.GetLayerDefn())
+                                out_feat.SetGeometry(geom.Clone())
+                                dst_lyr.CreateFeature(out_feat)
+                                out_feat = None
+                        dst_ds = None
+                        src_ds = None
+                except Exception as e:
+                    print(f"    WARNING: Could not extract {region} from GISCO GeoJSON: {e}")
+        if not shp_path.exists():
             print(f"    WARNING: Shapefile not found: {shp_path}")
             continue
 

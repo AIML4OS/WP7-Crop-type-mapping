@@ -296,16 +296,21 @@ class FindNisarASF:
         product_type: str = "GCOV",
         flight_direction: Optional[str] = "DESCENDING",
         session=None,
-        local_dir: Optional[Path] = None
+        local_dir: Optional[Path] = None,
+        source: str = "auto"
     ) -> List[Dict]:
         """
-        Queries local `/eodata/NISAR` repository first, then queries NASA ASF DAAC
-        (via `asf_search` or direct ASF REST GeoJSON endpoint fallback).
+        Queries local `/eodata/NISAR` repository first (when `source` is `local` or `auto`),
+        then queries NASA ASF DAAC (`source` in `asf` or `auto`) via `asf_search` or direct ASF REST GeoJSON endpoint fallback.
         """
-        if local_dir and Path(local_dir).exists():
+        src_mode = (source or "auto").lower()
+        if src_mode in ("local", "auto") and local_dir and Path(local_dir).exists():
             local_hits = self.search_local_h5(Path(local_dir), start_date, end_date, product_type)
-            if local_hits:
+            if local_hits or src_mode == "local":
                 return local_hits
+        elif src_mode == "local":
+            logging.warning(f"Local NISAR repository not found at {local_dir}")
+            return []
 
         start_str = start_date.strftime("%Y-%m-%dT00:00:00Z")
         end_str = end_date.strftime("%Y-%m-%dT23:59:59Z")
@@ -393,3 +398,4 @@ class FindNisarASF:
         except Exception as e:
             logging.error(f"Error querying NASA ASF REST API for NISAR: {e}")
             return []
+

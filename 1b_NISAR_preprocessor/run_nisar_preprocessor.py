@@ -133,6 +133,7 @@ class NISARPreprocessorPipeline:
         end_date: Optional[str] = None,
         config_file: Optional[Path] = None,
         grouping_mode: Optional[str] = None,
+        source: str = "auto",
         overwrite: bool = False
     ):
         self.country = country.upper()
@@ -140,6 +141,7 @@ class NISARPreprocessorPipeline:
         self.track = f"{self.country}/orbit_{self.orbit}" if self.orbit else self.country
         self.track_dir = (BASE_DIR / self.country / f"orbit_{self.orbit}") if self.orbit else (BASE_DIR / self.country)
         self.config = load_nisar_config(config_file)
+        self.source = (source or "auto").lower()
         if grouping_mode:
             self.config["grouping_mode"] = grouping_mode
         if overwrite:
@@ -196,7 +198,7 @@ class NISARPreprocessorPipeline:
         stage_u = stage.strip().upper()
 
         if stage_u in ("A", "1", "2"):
-            session = self._authenticate_earthdata()
+            session = self._authenticate_earthdata() if self.source in ("asf", "auto") else None
             finder = FindNisarASF()
             local_repo = Path(self.config.get("local_nisar_repository", "/eodata/NISAR"))
             products = finder.search_products(
@@ -206,7 +208,8 @@ class NISARPreprocessorPipeline:
                 product_type=self.config.get("product_type", "GCOV"),
                 flight_direction=self.config.get("flight_direction", "DESCENDING"),
                 session=session,
-                local_dir=local_repo if local_repo.exists() else None
+                local_dir=local_repo if local_repo.exists() else None,
+                source=self.source
             )
             if not products:
                 logging.warning(
@@ -224,7 +227,7 @@ class NISARPreprocessorPipeline:
                 session=session,
                 cutline_shp=cutline_shp
             )
-            processor.stage_1_and_2_extract_and_mosaic()
+            processor.stage_1_and_2_extract_and_mosaic(stage=stage_u)
             if stage_u == "A":
                 processor.stage_3_stack_timeseries(self.start_date, self.end_date)
         elif stage_u == "3":
@@ -280,6 +283,7 @@ def main():
     parser.add_argument("-o", "--orbit", type=int, default=None, help="Relative S1 reference orbit number")
     parser.add_argument("-s", "--start_date", default=None, help="Start date (YYYY-MM-DD)")
     parser.add_argument("-e", "--end_date", default=None, help="End date (YYYY-MM-DD)")
+    parser.add_argument("--source", default="auto", choices=["asf", "local", "auto"], help="Data source: 'asf' (NASA ASF DAAC), 'local' (/eodata/NISAR), or 'auto' (default)")
     parser.add_argument("--stage", default="A", choices=["A", "1", "2", "3", "a"], help="Stage to run: 'A' (all), '1' (extract), '2' (mosaic), '3' (stack)")
     parser.add_argument("--grouping_mode", default=None, choices=["cycle", "dekada", "date"], help="Temporal grouping mode (default: cycle [12-day NISAR orbital cycle])")
     parser.add_argument("-j", "--config", default=None, help="Path to config_nisar.json")
@@ -317,6 +321,7 @@ def main():
             end_date=args.end_date,
             config_file=cfg_path,
             grouping_mode=args.grouping_mode,
+            source=args.source,
             overwrite=args.overwrite
         )
         pipe.run(stage=args.stage)
@@ -331,6 +336,7 @@ def main():
                     end_date=args.end_date,
                     config_file=cfg_path,
                     grouping_mode=args.grouping_mode,
+                    source=args.source,
                     overwrite=args.overwrite
                 )
                 pipe.run(stage=args.stage)
@@ -342,6 +348,7 @@ def main():
                 end_date=args.end_date,
                 config_file=cfg_path,
                 grouping_mode=args.grouping_mode,
+                source=args.source,
                 overwrite=args.overwrite
             )
             pipe.run(stage=args.stage)
@@ -349,3 +356,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -395,3 +395,4 @@ class DownloadAndExtractGCOV:
         except Exception as e:
             logging.error(f"Error extracting NISAR GCOV layers for {title}: {e}")
             return []
+

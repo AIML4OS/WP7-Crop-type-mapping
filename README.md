@@ -12,6 +12,7 @@ An automated, cloud-optimized object-based image analysis (OBIA) pipeline design
 5. [Scientific methodology & foundation model architecture](#scientific-methodology--foundation-model-architecture)
    - [Sentinel-1 SAR radar remote sensing physics & polarimetry](#sentinel-1-sar-radar-remote-sensing-physics--polarimetry)
    - [Sentinel-2 multispectral optical remote sensing & vegetation indices](#sentinel-2-multispectral-optical-remote-sensing--vegetation-indices)
+   - [NISAR L-band SAR polarimetry & dual-frequency canopy penetration (optional)](#nisar-l-band-sar-polarimetry--dual-frequency-canopy-penetration-optional)
    - [NASA Harvest Presto geospatial foundation model](#nasa-harvest-presto-geospatial-foundation-model)
    - [Object-based image analysis (OBIA) & segmentation deep dive](#object-based-image-analysis-obia--segmentation-deep-dive)
    - [Multimodal feature fusion architecture](#multimodal-feature-fusion-architecture)
@@ -31,6 +32,7 @@ An automated, cloud-optimized object-based image analysis (OBIA) pipeline design
 10. [Detailed step-by-step execution guide](#detailed-step-by-step-execution-guide-a-to-z-manual)
     - [Phase 1: Sentinel-1 SAR preprocessing](#phase-1-sentinel-1-sar-preprocessing-run_s1_preprocessorpy)
     - [Phase 2: Sentinel-2 optical preprocessing](#phase-2-sentinel-2-optical-preprocessing-run_s2_preprocessorpy)
+    - [Phase 2b: NISAR L-band SAR preprocessing (optional)](#phase-2b-nisar-l-band-sar-preprocessing-run_nisar_preprocessorpy-optional)
     - [Phase 3: Multimodal crop classification (stages 1 to 8)](#phase-3-multimodal-machine-learning-classifier-run_classifierpy)
     - [Phase 4: Multi-orbit nationwide merge](#phase-4-nationwide-multi-orbit-merge-run_mergepy)
     - [Phase 5: How to visualize and validate maps in QGIS & ArcGIS Pro](#phase-5-how-to-visualize-and-validate-maps-in-qgis--arcgis-pro)
@@ -66,9 +68,10 @@ If you are an IT administrator or data engineer running this pipeline for the fi
 4. **Run the preprocessors**:
    - Preprocess Sentinel-1 SAR: `python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track NL/orbit_88 --source cdse -s 2024-10-15 -e 2025-09-15 --stage A`
    - Preprocess Sentinel-2 optical: `python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track NL/orbit_88 --source cdse -s 2024-10-15 -e 2025-09-15 --stage A`
+   - *(Optional)* Preprocess NISAR L-band SAR: `python 1b_NISAR_preprocessor/run_nisar_preprocessor.py --track NL/orbit_88 --source auto -s 2024-10-15 -e 2025-09-15 --stage A`
 5. **Run the multimodal classifier**:
    - `python 2_classifier/run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A`
-   *(Tip: Running `python run_classifier.py`, `python run_s1_preprocessor.py`, or `python run_s2_preprocessor.py` without arguments launches the interactive setup wizard!)*
+   *(Tip: Running `python run_classifier.py`, `python run_s1_preprocessor.py`, `python run_s2_preprocessor.py`, or `python run_nisar_preprocessor.py` without arguments launches the interactive setup wizard!)*
 
 ---
 
@@ -76,12 +79,14 @@ If you are an IT administrator or data engineer running this pipeline for the fi
 
 | Data type | Source / responsibility | Description |
 | :--- | :--- | :--- |
-| **Sentinel-1 SAR imagery** | **Automated** (CDSE API / CreoDIAS) | Calibrated Sigma0 radar backscatter time series (VH, VV). |
-| **Sentinel-2 optical imagery** | **Automated** (CDSE API / CreoDIAS) | Multispectral surface reflectances (`B02`–`B12`) and NDVI. |
+| **Sentinel-1 SAR imagery** | **Automated** (CDSE API / CreoDIAS) | Calibrated Sigma0 radar backscatter full time series (VH, VV). |
+| **Sentinel-2 optical imagery** | **Automated** (CDSE API / CreoDIAS) | Multispectral surface reflectances (`B02`–`B12`) and NDVI across 14 regional DOYs. |
+| **NISAR L-band SAR imagery** *(optional)* | **Automated** (NASA ASF DAAC / Local HDF5) | L-band (`24 cm`) `L2 GCOV` polarimetric backscatter (`HHHH`, `HVHV`, `RVI_L`, `ratio_HH_HV`). Automatic fallback to `S1 + S2` when absent. |
 | **Digital Elevation Model (DEM)** | **Automated** (Copernicus 30 m GLO-30) | Automatically fetched from AWS Open Data by the Pure Python SAR engine (or by ESA SNAP when `--engine snap` is used). |
-| **NUTS administrative boundaries**| **Automated** (`tools/1_download_nuts_boundaries.py`) | Downloaded directly from Eurostat GISCO web service. |
+| **NUTS administrative boundaries**| **Automated** (`tools/1_download_nuts_boundaries.py`) | Downloaded directly from Eurostat GISCO web service (with automatic on-the-fly fallback for any EU-27 country). |
 | **Presto foundation model weights**| **Automated** (GitHub / Hugging Face) | Downloaded automatically during first execution. |
-| **CDSE credentials** | **User-provided** (Required) | Free email and password entered in `config_s1.json` / `config_s2.json`. |
+| **CDSE credentials** | **User-provided** (Required for CDSE) | Free email and password entered in `config_s1.json` / `config_s2.json`. |
+| **NASA Earthdata credentials** | **User-provided** (Optional for NISAR) | Free NASA Earthdata Login token/credentials in `config_nisar.json` when downloading NISAR from ASF DAAC. |
 | **Training point samples** | **User-provided** (Required) | Vector shapefile (`samples.shp`) with field crop labels. |
 | **LPIS cadastral parcel vector** | **User-provided** (Optional) | National agricultural parcel database (`.gpkg` / `.shp`). |
 | **Dynamic Bayesian acreage calibration** | **Automated** (Intelligent dynamic Bayesian) | 100% automated calibration combining physical field area multi-lingual taxonomy and training loss bias inversion (no external JSON required). |
@@ -90,8 +95,9 @@ If you are an IT administrator or data engineer running this pipeline for the fi
 
 ## Plain-language glossary of terms
 
-* **SAR (Synthetic Aperture Radar - Sentinel-1)**: Active radar satellite sensor that penetrates clouds, rain, and darkness, measuring surface roughness, structure, and moisture.
+* **SAR (Synthetic Aperture Radar - Sentinel-1 & NISAR)**: Active radar satellite sensors that penetrate clouds, rain, and darkness, measuring surface roughness, structure, and moisture (`Sentinel-1` operates at 5.55 cm C-band; `NISAR` operates at 24 cm L-band).
 * **Optical multispectral (Sentinel-2)**: Passive satellite sensor that captures solar reflectance across visible, near-infrared, and shortwave infrared wavelengths. Sensitive to crop greenness, chlorophyll content, and canopy water.
+* **L2 GCOV (NISAR Level-2 Geocoded Polarimetric Covariance)**: Radiometrically terrain-corrected ($\gamma^0$) L-band radar product delivered in HDF5 format by the NASA-ISRO SAR mission.
 * **DOY (Day of Year)**: Number representing a specific calendar day (e.g., DOY 80 = March 21, DOY 203 = July 22). Used to align satellite observations across different years and orbits into standardized 10-day time steps.
 * **SCL (Scene Classification Layer)**: Quality band produced by ESA Sentinel-2 processing that identifies clouds, cloud shadows, snow, and clear land.
 * **OBIA (Object-Based Image Analysis)**: Methodology that classifies groups of homogeneous pixels (agricultural fields or superpixels) rather than individual isolated pixels, eliminating "salt-and-pepper" visual noise.
@@ -189,12 +195,22 @@ To suppress residual cloud artifacts, shadow dips, and atmospheric fluctuations 
 
 ---
 
+### NISAR L-band SAR polarimetry & dual-frequency canopy penetration (optional)
+
+While Sentinel-1 operates at C-band ($\lambda \approx 5.55\text{ cm}$, interacting primarily with upper leaf layers and small cereal stems), the **NASA-ISRO Synthetic Aperture Radar (NISAR)** operates at **L-band ($1.257\text{ GHz}$, $\lambda \approx 24\text{ cm}$)**:
+* **Deep canopy & woody structure penetration**: Long 24 cm L-band microwaves penetrate deep through dense agricultural canopies (maize, rapeseed, potatoes, sugar beet) and woody perennial crops (vineyards, olive groves, fruit/nut orchards) where C-band backscatter saturates early in the season.
+* **Level-2 GCOV polarimetric channels**: Extracts radiometrically terrain-corrected ($\gamma^0$) co-polarized (`HHHH_gamma0`) and cross-polarized (`HVHV_gamma0`) power terms in decibels, along with the L-band Radar Vegetation Index ($\text{RVI}_L = \frac{4 \cdot \gamma^0_{HV}}{\gamma^0_{HH} + \gamma^0_{HV}}$) and cross-ratio ($\gamma^0_{HH}/\gamma^0_{HV}$ in dB).
+* **Swath artifact suppression & 12-day cycle mosaicking**: Applies cross-track invalid margin erosion, Euclidean Distance Transform (EDT) internal pinhole imputation, 2D adaptive monotonic range-edge de-tapering, and $C^1$-continuous distance-squared feathering onto the exact `EPSG:3857` (`10.0 m`) reference grid of Sentinel-1 and Sentinel-2.
+* **Automatic fallback**: When a `*_NISAR_GCOV_L_timeseries.tif` stack is present in `1_input_stacks/` (or `workingDirs/{COUNTRY}/NISAR/`), the classifier automatically activates **tri-sensor `Sentinel-1 + Sentinel-2 + NISAR` fusion** (`+19` L-band temporal & polarimetric features + `128d` L-band Presto token embedding). When NISAR data is absent, the classifier **transparently falls back to `Sentinel-1 + Sentinel-2`** with zero configuration changes.
+
+---
+
 ### NASA Harvest Presto geospatial foundation model
 
 **Presto** is a global geospatial transformer foundation model pre-trained on multi-sensor Earth observation time series:
 * **Multi-sensor joint tokenization preserving full S1 radar time series**: Simultaneously projects the **full native Sentinel-1 SAR time series (`VV`, `VH`)** and Sentinel-2 optical reflectances (`B02`–`B12`) + dynamic `NDVI` into a unified high-dimensional latent space. Sentinel-1 keeps 100% of its native acquisition dates (`T_s1`), while the 14 cloud-free Sentinel-2 DOY composites are linearly interpolated along the temporal axis onto the full S1 timeline so radar and optical tokens are temporally synchronized without losing any radar acquisitions.
 * **Sinusoidal spatio-temporal embeddings**: Encodes continuous geographic coordinates (latitude, longitude) and seasonal acquisition months, conditioning model attention on geographic and bioclimatic context.
-* **384-dimensional latent representation extraction**: Outputs three **128-dimensional multi-temporal token embeddings** (**384 dimensions total**): `E_Presto_Joint` (128d joint multimodal cross-attention), `E_Presto_S1` (128d full-series SAR sequence), and `E_Presto_S2` (128d optical sequence), capturing complex non-linear phenological dynamics superior to standard handcrafted summary metrics.
+* **384-dimensional (or 512-dimensional with NISAR) latent representation extraction**: Outputs three **128-dimensional multi-temporal token embeddings** (**384 dimensions total** in `S1 + S2` mode: `E_Presto_Joint`, `E_Presto_S1`, `E_Presto_S2`; **512 dimensions total** in `S1 + S2 + NISAR` mode by appending `E_Presto_NISAR`).
 
 ---
 
@@ -267,14 +283,16 @@ Before performing segmentation, Stage 2 generates a dedicated 1-channel high-SNR
 |  - S1 Temporal Statistics (VH, VV, VH/VV): Linear-power Mean (dB), CV Texture, RVI, CR, Delta_VH   |
 |  - S2 Multi-Spectral Reflectances: 14 DOYs * 9 Bands (B02-B12) = 126 spectral temporal features     |
 |  - S2 Biophysical Indices: Multi-temporal NDVI, NDRE1 (B06/B05), NDRE2 (B07/B05), NDWI & texture    |
+|  - Optional NISAR L-Band SAR (L2 GCOV): HHHH/HVHV dB stats, RVI_L, HH/HV ratio, Delta_HV (19 feats)|
 |                                                  |                                                 |
-|  [Tier 2: NASA Harvest Presto Geospatial Foundation Model Latent Embeddings (384D)]                 |
-|  - Joint S1+S2 Cross-Attention Representation: 128d embedding (temporally aligned S1->S2 DOYs)      |
-|  - S1 SAR Transformer Latent Representation:   128d multi-temporal token embedding                  |
+|  [Tier 2: NASA Harvest Presto Geospatial Foundation Model Latent Embeddings (384D / 512D)]         |
+|  - Joint S1+S2 Cross-Attention Representation: 128d embedding (temporally aligned S2->S1 timeline) |
+|  - S1 SAR Transformer Latent Representation:   128d full-series C-band token embedding             |
 |  - S2 Optical Transformer Latent Representation: 128d multi-temporal token embedding                |
+|  - Optional NISAR L-Band Presto Representation: 128d L-band SAR token embedding (when NISAR active)|
 |                                                  |                                                 |
-|  [Concatenated High-Dimensional Feature Vector X (~550+ features)]                                 |
-|  X = [ F_S1_stats || F_S2_spectral || F_phys_indices || E_Joint (128d) || E_S1 (128d) || E_S2 ]    |
+|  [Concatenated High-Dimensional Feature Vector X (~560+ features S1+S2 / ~707+ with NISAR)]        |
+|  X = [ F_S1_stats || F_S2_spectral || F_phys_indices (|| F_NISAR) || E_Joint || E_S1 || E_S2 ... ] |
 +--------------------------------------------------+-------------------------------------------------+
                                                    |
                                                    v
@@ -307,16 +325,18 @@ Before performing segmentation, Stage 2 generates a dedicated 1-channel high-SNR
 * **Intra-object texture variance & dispersion (field-level CV & Std)**:
   Captures internal parcel spatial heterogeneity: scale-invariant SAR Coefficient of Variation (`CV`) and optical intra-parcel standard deviation (`s2_intra_std`, `ndvi_intra_std`). Distinguishes dense uniform field canopies (wheat, barley) from wide-row crops (maize, sugar beets) and structured woody vegetation (vineyards, orchards, olive groves).
 * **Sentinel-2 multi-spectral trajectories & Red-Edge indices**: Standardized 14-DOY reflectances across 9 spectral bands (14 x 9 = 126 features) plus biophysical time-series vegetation indices (`NDVI = (B8A - B04)/(B8A + B04)`, `NDRE1 = (B06 - B05)/(B06 + B05)`, `NDRE2 = (B07 - B05)/(B07 + B05)`, `NDWI = (B8A - B11)/(B8A + B11)`) tracking chlorophyll absorption, red-edge shift across `B05`/`B06`/`B07`, and canopy moisture.
+* **Optional NISAR L-band SAR polarimetric & temporal features (19 features when NISAR is available)**: Extracts linear-power mean (converted to dB), temporal standard deviation, max, min, seasonal amplitude, scale-invariant Coefficient of Variation (`CV`), and intra-parcel spatial dispersion for `HHHH_gamma0` and `HVHV_gamma0`, plus L-band Radar Vegetation Index (`RVI_L = 4 * HV / (HH + HV)`), cross-ratio (`HH/HV` in dB), and seasonal L-band dynamics (`Delta_HV_L`, `Delta_HH_L`). Automatically skipped when NISAR is absent.
 
-#### 2. Tier 2: NASA Harvest Presto 384-dimensional foundation embeddings (Joint + S1 + S2)
-NASA Harvest Presto encodes multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into three 128-dimensional latent vectors (384 dimensions total):
-* `E_Joint` (128 dimensions): Joint multimodal cross-attention across temporally aligned S1 + S2 + NDVI sequences.
-* `E_S1` (128 dimensions): SAR temporal dynamics.
-* `E_S2` (128 dimensions): Optical multispectral phenology.
+#### 2. Tier 2: NASA Harvest Presto foundation embeddings (384D for S1+S2 / 512D with NISAR)
+NASA Harvest Presto encodes multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into 128-dimensional latent vectors:
+* `E_Joint` (128 dimensions): Joint multimodal cross-attention across temporally aligned S1 (full native dates) + S2 (interpolated onto S1 dates) + NDVI sequences.
+* `E_S1` (128 dimensions): Full-series Sentinel-1 C-band SAR temporal dynamics.
+* `E_S2` (128 dimensions): Sentinel-2 optical multispectral phenology.
+* `E_NISAR` (128 dimensions, optional): NISAR L-band SAR (`HHHH`, `HVHV`, `HH/HV`) transformer representation when NISAR data is available.
 
 #### 3. Unified concatenated feature vector
 The complete feature vector combines domain-specific physical interpretability with deep self-supervised representation learning:
-`X_fused = [ F_S1_stats_texture || F_S2_spectral_texture || F_phys_indices || E_Presto_Joint || E_Presto_S1 || E_Presto_S2 ]`
+`X_fused = [ F_S1_stats_texture || F_S2_spectral_texture || F_phys_indices (|| F_NISAR_L) || E_Presto_Joint || E_Presto_S1 || E_Presto_S2 (|| E_Presto_NISAR) ]`
 
 ---
 
@@ -763,6 +783,37 @@ python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py
 
 ---
 
+### Phase 2b: NISAR L-band SAR preprocessing (`run_nisar_preprocessor.py`, optional)
+
+#### What happens behind the scenes:
+1. **Stage 1 (Granule Discovery, HDF5 Extraction & Radiometric Calibration)**:
+   - Discovers NISAR `L2 GCOV` (`.h5`) granules from local archives (`--source local`) or the NASA Alaska Satellite Facility (ASF DAAC) API (`--source asf` or `--source auto`), grouped into 12-day orbital repeat cycles.
+   - Extracts `HHHH_gamma0`, `HVHV_gamma0` (in dB), L-band Radar Vegetation Index (`RVI_L = 4 * HV / (HH + HV)`), and cross-ratio (`HH/HV` in dB).
+   - Suppresses swath-edge roll-off and internal NoData pinholes using cross-track border erosion, Euclidean Distance Transform (EDT) imputation, and 2D adaptive monotonic range-edge de-tapering.
+2. **Stage 2 (12-Day Cycle Mosaicking & `EPSG:3857` 10.0 m Grid Alignment)**:
+   - Performs along-track slit healing, cross-seam radiometric harmonization, and $C^1$-continuous distance-squared feathering across adjacent frames.
+   - Warps and clips each 12-day cycle mosaic to match the exact `EPSG:3857` (`10.0 m`) bounding box and pixel dimensions of the `Sentinel-1` / `Sentinel-2` reference stack.
+3. **Stage 3 (Multi-Temporal L-Band BigTIFF Stacking & Pyramid Overviews)**:
+   - Compiles all 12-day cycle mosaics into a single multi-temporal `DEFLATE`-compressed BigTIFF (`4 * T` bands) with `[2, 4, 8, 16, 32, 64]` external pyramid overviews.
+
+#### How to execute:
+```bash
+# 1. Full automated run for a single orbit track (aligned 1:1 with S1/S2 stack):
+python 1b_NISAR_preprocessor/run_nisar_preprocessor.py --track PT/orbit_52 --source auto -s 2025-10-01 -e 2026-09-30 --stage A --threads 4
+
+# 2. Full automated run across all orbits for a country from NASA ASF DAAC:
+python 1b_NISAR_preprocessor/run_nisar_preprocessor.py --country PT --source asf -s 2025-10-01 -e 2026-09-30 --stage A --threads 4
+
+# 3. Interactive wizard mode (guides you step-by-step):
+python 1b_NISAR_preprocessor/run_nisar_preprocessor.py
+```
+
+#### Expected output artifact:
+* `workingDirs/{COUNTRY}/orbit_{ORBIT}/1_input_stacks/{COUNTRY}_orbit_{ORBIT}_{END_DATE}_{START_DATE}_NISAR_GCOV_L_timeseries.tif`  
+  *(Multi-temporal 4-channel-per-cycle L-band Float32 BigTIFF, 10.0 m, EPSG:3857, with `.ovr` pyramids and aliases `*_NISAR_GCOV.tif` and `*_NISAR_timeseries.tif`).*
+
+---
+
 ### Phase 3: Multimodal machine learning classifier (`run_classifier.py`)
 
 #### What happens in each classification stage (stages 1 to 8):
@@ -772,7 +823,7 @@ python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py
 | **1** | **Multimodal Data Footprint** | Computes binary spatial intersection of valid S1, S2, and NUTS2 regional boundaries (1 = valid, 0 = NoData). | `0_segmentation/*_data_footprint.tif` |
 | **2** | **High-SNR SAR Composites & OBIA** | Generates high-SNR SAR composite (**seasonal April–August composite** `*_sar_seasonal_composite.tif` or **full-season summed composite** `*_summed_composite.tif`) to suppress speckle. Delineates agricultural parcels using SLIC superpixels (with 64px halo buffer & Union-Find seam stitching), Meta AI SAM, or official LPIS cadastre. | `0_segmentation/*_sar_seasonal_composite.tif`<br>`0_segmentation/*_summed_composite.tif`<br>`0_segmentation/*_segmentation_{MODE}.tif` |
 | **3** | **Parcel-Grouped Stratified Sample Split** | Spatially intersects `samples.shp` with segment parcels (`seg_id`). Partitions points grouped by parcel into **70% training (`*_learn_{MODE}.shp`)** and **30% independent validation (`*_control_{MODE}.shp`)** so points inside the same field never split across train/validation. | `1_samples_and_features/*_learn_{MODE}.shp`<br>`1_samples_and_features/*_control_{MODE}.shp` |
-| **4** | **Multimodal Feature Extraction** | Extracts linear-power SAR temporal backscatter statistics, 14-DOY optical reflectances (`B02`–`B12`), physical Red-Edge and SAR indices (**RVI, CR, Delta_VH, NDVI, NDRE1 [B06/B05], NDRE2 [B07/B05], NDWI, CV/Std texture**), and **384d Joint (temporally aligned S1->S2), S1, and S2 Presto token embeddings** (~550+ features). | `1_samples_and_features/*_mlpxgb_presto_learn_features_{MODE}.csv` |
+| **4** | **Multimodal Feature Extraction** | Extracts linear-power S1 SAR temporal backscatter statistics, 14-DOY S2 optical reflectances (`B02`–`B12`), physical Red-Edge and SAR indices (**RVI, CR, Delta_VH, NDVI, NDRE1 [B06/B05], NDRE2 [B07/B05], NDWI, CV/Std texture**), optional **NISAR L-band features (`HHHH`, `HVHV`, `RVI_L`, `HH/HV`, `Delta_HV_L`)**, and **384d (or 512d with NISAR) Joint, S1, S2, and NISAR Presto token embeddings** (automatic `S1 + S2` fallback when NISAR is absent). | `1_samples_and_features/*_mlpxgb_presto_learn_features_{MODE}.csv` |
 | **5** | **Model Training & Outlier Filtering** | Applies robust IQR feature normalization before 2% multivariate outlier pruning (`_clean_label_noise`), imputes `NaN`/`Inf` values, and fits class-weighted PyTorch Deep MLP (`BatchNorm1d`, `Dropout`, Cosine Annealing) and XGBoost GBDT (350 trees, histogram split) combined via soft-voting blend (65% MLP + 35% XGBoost). | `2_models/*_mlpxgb_presto_model_{MODE}.pkl` |
 | **6** | **Asynchronous Vectorized Tile Inference** | Runs an **asynchronous CPU producer thread** prefetching 2048 x 2048 blocks and computing vectorized `np.bincount` zonal aggregation, while the **GPU consumer** runs batched Presto embeddings and MLP forward passes in parallel. Applies dynamic Bayesian prior calibration and outputs classification, confidence, Shannon entropy uncertainty, and prediction margin maps. | `3_maps/*_classified_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_confidence_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_entropy_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_margin_mlpxgb_presto_{MODE}.tif` |
 | **7** | **Cropland Masking & Pyramid Overviews** | Applies high-resolution agricultural mask (`AgriMasks/{COUNTRY}/`), clips to the multimodal footprint, and builds multi-scale pyramid overviews (`[2, 4, 8, 16, 32, 64]`). | `3_maps/*_classified_masked_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_confidence_masked_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_entropy_masked_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_margin_masked_mlpxgb_presto_{MODE}.tif` |
@@ -812,7 +863,7 @@ python 2_classifier/run_classifier.py
 2. Identifies overlapping swath zones between adjacent satellite orbits.
 3. In overlapping pixels, applies **confidence-weighted blending**:
    For each overlapping pixel, the classification from the orbit with higher prediction confidence is selected.
-4. Applies morphological sieve filtering (removing isolated pixel noise clumps < 50 pixels) and enforces the nationwide agricultural mask.
+4. Applies a **cropland-mask-protected morphological seam sieve filter** (removing 1–3 pixel `< 0.04 ha` seam slivers strictly inside valid agricultural parcels while preserving small `< 0.5 ha` fields and never altering the `0` non-agricultural background).
 5. Aggregates confusion matrices from all orbits into a consolidated national statistical performance report.
 
 #### How to execute:
@@ -952,11 +1003,20 @@ AIML_CropMapper_Cloud/
 │   │   ├── s2_mosaic_stack.py           # S1 grid matching & 126-band BigTIFF stacking
 │   │   └── s2_pipeline.py               # Pipeline orchestrator
 │   └── Archive_scripts/                 # Frozen historical archive (read-only)
+├── 1b_NISAR_preprocessor/               # Optional NISAR L-band SAR (L2 GCOV) pipeline
+│   ├── run_nisar_preprocessor.py        # Unified NISAR CLI & interactive wizard
+│   ├── config_nisar.json                # Active NISAR config (ASF DAAC credentials, paths)
+│   ├── config_nisar.example.json        # Template NISAR config
+│   └── modules/                         # Core NISAR L-band processing modules
+│       ├── nisar_asf_search.py          # ASF DAAC / local HDF5 discovery & S1 grid lock
+│       ├── nisar_extract_gcov.py        # HDF5 L2 GCOV extraction, EDT fill & de-tapering
+│       ├── nisar_mosaic_stack.py        # C1 feathering, EPSG:3857 warp & BigTIFF stacker
+│       └── nisar_pipeline.py            # 3-stage NISAR pipeline coordinator
 ├── 2_classifier/                        # Multimodal machine learning suite
 │   ├── run_classifier.py                # Unified classifier CLI & interactive wizard
 │   ├── run_merge.py                     # Multi-orbit national mosaic & merger
 │   ├── modules/                         # Core classification engines
-│   │   ├── classifier_mlpxgb_presto.py  # S1+S2 Presto + PyTorch MLP + XGBoost SOTA
+│   │   ├── classifier_mlpxgb_presto.py  # S1+S2(+NISAR) Presto + PyTorch MLP + XGBoost SOTA
 │   │   ├── multi_orbit_merger.py        # Nationwide multi-orbit confidence merger
 │   │   └── presto_model.py              # NASA Harvest Presto foundation architecture
 │   └── Archive_scripts/                 # Frozen historical archive (read-only)
@@ -976,7 +1036,7 @@ AIML_CropMapper_Cloud/
 │   └── {COUNTRY}/
 │       ├── national_products/           # [Phase 4] Seamless national crop map & metrics (.xlsx)
 │       └── orbit_{ORBIT}/
-│           ├── 1_input_stacks/          # Multimodal S1 (Sigma0) & S2 (126-band) BigTIFF stacks
+│           ├── 1_input_stacks/          # Multimodal S1, S2 & optional NISAR BigTIFF stacks
 │           ├── 2_classification/        # Full lineage classification products
 │           │   ├── 0_segmentation/      # Data footprint & OBIA segments (SLIC, SAM, LPIS)
 │           │   ├── 1_samples_and_features/ # Train/test shapefiles & extracted feature vectors (CSV)
@@ -995,18 +1055,19 @@ The table below catalogs every intermediate and final output artifact generated 
 | Stage / phase | Directory path | File name pattern | Data type / bands | Purpose & scientific description |
 | :--- | :--- | :--- | :---: | :--- |
 | **S1 Stage 1** | `_temp_processing/1_calibrated/` | `S1*_Sigma0_{POL}.tif` | `Float32`, 1 band | Single-slice radiometric Sigma0 radar backscatter. |
-| **S1 Stage 2** | `_temp_processing/2_wrapped_stack/`| `wrapped_stack.dim / .data` | ENVI/BEAM, 2N b. | Multi-temporal coregistered SAR stack across all DOYs. |
-| **S1 Stage 3** | `1_input_stacks/` | `{COUNTRY}_orbit_{ORBIT}_*_VH_VV.tif` | `Float32`, 2N b. | **Final SAR BigTIFF**: Terrain corrected, 10m, EPSG:3857 with `.ovr`. |
-| **S2 Stage 1** | `_temp_processing/{TILE}_tif/` | `*_{BAND}_20m.tif` | `UInt16`, 1 band | Masked surface reflectance per scene (`B02`–`B12`, `SCL`). |
-| **S2 Stage 2** | `_temp_processing/{TILE}/_synthetic_s2/` | `day{DOY}_{YEAR}/{BAND}.tif` | `UInt16`, 1 band | 14-DOY synthetic cloud-free interpolated spectral bands. |
-| **S2 Stage 3** | `1_input_stacks/` | `{COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif` | `Int16`, 126 bands | **Final Optical BigTIFF**: 14 dates x 9 bands, 10m grid matched to S1. |
+| **S1 Stage 2** | `_temp_processing/2_wrapped_stack/`| `wrapped_stack.dim / .data` | ENVI/BEAM, 2N b. | Multi-temporal coregistered SAR stack across all dates. |
+| **S1 Stage 3** | `1_input_stacks/` | `{COUNTRY}_orbit_{ORBIT}_*_VH_VV.tif` | `Float32`, 2N b. | **Final C-Band SAR BigTIFF**: Full native S1 time series, 10m, EPSG:3857 with `.ovr`. |
+| **S2 Stage 1** | `_temp_processing/{TILE}_tif/` | `*_{BAND}.tif` | `UInt16`, 1 band | Masked surface reflectance (`R10m` for `B02–B04`, `R20m` for `B05–B12` & `SCL`). |
+| **S2 Stage 2** | `_temp_processing/{TILE}/_synthetic_s2/` | `day{DOY}_{YEAR}/{BAND}.tif` | `UInt16`, 1 band | 14-DOY synthetic cloud-free interpolated & Whittaker-smoothed spectral bands. |
+| **S2 Stage 3** | `1_input_stacks/` | `{COUNTRY}_orbit_{ORBIT}_S2_timeseries.tif` | `Int16`, 126 bands | **Final Optical BigTIFF**: 14 dates x 9 bands, 10m grid matched 1:1 to S1. |
+| **NISAR 1–3** *(opt.)* | `1_input_stacks/` | `{COUNTRY}_orbit_{ORBIT}_*_NISAR_GCOV_L_timeseries.tif` | `Float32`, 4K b. | **Optional L-Band SAR BigTIFF**: `HHHH`, `HVHV`, `RVI_L`, `ratio_HH_HV` matched 1:1 to S1/S2. |
 | **Classif. 1** | `2_classification/0_segmentation/`| `{COUNTRY}_{ORBIT}_data_footprint.tif` | `Byte`, 1 band | **Binary Valid Footprint**: Spatial intersection of valid S1, S2, and NUTS2. |
 | **Classif. 2** | `2_classification/0_segmentation/`| `{COUNTRY}_{ORBIT}_sar_seasonal_composite.tif` | `Float32`, 1 band | **Primary Seasonal SAR Composite**: April–August multi-temporal speckle-reduced backscatter. |
 | **Classif. 2** | `2_classification/0_segmentation/`| `{COUNTRY}_{ORBIT}_summed_composite.tif` | `Float32`, 1 band | **Summed Composite**: Multi-temporal sum across all SAR bands (high-SNR fallback). |
 | **Classif. 2** | `2_classification/0_segmentation/`| `{COUNTRY}_{ORBIT}_segmentation_{MODE}.tif` | `UInt32`, 1 band | **OBIA Segment Objects**: Integer raster with unique parcel identifiers. |
-| **Classif. 3** | `2_classification/1_samples_and_features/` | `{COUNTRY}_{ORBIT}_learn_{MODE}.shp` | Vector Points | Stratified 70% training points with spatial attributes. |
-| **Classif. 3** | `2_classification/1_samples_and_features/` | `{COUNTRY}_{ORBIT}_control_{MODE}.shp` | Vector Points | Stratified 30% independent validation points. |
-| **Classif. 4** | `2_classification/1_samples_and_features/` | `{COUNTRY}_{ORBIT}_mlpxgb_presto_learn_features_{MODE}.csv` | Tabular CSV | Extracted S1 statistics, S2 reflectances, physical indices, and 128d Presto tokens (~450+ feats). |
+| **Classif. 3** | `2_classification/1_samples_and_features/` | `{COUNTRY}_{ORBIT}_learn_{MODE}.shp` | Vector Points | Parcel-grouped stratified 70% training points with spatial attributes. |
+| **Classif. 3** | `2_classification/1_samples_and_features/` | `{COUNTRY}_{ORBIT}_control_{MODE}.shp` | Vector Points | Parcel-grouped stratified 30% independent validation points. |
+| **Classif. 4** | `2_classification/1_samples_and_features/` | `{COUNTRY}_{ORBIT}_mlpxgb_presto_learn_features_{MODE}.csv` | Tabular CSV | Extracted S1 statistics, S2 reflectances, physical indices, optional NISAR L-band stats, and Presto tokens (~560+ / ~707+ feats). |
 | **Classif. 5** | `2_classification/2_models/` | `{COUNTRY}_{ORBIT}_mlpxgb_presto_model_{MODE}.pkl` | Pickle Checkpoint | Serialized PyTorch Deep MLP weights + XGBoost GBDT trees + label encoder + scaler. |
 | **Classif. 6** | `2_classification/3_maps/` | `{COUNTRY}_{ORBIT}_classified_mlpxgb_presto_{MODE}.tif` | `UInt16`, 1 band | Raw pixel crop classification raster (pixel value = numeric `crop_id`). |
 | **Classif. 6** | `2_classification/3_maps/` | `{COUNTRY}_{ORBIT}_confidence_mlpxgb_presto_{MODE}.tif` | `Float32`, 1 band | Softmax ensemble probability confidence map (`0.0` to `1.0`). |
@@ -1078,6 +1139,7 @@ This project builds upon, integrates, and acknowledges key open-source libraries
 
 ### Satellite data, boundaries, and cadastral reference layers
 * **Copernicus Sentinel-1 SAR & Sentinel-2 Optical Data** ([Copernicus Open Access Data Policy](https://dataspace.copernicus.eu/terms-and-conditions)): Free, full, and open Earth observation imagery provided by the European Union and the European Space Agency (ESA).
+* **NASA-ISRO Synthetic Aperture Radar (NISAR) Level-2 GCOV Data** ([NASA Earthdata Open Data Policy](https://search.asf.alaska.edu)): Free and open L-band SAR Earth observation data provided by NASA and ISRO via the Alaska Satellite Facility Distributed Active Archive Center (ASF DAAC).
 * **Eurostat GISCO Administrative Boundaries (NUTS 2024)** ([Eurostat Copyright Notice](https://ec.europa.eu/eurostat/web/gisco/geodata/reference-data/administrative-units-statistical-units)): European administrative boundary shapefiles provided under open data terms with attribution.
 * **Copernicus Land Monitoring Service (CLMS)** ([Copernicus Land Monitoring Policy](https://land.copernicus.eu)): High Resolution Layer crop type and agricultural mask datasets provided by the European Environment Agency (EEA) and the European Union.
 * **Land Parcel Identification System (LPIS) / GSAA Cadastral Data**: National agricultural parcel datasets provided by EU Member State Paying Agencies and Ministries of Agriculture under open government data licenses compliant with the EU Open Data Directive (Directive (EU) 2019/1024) and INSPIRE Directive (2007/2/EC).

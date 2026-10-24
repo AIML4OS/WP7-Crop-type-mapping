@@ -294,7 +294,8 @@ class CalculateTrackNISAR:
                 except Exception:
                     pass
 
-    def stage_1_and_2_extract_and_mosaic(self):
+    def stage_1_and_2_extract_and_mosaic(self, stage: str = "A"):
+        stage_u = (stage or "A").strip().upper()
         keep_h5 = bool(self.configuration.get("keep_intermediate_h5", False))
         pixel_res = float(self.configuration.get("pixel_resolution_meters", 10.0))
         target_epsg = int(self.configuration.get("target_epsg", 3857))
@@ -309,26 +310,40 @@ class CalculateTrackNISAR:
             images = period_info["images"]
             desc = period_info.get("description", date_str)
             mosaic_out_dir = self.dirs["mosaic"] / date_str
+            period_temp_dir = self.dirs["temp"] / date_str
+            period_temp_dir.mkdir(parents=True, exist_ok=True)
             logging.info(f"=== Processing NISAR Period: {desc} ({len(images)} granules) ===")
 
-            if not overwrite and mosaic_out_dir.exists() and (mosaic_out_dir / "HHHH_gamma0.tif").exists():
+            if stage_u != "1" and not overwrite and mosaic_out_dir.exists() and (mosaic_out_dir / "HHHH_gamma0.tif").exists():
                 logging.info(f"Mosaic for {date_str} already exists in {mosaic_out_dir.name}. Skipping.")
                 continue
 
             extracted_scene_dirs = []
-            for img in images:
-                extractor = DownloadAndExtractGCOV(
-                    product=img,
-                    temp_dir=self.dirs["temp"],
-                    session=self.session,
-                    username=username,
-                    password=password,
-                    keep_intermediate_h5=keep_h5,
-                    border_trim_pixels=border_trim_px
-                )
-                tifs = extractor.process()
-                if tifs:
-                    extracted_scene_dirs.append(tifs[0].parent)
+            if stage_u == "2" and period_temp_dir.exists():
+                existing_scenes = [
+                    d for d in sorted(period_temp_dir.iterdir())
+                    if d.is_dir() and (d / "HHHH_gamma0.tif").exists()
+                ]
+                if existing_scenes:
+                    extracted_scene_dirs = existing_scenes
+
+            if not extracted_scene_dirs:
+                for img in images:
+                    extractor = DownloadAndExtractGCOV(
+                        product=img,
+                        temp_dir=period_temp_dir,
+                        session=self.session,
+                        username=username,
+                        password=password,
+                        keep_intermediate_h5=keep_h5,
+                        border_trim_pixels=border_trim_px
+                    )
+                    tifs = extractor.process()
+                    if tifs:
+                        extracted_scene_dirs.append(tifs[0].parent)
+
+            if stage_u == "1":
+                continue
 
             if extracted_scene_dirs:
                 mosaic = MosaicNISAR(
@@ -342,7 +357,7 @@ class CalculateTrackNISAR:
                     blend_width_pixels=blend_width_px
                 )
                 mosaic.run_mosaic()
-                self._cleanup_intermediate_data()
+                shutil.rmtree(period_temp_dir, ignore_errors=True)
 
     def stage_3_stack_timeseries(self, start_date: Optional[datetime.date] = None, end_date: Optional[datetime.date] = None) -> Optional[Path]:
         date_dirs = sorted([
@@ -362,8 +377,10 @@ class CalculateTrackNISAR:
         else:
             prefix = self.country_code
 
-        out_stack_tif = self.dirs["stacks"] / f"{prefix}_{e_str}_{s_str}_NISAR_GCOV.tif"
+        out_stack_tif = self.dirs["stacks"] / f"{prefix}_{e_str}_{s_str}_NISAR_GCOV_L_timeseries.tif"
+        legacy_gcov_tif = self.dirs["stacks"] / f"{prefix}_{e_str}_{s_str}_NISAR_GCOV.tif"
         canonical_tif = self.dirs["stacks"] / f"{prefix}_NISAR_timeseries.tif"
+        cleanup_mosaics = bool(self.configuration.get("cleanup_cycle_mosaics", False))
 
         stacked = stack_nisar_timeseries(
             mosaic_base_dir=self.dirs["mosaic"],
@@ -371,32 +388,36 @@ class CalculateTrackNISAR:
             target_grid=self.target_grid,
             convert_gamma0_to_db=True,
             build_overviews=True,
-            cleanup_mosaics=False
+            cleanup_mosaics=cleanup_mosaics
         )
 
         if stacked and stacked.exists():
-            # Create canonical alias in 1_input_stacks/
-            if canonical_tif.resolve() != stacked.resolve():
-                try:
-                    if canonical_tif.exists():
-                        canonical_tif.unlink()
-                    os.link(str(stacked), str(canonical_tif))
-                except Exception:
+            # Create canonical aliases in 1_input_stacks/
+            for alias_tif in (canonical_tif, legacy_gcov_tif):
+                if alias_tif.resolve() != stacked.resolve():
                     try:
-                        shutil.copy2(str(stacked), str(canonical_tif))
+                        if alias_tif.exists():
+                            alias_tif.unlink()
+                        os.link(str(stacked), str(alias_tif))
+                    except Exception:
+                        try:
+                            shutil.copy2(str(stacked), str(alias_tif))
+                        except Exception:
+                            pass
+
+            # Only link to shared country NISAR pool `workingDirs/<COUNTRY>/NISAR/<COUNTRY>_NISAR_timeseries.tif`
+            # when this stack covers the full country (not clipped to a single orbit_X).
+            if not self.track_dir.name.startswith("orbit_"):
+                shared_nisar_dir = BASE_DIR / self.country_code / "NISAR"
+                shared_nisar_dir.mkdir(parents=True, exist_ok=True)
+                shared_tif = shared_nisar_dir / f"{self.country_code}_NISAR_timeseries.tif"
+                if shared_tif.resolve() != stacked.resolve():
+                    try:
+                        if shared_tif.exists():
+                            shared_tif.unlink()
+                        os.link(str(stacked), str(shared_tif))
                     except Exception:
                         pass
 
-            # Also link to shared country NISAR pool `workingDirs/<COUNTRY>/NISAR/<COUNTRY>_NISAR_timeseries.tif`
-            shared_nisar_dir = BASE_DIR / self.country_code / "NISAR"
-            shared_nisar_dir.mkdir(parents=True, exist_ok=True)
-            shared_tif = shared_nisar_dir / f"{self.country_code}_NISAR_timeseries.tif"
-            if shared_tif.resolve() != stacked.resolve():
-                try:
-                    if shared_tif.exists():
-                        shared_tif.unlink()
-                    os.link(str(stacked), str(shared_tif))
-                except Exception:
-                    pass
-
         return stacked
+

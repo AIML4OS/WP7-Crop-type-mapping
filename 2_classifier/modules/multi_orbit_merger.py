@@ -240,7 +240,12 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
                 base_dir = fb
                 break
 
-    if not suffix:
+    if suffix:
+        for s_tok in ('slic', 'lpis', 'sam'):
+            if suffix.lower().endswith(f"_{s_tok}"):
+                seg_mode = s_tok
+                break
+    else:
         candidate_suffixes = [
             f"_mlpxgb_presto_{seg_mode}",
             f"_presto_hybrid_{seg_mode}",
@@ -352,6 +357,9 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
                 if nod is not None:
                     cf_arr[c_arr == nod] = np.nan
                     c_arr = np.where(c_arr == nod, 0, c_arr).astype(np.int32)
+                else:
+                    c_arr = c_arr.astype(np.int32)
+                cf_arr[c_arr <= 0] = np.nan
                     
                 c_stack.append(c_arr)
                 cf_stack.append(cf_arr)
@@ -400,11 +408,21 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
 
     ds_out.FlushCache()
 
-    # --- apply morphological sieve filter to restore objects -------------
-    print("Applying Sieve Filter to remove slivers and isolated pixels...")
-    # Using threshold of 50 pixels (approx field size depending on resolution)
-    # 8-connectedness is generally preferred for diagonals
-    gdal.SieveFilter(band_out, None, band_out, 50, 8, callback=None)
+    # --- apply morphological sieve filter to remove tiny seam slivers without erasing small parcels ---
+    print("Applying masked Sieve Filter to remove 1-3 px orbit seam slivers while preserving all parcels and cropland mask...")
+    mem_drv = gdal.GetDriverByName('MEM')
+    mask_ds = mem_drv.Create('', cols, rows, 1, gdal.GDT_Byte)
+    mask_band = mask_ds.GetRasterBand(1)
+    for y in range(0, rows, tile_size):
+        ysize = min(tile_size, rows - y)
+        for x in range(0, cols, tile_size):
+            xsize = min(tile_size, cols - x)
+            blk = band_out.ReadAsArray(x, y, xsize, ysize)
+            mask_band.WriteArray((blk > 0).astype(np.uint8), x, y)
+    mask_band.FlushCache()
+    gdal.SieveFilter(band_out, mask_band, band_out, 4, 8, callback=None)
+    mask_band = None
+    mask_ds = None
     ds_out.FlushCache()
     try:
         print("Building multi-scale pyramid overviews [2, 4, 8, 16, 32, 64]...")
