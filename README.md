@@ -97,7 +97,7 @@ If you are an IT administrator or data engineer running this pipeline for the fi
 
 * **SAR (Synthetic Aperture Radar - Sentinel-1 & NISAR)**: Active radar satellite sensors that penetrate clouds, rain, and darkness, measuring surface roughness, structure, and moisture (`Sentinel-1` operates at 5.55 cm C-band; `NISAR` operates at 24 cm L-band).
 * **Optical multispectral (Sentinel-2)**: Passive satellite sensor that captures solar reflectance across visible, near-infrared, and shortwave infrared wavelengths. Sensitive to crop greenness, chlorophyll content, and canopy water.
-* **L2 GCOV (NISAR Level-2 Geocoded Polarimetric Covariance)**: Radiometrically terrain-corrected ($\gamma^0$) L-band radar product delivered in HDF5 format by the NASA-ISRO SAR mission.
+* **L2 GCOV (NISAR Level-2 Geocoded Polarimetric Covariance)**: Radiometrically terrain-corrected (`Gamma0`) L-band radar product delivered in HDF5 format by the NASA-ISRO SAR mission.
 * **DOY (Day of Year)**: Number representing a specific calendar day (e.g., DOY 80 = March 21, DOY 203 = July 22). Used to align satellite observations across different years and orbits into standardized 10-day time steps.
 * **SCL (Scene Classification Layer)**: Quality band produced by ESA Sentinel-2 processing that identifies clouds, cloud shadows, snow, and clear land.
 * **OBIA (Object-Based Image Analysis)**: Methodology that classifies groups of homogeneous pixels (agricultural fields or superpixels) rather than individual isolated pixels, eliminating "salt-and-pepper" visual noise.
@@ -197,10 +197,10 @@ To suppress residual cloud artifacts, shadow dips, and atmospheric fluctuations 
 
 ### NISAR L-band SAR polarimetry & dual-frequency canopy penetration (optional)
 
-While Sentinel-1 operates at C-band ($\lambda \approx 5.55\text{ cm}$, interacting primarily with upper leaf layers and small cereal stems), the **NASA-ISRO Synthetic Aperture Radar (NISAR)** operates at **L-band ($1.257\text{ GHz}$, $\lambda \approx 24\text{ cm}$)**:
+While Sentinel-1 operates at C-band (wavelength ~5.55 cm, interacting primarily with upper leaf layers and small cereal stems), the **NASA-ISRO Synthetic Aperture Radar (NISAR)** operates at **L-band (1.257 GHz, wavelength ~24 cm)**:
 * **Deep canopy & woody structure penetration**: Long 24 cm L-band microwaves penetrate deep through dense agricultural canopies (maize, rapeseed, potatoes, sugar beet) and woody perennial crops (vineyards, olive groves, fruit/nut orchards) where C-band backscatter saturates early in the season.
-* **Level-2 GCOV polarimetric channels**: Extracts radiometrically terrain-corrected ($\gamma^0$) co-polarized (`HHHH_gamma0`) and cross-polarized (`HVHV_gamma0`) power terms in decibels, along with the L-band Radar Vegetation Index ($\text{RVI}_L = \frac{4 \cdot \gamma^0_{HV}}{\gamma^0_{HH} + \gamma^0_{HV}}$) and cross-ratio ($\gamma^0_{HH}/\gamma^0_{HV}$ in dB).
-* **Swath artifact suppression & 12-day cycle mosaicking**: Applies cross-track invalid margin erosion, Euclidean Distance Transform (EDT) internal pinhole imputation, 2D adaptive monotonic range-edge de-tapering, and $C^1$-continuous distance-squared feathering onto the exact `EPSG:3857` (`10.0 m`) reference grid of Sentinel-1 and Sentinel-2.
+* **Level-2 GCOV polarimetric channels**: Extracts radiometrically terrain-corrected (`Gamma0`) co-polarized (`HHHH_gamma0`) and cross-polarized (`HVHV_gamma0`) power terms in decibels, along with the L-band Radar Vegetation Index (`RVI_L = 4 * HV / (HH + HV)`) and cross-ratio (`HH / HV` in dB).
+* **Swath artifact suppression & 12-day cycle mosaicking**: Applies cross-track invalid margin erosion, Euclidean Distance Transform (EDT) internal pinhole imputation, 2D adaptive monotonic range-edge de-tapering, and C1-continuous distance-squared feathering onto the exact `EPSG:3857` (`10.0 m`) reference grid of Sentinel-1 and Sentinel-2.
 * **Automatic fallback**: When a `*_NISAR_GCOV_L_timeseries.tif` stack is present in `1_input_stacks/` (or `workingDirs/{COUNTRY}/NISAR/`), the classifier automatically activates **tri-sensor `Sentinel-1 + Sentinel-2 + NISAR` fusion** (`+19` L-band temporal & polarimetric features + `128d` L-band Presto token embedding). When NISAR data is absent, the classifier **transparently falls back to `Sentinel-1 + Sentinel-2`** with zero configuration changes.
 
 ---
@@ -489,7 +489,7 @@ Located in `1b_NISAR_preprocessor/`, this optional toolbox processes **NASA-ISRO
 * **Internal modules (`modules/`)**:
   * `nisar_asf_search.py`: S1/S2 reference grid resolution, Eurostat NUTS country geometry loading, local `/eodata/NISAR` scanner, and NASA ASF DAAC search (`asf_search` or built-in REST GeoJSON fallback).
   * `nisar_extract_gcov.py`: HDF5 `L2 GCOV` extraction (`h5py` or native GDAL HDF5 driver fallback), cross-track border erosion, internal pinhole EDT imputation, and 2D adaptive monotonic range-edge de-tapering.
-  * `nisar_mosaic_stack.py`: Along-track slit healing, cross-seam radiometric harmonization, $C^1$ distance-squared feathering, `EPSG:3857` (`10.0 m`) warping, and multi-temporal BigTIFF stacking (`stack_nisar_timeseries`).
+  * `nisar_mosaic_stack.py`: Along-track slit healing, cross-seam radiometric harmonization, C1 distance-squared feathering, `EPSG:3857` (`10.0 m`) warping, and multi-temporal BigTIFF stacking (`stack_nisar_timeseries`).
   * `nisar_pipeline.py`: 3-stage pipeline coordinator (`CalculateTrackNISAR`) with 12-day orbital cycle grouping.
 
 ---
@@ -707,7 +707,7 @@ This section provides an exhaustive, beginner-friendly, end-to-end operational g
 #### What happens behind the scenes:
 1. **Stage 1 (Radiometric Calibration, Orthorectification & Slice Assembly)**:
    - Supports **two data ingestion pathways**: direct reading from local CreoDIAS storage (`--source creodias` / `--source cog`) or automated downloading from the Copernicus Data Space Ecosystem OData API (`--source cdse`).
-   - Performs 2D thermal noise removal (TNR), GRD border noise removal (BNR), and radiometric calibration from raw digital numbers ($\text{DN}$) to physical linear radar cross-section ($\sigma^0$).
+   - Performs 2D thermal noise removal (TNR), GRD border noise removal (BNR), and radiometric calibration from raw digital numbers (`DN`) to physical linear radar cross-section (`Sigma0`).
    - In **Pure Python mode (`--engine python`, default)**, orthorectifies each slice using exact Range-Doppler foreshortening equations with the **Copernicus 30 m Global DEM** directly onto a locked 10.0 m `EPSG:3857` grid and stitches daily slices into `slice_assembly/{YYYYMMDD}.tif` without requiring ESA SNAP.
 2. **Stage 2 (Multi-Temporal Coregistration)**:
    - In **Pure Python mode (`--engine python`)**, aligns all daily orthorectified slices onto the master 10.0 m `EPSG:3857` grid and writes `wrapped/python_stack_manifest.json`.
@@ -791,7 +791,7 @@ python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py
    - Extracts `HHHH_gamma0`, `HVHV_gamma0` (in dB), L-band Radar Vegetation Index (`RVI_L = 4 * HV / (HH + HV)`), and cross-ratio (`HH/HV` in dB).
    - Suppresses swath-edge roll-off and internal NoData pinholes using cross-track border erosion, Euclidean Distance Transform (EDT) imputation, and 2D adaptive monotonic range-edge de-tapering.
 2. **Stage 2 (12-Day Cycle Mosaicking & `EPSG:3857` 10.0 m Grid Alignment)**:
-   - Performs along-track slit healing, cross-seam radiometric harmonization, and $C^1$-continuous distance-squared feathering across adjacent frames.
+   - Performs along-track slit healing, cross-seam radiometric harmonization, and C1-continuous distance-squared feathering across adjacent frames.
    - Warps and clips each 12-day cycle mosaic to match the exact `EPSG:3857` (`10.0 m`) bounding box and pixel dimensions of the `Sentinel-1` / `Sentinel-2` reference stack.
 3. **Stage 3 (Multi-Temporal L-Band BigTIFF Stacking & Pyramid Overviews)**:
    - Compiles all 12-day cycle mosaics into a single multi-temporal `DEFLATE`-compressed BigTIFF (`4 * T` bands) with `[2, 4, 8, 16, 32, 64]` external pyramid overviews.

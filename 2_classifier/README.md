@@ -107,7 +107,7 @@ Where 65% weight is assigned to the deep MLP and 35% weight to XGBoost.
 #### Dynamic geographic Bayesian prior calibration
 Supervised models trained with weighted loss functions can introduce bias toward rare classes during spatial inference, while models trained on raw unweighted samples can overpredict dominant classes. The classifier implements a fully automated, dynamic two-stage Bayesian calibration:
 1. **Physical geographic parcel area distribution**:
-   Assigns expected physical crop parcel sizes from an agronomic multi-lingual EU-27 & EuroCrops (`HCAT2`) taxonomy across 5 agronomic scale tiers (with country-specific fallback isolation and Web Mercator $\cos^2(\varphi)$ latitude area correction for SLIC superpixels and national hectarage reporting):
+   Assigns expected physical crop parcel sizes from an agronomic multi-lingual EU-27 & EuroCrops (`HCAT2`) taxonomy across 5 agronomic scale tiers (with country-specific fallback isolation and Web Mercator `cos^2(latitude)` area correction for SLIC superpixels and national hectarage reporting):
    * **Tier 1 (70 000 m² / 7.0 ha)**: Broadacre cereals & grasslands (maize, wheat, rapeseed, permanent pastures, meadows, fallow).
    * **Tier 2 (30 000 - 40 000 m² / 3-4 ha)**: Standard field & industrial crops (barley, rye, oats, triticale, sorghum, sugar beets, peas, lupins, olive groves, cotton).
    * **Tier 3 (20 000 - 25 000 m² / 2-2.5 ha)**: Orchards, vineyards & tubers (vineyards, fruit/nut orchards, citrus, potatoes).

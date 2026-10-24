@@ -7,7 +7,7 @@ The toolbox supports **two data ingestion pathways** and **two SAR processing en
   1. **Copernicus Data Space Ecosystem API (`cdse`)**: Automated OData catalog discovery and `.SAFE.zip` product download.
   2. **Local CreoDIAS repository (`creodias` / `cog`)**: Direct high-speed reading from mounted `/eodata` (or local network drive) `.SAFE` and `.SAFE-COG` archives.
 * **Two SAR processing engines (`--engine`)**:
-  1. **Pure Python SAR engine (`python` — default)**: 100% standalone `Python` / `NumPy` / `SciPy` / `GDAL` implementation requiring **zero ESA SNAP installation**. Performs 2D thermal noise removal, border noise removal, $\sigma^0$ LUT calibration, Range-Doppler terrain correction with **Copernicus 30m Global DEM**, and multi-temporal Quegan speckle filtering directly in Python.
+  1. **Pure Python SAR engine (`python` — default)**: 100% standalone `Python` / `NumPy` / `SciPy` / `GDAL` implementation requiring **zero ESA SNAP installation**. Performs 2D thermal noise removal, border noise removal, `Sigma0` LUT calibration, Range-Doppler terrain correction with **Copernicus 30m Global DEM**, and multi-temporal Quegan speckle filtering directly in Python.
   2. **ESA SNAP GPT engine (`snap`)**: Legacy Graph Processing Tool (`gpt`) XML workflow updated to use the **Copernicus 30m Global DEM** with bilinear resampling.
 
 ---
@@ -22,16 +22,16 @@ Sentinel-1 operates at C-band microwave frequency (5.405 GHz, wavelength ~5.55 c
 
 ### 2. Radar backscatter calibration and polarimetric indices
 The pipeline performs radiometric calibration and prepares physical backscatter stacks for downstream agricultural polarimetric indices:
-* **Calibration to physical backscatter ($\sigma^0$)**: Converts raw digital numbers ($\text{DN}$) into normalized radar cross section ($\sigma^0$) using 2D sensor look-up tables (LUT) and thermal noise vectors:
-  $$\sigma^0(l, p) = \frac{\max\left(\text{DN}(l, p)^2 - N_{\text{rg}}(l, p) \cdot N_{\text{az}}(l, p),\; 10^{-5}\right)}{\sigma_{\text{LUT}}(l, p)^2}$$
-* **Decibel transformation (dB)**: Converts linear backscatter into decibels: $\sigma^0_{\text{dB}} = 10 \cdot \log_{10}(\sigma^0)$, standardizing the dynamic range typically between $-28\text{ dB}$ and $0\text{ dB}$.
-* **Radar Vegetation Index (RVI)**: Measures canopy volume scattering relative to total backscatter: $\text{RVI} = \frac{4 \cdot \sigma^0_{VH}}{\sigma^0_{VV} + \sigma^0_{VH}}$.
-* **Polarimetric cross-ratio (CR)**: Ratio of cross-polarized to co-polarized backscatter: $\text{CR}_{\text{dB}} = \sigma^0_{VH,\text{dB}} - \sigma^0_{VV,\text{dB}}$.
+* **Calibration to physical backscatter (`Sigma0`)**: Converts raw digital numbers (`DN`) into normalized radar cross section (`Sigma0`) using 2D sensor look-up tables (LUT) and thermal noise vectors:
+  `Sigma0(l, p) = max(DN(l, p)^2 - N_rg(l, p) * N_az(l, p), 1e-5) / Sigma_LUT(l, p)^2`
+* **Decibel transformation (dB)**: Converts linear backscatter into decibels: `Sigma0_dB = 10 * log10(Sigma0)`, standardizing the dynamic range typically between `-28 dB` and `0 dB`.
+* **Radar Vegetation Index (RVI)**: Measures canopy volume scattering relative to total backscatter: `RVI = 4 * VH / (VV + VH)`.
+* **Polarimetric cross-ratio (CR)**: Ratio of cross-polarized to co-polarized backscatter: `CR [dB] = VH [dB] - VV [dB]`.
 
 ### 3. Multi-temporal Quegan speckle filtering & winter freeze filtering
-* **Vectorized multi-temporal Quegan filter**: For a coregistered time series of $M$ linear $\sigma^0$ acquisitions, the Pure Python engine applies the unbiased Quegan multi-temporal speckle filter in $2048 \times 2048$ blocks:
-  $$J_k(x, y) = \langle I_k(x, y) \rangle_W \cdot \frac{1}{M(x, y)} \sum_{i=1}^{M} \frac{I_i(x, y)}{\langle I_i(x, y) \rangle_W}$$
-  This suppresses multiplicative granular speckle noise by a factor of $\sqrt{M}$ while strictly preserving 10 m agricultural field margins.
+* **Vectorized multi-temporal Quegan filter**: For a coregistered time series of `M` linear `Sigma0` acquisitions, the Pure Python engine applies the unbiased Quegan multi-temporal speckle filter in `2048 x 2048` blocks:
+  `J_k(x, y) = Mean_W(I_k) * (1 / M) * sum_{i=1..M}(I_i / Mean_W(I_i))`
+  This suppresses multiplicative granular speckle noise by a factor of `sqrt(M)` while strictly preserving 10 m agricultural field margins.
 * **Winter freeze exclusion (`--exclude_winter`)**: During freezing temperatures, liquid water transitions to ice, causing a dielectric drop that lowers backscatter by 4 to 8 dB. The `--exclude_winter` flag filters out scenes between December 1 and February 14.
 
 ---
@@ -88,10 +88,10 @@ The pipeline performs radiometric calibration and prepares physical backscatter 
 * **Pure Python engine (`--engine python`)**:
   * Directly parses `annotation/*.xml`, `annotation/calibration/calibration-*.xml`, and `annotation/calibration/noise-*.xml` from `.SAFE` or `.SAFE-COG` directories.
   * Subtracts 2D range and azimuth thermal noise vectors (`noiseRangeLut` and `noiseAzimuthLut`) and masks GRD range/azimuth border artifacts.
-  * Evaluates 2D `RectBivariateSpline` $\sigma^0$ calibration LUTs in horizontal strips.
+  * Evaluates 2D `RectBivariateSpline` `Sigma0` calibration LUTs in horizontal strips.
   * Orthorectifies each slice using exact Range-Doppler foreshortening equations and the **Copernicus 30m Global DEM (GLO-30)** directly onto a locked 10.0 m `EPSG:3857` grid, seamlessly stitching same-date slices into `slice_assembly/{YYYYMMDD}.tif`.
 * **ESA SNAP engine (`--engine snap`)**:
-  * Applies precise orbit ephemerides (`Sentinel Precise (Auto Download)`), thermal noise removal, border noise removal, $\sigma^0$ calibration, and `SliceAssembly` into BEAM-DIMAP `.dim` products.
+  * Applies precise orbit ephemerides (`Sentinel Precise (Auto Download)`), thermal noise removal, border noise removal, `Sigma0` calibration, and `SliceAssembly` into BEAM-DIMAP `.dim` products.
 
 ### Stage 2: Multi-temporal coregistration (`s1_coregistration.py`)
 * **Pure Python engine (`--engine python`)**:
@@ -102,7 +102,7 @@ The pipeline performs radiometric calibration and prepares physical backscatter 
 ### Stage 3: Despeckling, stacking & NUTS2 clipping (`s1_stack_clip.py`)
 * Applies vectorized multi-temporal Quegan speckle filtering across all dates in linear power domain (window size configurable via `--filter_window`, default `7`).
 * Preserves the **full native Sentinel-1 radar time series** across all acquired orbit passes (unlike Sentinel-2 which requires 14-DOY interpolation due to cloud cover).
-* Converts linear $\sigma^0$ into decibels ($\text{dB} = 10 \cdot \log_{10}(\sigma^0)$), clips to the official Eurostat GISCO NUTS2 national boundary in `EPSG:3857` at 10.0 m resolution, exports a tiled BigTIFF (`COMPRESS=DEFLATE`, `TILED=YES`, `BIGTIFF=YES`), and builds 6 pyramid overview levels (`[2, 4, 8, 16, 32, 64]`).
+* Converts linear `Sigma0` into decibels (`dB = 10 * log10(Sigma0)`), clips to the official Eurostat GISCO NUTS2 national boundary in `EPSG:3857` at 10.0 m resolution, exports a tiled BigTIFF (`COMPRESS=DEFLATE`, `TILED=YES`, `BIGTIFF=YES`), and builds 6 pyramid overview levels (`[2, 4, 8, 16, 32, 64]`).
 
 ---
 
@@ -190,7 +190,7 @@ python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --so
 ## Transient disk space & cleanup guidelines
 
 * **Pure Python engine (`--engine python`)**:
-  * **`slice_assembly/*.tif`** (~40 to 60 GB per orbit): Daily calibrated, Range-Doppler terrain-corrected linear $\sigma^0$ GeoTIFFs (`COMPRESS=DEFLATE`).
+  * **`slice_assembly/*.tif`** (~40 to 60 GB per orbit): Daily calibrated, Range-Doppler terrain-corrected linear `Sigma0` GeoTIFFs (`COMPRESS=DEFLATE`).
   * **`wrapped/python_stack_manifest.json`** (< 50 KB): Lightweight JSON coordinate alignment manifest (eliminates ~500 GB of SNAP `.dim`/`.data` intermediate files).
   * **`1_input_stacks/`** (~80 to 120 GB per orbit): Final full-time-series multi-temporal BigTIFF stack with `.ovr` pyramids.
 * **ESA SNAP engine (`--engine snap`)**:

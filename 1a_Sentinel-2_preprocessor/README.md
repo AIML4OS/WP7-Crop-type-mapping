@@ -8,7 +8,7 @@ This toolbox provides an automated processing pipeline for **Sentinel-2 multispe
 
 ### 1. Bottom-of-atmosphere (BOA) surface reflectance & baseline 04.00+ harmonization
 Sentinel-2 Level-2A products provide physically corrected surface reflectances (BOA) by removing Rayleigh scattering, aerosol optical depth, and atmospheric gas absorption (ozone and water vapor), providing calibrated ground surface reflectances.
-* **Automatic ESA Processing Baseline `04.00+` / `05.xx` offset correction (`BOA_ADD_OFFSET = -1000`)**: Since January 25, 2022 (`N0400`, `N0500`, `N0510`, `N0511`), ESA shifts L2A spectral reflectance digital numbers (`B02`–`B12`) by `+1000` DN. The pipeline automatically detects the processing baseline and subtracts `1000` DN from valid pixels ($\max(1, \text{DN} - 1000)$) while tagging output GeoTIFFs (`BOA_OFFSET_CORRECTED=1`), preventing artificial compression of `NDVI`/`NDRE`/`NDWI` and ensuring cross-year radiometric consistency.
+* **Automatic ESA Processing Baseline `04.00+` / `05.xx` offset correction (`BOA_ADD_OFFSET = -1000`)**: Since January 25, 2022 (`N0400`, `N0500`, `N0510`, `N0511`), ESA shifts L2A spectral reflectance digital numbers (`B02`–`B12`) by `+1000` DN. The pipeline automatically detects the processing baseline and subtracts `1000` DN from valid pixels (`max(1, DN - 1000)`) while tagging output GeoTIFFs (`BOA_OFFSET_CORRECTED=1`), preventing artificial compression of `NDVI`/`NDRE`/`NDWI` and ensuring cross-year radiometric consistency.
 
 ### 2. Spectral bands and agricultural biophysical indicators
 The pipeline utilizes 9 spectral bands at 10 m and 20 m spatial resolutions (resampled to 10.0 m in `EPSG:3857`):

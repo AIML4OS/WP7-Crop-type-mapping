@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `1b_NISAR_preprocessor` toolbox provides automated discovery, download, polarimetric extraction, cross-track antenna pattern de-tapering, seamless 12-day orbital cycle mosaicking, and multi-temporal BigTIFF stacking for **NASA/ISRO NISAR Level-2 Geocoded Polarimetric Covariance (`L2 GCOV`)** L-band ($\lambda \approx 24\text{ cm}$, $1.257\text{ GHz}$) radar imagery across any European Union (`EU-27`) country.
+The `1b_NISAR_preprocessor` toolbox provides automated discovery, download, polarimetric extraction, cross-track antenna pattern de-tapering, seamless 12-day orbital cycle mosaicking, and multi-temporal BigTIFF stacking for **NASA/ISRO NISAR Level-2 Geocoded Polarimetric Covariance (`L2 GCOV`)** L-band (wavelength ~24 cm, 1.257 GHz) radar imagery across any European Union (`EU-27`) country.
 
 All output stacks are co-registered pixel-for-pixel to the **Sentinel-1** and **Sentinel-2** reference grid (`EPSG:3857` Web Mercator at `10.0 m` ground sampling distance) and stored in `workingDirs/<COUNTRY>/orbit_<ORBIT>/1_input_stacks/` for direct assimilation into the multimodal crop classifier (`2_classifier/run_classifier.py`). When NISAR data is not available for a given region or season, the classifier **automatically falls back to `Sentinel-1 + Sentinel-2`**.
 
@@ -26,14 +26,14 @@ All output stacks are co-registered pixel-for-pixel to the **Sentinel-1** and **
 ### Stage 1: Granule discovery, HDF5 extraction & radiometric calibration (`--stage 1`)
 * Queries local `/eodata/NISAR` archives (`--source local`), the NASA ASF DAAC API (`--source asf`), or both automatically (`--source auto`, default), grouping scenes into 12-day orbital repeat cycles.
 * Extracts four physical L-band polarimetric layers per granule:
-  1. `NISAR_HHHH_dB_<DDMonYYYY>` — Co-polarized L-band backscatter ($\gamma^0_{HH}$ in dB, $10 \log_{10}(\gamma^0_{HH})$).
-  2. `NISAR_HVHV_dB_<DDMonYYYY>` — Cross-polarized L-band volume scattering ($\gamma^0_{HV}$ in dB, $10 \log_{10}(\gamma^0_{HV})$).
-  3. `NISAR_RVI_L_<DDMonYYYY>` — L-band Radar Vegetation Index ($4 \cdot \gamma^0_{HV} / (\gamma^0_{HH} + \gamma^0_{HV}) \in [0.0, 1.5]$).
-  4. `NISAR_RATIO_<DDMonYYYY>` — Co-to-cross-polarization power ratio in dB ($10 \log_{10}(\gamma^0_{HH} / \gamma^0_{HV})$).
+  1. `NISAR_HHHH_dB_<DDMonYYYY>` — Co-polarized L-band backscatter (`Gamma0_HH` in dB, `10 * log10(Gamma0_HH)`).
+  2. `NISAR_HVHV_dB_<DDMonYYYY>` — Cross-polarized L-band volume scattering (`Gamma0_HV` in dB, `10 * log10(Gamma0_HV)`).
+  3. `NISAR_RVI_L_<DDMonYYYY>` — L-band Radar Vegetation Index (`RVI_L = 4 * HV / (HH + HV)`, range `[0.0, 1.5]`).
+  4. `NISAR_RATIO_<DDMonYYYY>` — Co-to-cross-polarization power ratio in dB (`10 * log10(HH / HV)`).
 * Applies cross-track invalid margin erosion (`5 px`), Euclidean Distance Transform (`EDT`) pinhole imputation (`<= 64 px`), and 2D adaptive monotonic cross-track range-edge de-tapering.
 
 ### Stage 2: 12-day cycle mosaicking & `EPSG:3857` (`10.0 m`) alignment (`--stage 2`)
-* Performs along-track 1D vertical slit healing (`9 x 1` closing kernel), cross-seam radiometric median harmonization, and $C^1$-continuous distance-squared feathering across overlapping frames.
+* Performs along-track 1D vertical slit healing (`9 x 1` closing kernel), cross-seam radiometric median harmonization, and C1-continuous distance-squared feathering across overlapping frames.
 * Warps and clips each 12-day cycle mosaic to match the exact `EPSG:3857` (`10.0 m`) bounding box and pixel dimensions of the `Sentinel-1` / `Sentinel-2` reference stack (`1_input_stacks/`).
 
 ### Stage 3: Multi-temporal L-band BigTIFF stacking & pyramid overviews (`--stage 3`)
