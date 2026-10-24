@@ -15,16 +15,17 @@ The classification suite combines handcrafted physical remote sensing features w
 |                             MULTIMODAL DUAL-TIER FEATURE FUSION PIPELINE                           |
 +----------------------------------------------------------------------------------------------------+
 |  [Tier 1: Physical Handcrafted Remote Sensing Features]                                             |
-|  - S1 Temporal Statistics (VH, VV, VH/VV): Mean, Std, Min, Max, Dynamic Range (Max-Min), Slope     |
+|  - S1 Temporal Statistics (VH, VV, VH/VV): Linear-power Mean (dB), CV Texture, RVI, CR, Delta_VH   |
 |  - S2 Multi-Spectral Reflectances: 14 DOYs * 9 Bands (B02-B12) = 126 spectral temporal features     |
-|  - S2 Dynamic Indices: Multi-temporal NDVI, NDRE1, NDRE2, and NDWI canopy water trajectories       |
+|  - S2 Biophysical Indices: Multi-temporal NDVI, NDRE1 (B06/B05), NDRE2 (B07/B05), NDWI & texture    |
 |                                                  |                                                 |
-|  [Tier 2: NASA Harvest Presto Geospatial Foundation Model Latent Embeddings]                       |
-|  - S1 SAR Transformer Latent Representation: 128-dimensional multi-temporal token embedding        |
-|  - S2 Optical Transformer Latent Representation: 128-dimensional multi-temporal token embedding    |
+|  [Tier 2: NASA Harvest Presto Geospatial Foundation Model Latent Embeddings (384D)]                 |
+|  - Joint S1+S2 Cross-Attention Representation: 128d embedding (temporally aligned S1->S2 DOYs)      |
+|  - S1 SAR Transformer Latent Representation:   128d multi-temporal token embedding                  |
+|  - S2 Optical Transformer Latent Representation: 128d multi-temporal token embedding                |
 |                                                  |                                                 |
-|  [Concatenated High-Dimensional Feature Vector X]                                                  |
-|  X = [ F_S1_stats || F_S2_spectral || E_Presto_S1 (128d) || E_Presto_S2 (128d) ]                  |
+|  [Concatenated High-Dimensional Feature Vector X (~550+ features)]                                 |
+|  X = [ F_S1_stats || F_S2_spectral || F_phys_indices || E_Joint (128d) || E_S1 (128d) || E_S2 ]    |
 +--------------------------------------------------+-------------------------------------------------+
                                                    |
                                                    v
@@ -32,10 +33,10 @@ The classification suite combines handcrafted physical remote sensing features w
 |                      HYBRID MULTI-PARADIGM ENSEMBLE CLASSIFICATION SUITE                           |
 +----------------------------------------------------------------------------------------------------+
 |  [Branch A: PyTorch Deep MLP]                 |  [Branch B: XGBoost GBDT Engine]                   |
-|  - 3 Dense Layers (512 -> 256 -> 128)         |  - 250 Gradient Boosted Decision Trees             |
+|  - 3 Dense Layers (512 -> 256 -> 128)         |  - 350 Gradient Boosted Decision Trees             |
 |  - BatchNorm1d & Dropout (p=0.3)              |  - Histogram-based splitting (tree_method='hist')  |
-|  - Class-Weighted Cross-Entropy Loss          |  - Subsample=0.8, Colsample_bytree=0.25            |
-|  - Cosine Annealing Learning Rate Schedule    |  - Max depth = 6, learning rate = 0.08             |
+|  - Class-Weighted Cross-Entropy Loss          |  - Subsample=0.85, Colsample_bytree=0.85           |
+|  - Cosine Annealing Learning Rate Schedule    |  - Max depth = 7, learning rate = 0.08             |
 |  -> Probability Vector P_MLP                  |  -> Probability Vector P_XGB                       |
 +-----------------------------------------------+----------------------------------------------------+
                                                    |
@@ -147,8 +148,9 @@ Large-scale spatial inference across nationwide multi-temporal satellite stacks 
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 3: Stratified Sample Point Partitioning]          |
-                     | Spatially intersects samples.shp with segments & splits: |
+                     | [Stage 3: Parcel-Grouped Stratified Sample Partitioning] |
+                     | Groups sample points by parcel/segment ID (seg_id) to    |
+                     | prevent spatial data leakage across train/control sets:  |
                      | - 70% Training / Learn ({COUNTRY}_{ORBIT}_learn_{MODE}.shp)
                      | - 30% Independent Control ({COUNTRY}_{ORBIT}_control_{MODE}.shp)
                      +----------------------------+-----------------------------+
@@ -158,16 +160,16 @@ Large-scale spatial inference across nationwide multi-temporal satellite stacks 
                      | [Stage 4: Multimodal Feature Extraction]                 |
                      | 1. S1 temporal backscatter stats in linear power domain  |
                      | 2. S2 surface reflectances (B02-B12) & dynamic NDVI      |
-                     | 3. Physical Red-Edge & SAR indices (RVI, CR, Delta_VH)   |
-                     | 4. NASA Harvest Presto 128d Joint + S1 + S2 Embeddings   |
+                     | 3. Physical Red-Edge (NDRE1/2) & SAR (RVI, CR, Delta_VH) |
+                     | 4. Presto 384d (Joint S1->S2 aligned + S1 + S2) tokens   |
                      | -> Output: {COUNTRY}_{ORBIT}_mlpxgb_presto_learn_features_{MODE}.csv
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Stage 5: Fusion Ensemble Training]                      |
-                     | 1. Class-weighted PyTorch Deep MLP (BatchNorm, Dropout)  |
-                     | 2. XGBoost GBDT (250 trees, max_depth=6, hist-split)     |
+                     | [Stage 5: Fusion Ensemble Training & Outlier Cleaning]   |
+                     | 1. Robust IQR feature normalization & 2% outlier pruning |
+                     | 2. Class-weighted PyTorch Deep MLP + XGBoost GBDT (350t) |
                      | 3. Soft-voting ensemble fit (65% MLP + 35% XGBoost)      |
                      | -> Output: {COUNTRY}_{ORBIT}_mlpxgb_presto_model_{MODE}.pkl
                      +----------------------------+-----------------------------+
@@ -222,16 +224,17 @@ Large-scale spatial inference across nationwide multi-temporal satellite stacks 
                                                      |
                                                      v
                      +----------------------------------------------------------+
-                     | [Multi-Orbit Confidence-Weighted Blending]               |
-                     | In overlapping swath zones:                              |
-                     | Pixel = Orbit_1 if Conf_1 >= Conf_2 else Orbit_2         |
+                     | [Multi-Orbit Swath Overlap Blending (--method)]          |
+                     | - confidence: Select pixel with max posterior confidence |
+                     | - majority:   Majority vote across orbits + conf tiebreak|
+                     | - priority:   First valid non-zero orbit in track order  |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Post-Processing & Masking]                              |
+                     | [Post-Processing, Pyramids & National Validation]        |
                      | 1. Morphological sieve filtering (clump size < 50 px)    |
-                     | 2. National agricultural cropland mask application       |
+                     | 2. Multi-scale pyramid overviews [2, 4, 8, 16, 32, 64]   |
                      | 3. Aggregated national confusion matrix computation      |
                      +----------------------------+-----------------------------+
                                                   |

@@ -77,7 +77,7 @@ If you are an IT administrator or data engineer running this pipeline for the fi
 | :--- | :--- | :--- |
 | **Sentinel-1 SAR imagery** | **Automated** (CDSE API / CreoDIAS) | Calibrated Sigma0 radar backscatter time series (VH, VV). |
 | **Sentinel-2 optical imagery** | **Automated** (CDSE API / CreoDIAS) | Multispectral surface reflectances (`B02`–`B12`) and NDVI. |
-| **Digital Elevation Model (DEM)** | **Automated** (Copernicus 30 m) | Automatically fetched by ESA SNAP for terrain correction. |
+| **Digital Elevation Model (DEM)** | **Automated** (Copernicus 30 m GLO-30) | Automatically fetched from AWS Open Data by the Pure Python SAR engine (or by ESA SNAP when `--engine snap` is used). |
 | **NUTS administrative boundaries**| **Automated** (`tools/1_download_nuts_boundaries.py`) | Downloaded directly from Eurostat GISCO web service. |
 | **Presto foundation model weights**| **Automated** (GitHub / Hugging Face) | Downloaded automatically during first execution. |
 | **CDSE credentials** | **User-provided** (Required) | Free email and password entered in `config_s1.json` / `config_s2.json`. |
@@ -191,9 +191,9 @@ To suppress residual cloud artifacts, shadow dips, and atmospheric fluctuations 
 ### NASA Harvest Presto geospatial foundation model
 
 **Presto** is a global geospatial transformer foundation model pre-trained on multi-sensor Earth observation time series:
-* **Multi-sensor joint tokenization**: Simultaneously projects multi-temporal Sentinel-1 SAR (VV, VH) and Sentinel-2 optical reflectances (`B02`–`B12`) into a unified high-dimensional latent space.
+* **Multi-sensor joint tokenization & temporal S1-to-S2 alignment**: Simultaneously projects multi-temporal Sentinel-1 SAR (VV, VH) and Sentinel-2 optical reflectances (`B02`–`B12`) + dynamic `NDVI` into a unified high-dimensional latent space. When the number of SAR dates differs from the 14 optical DOYs, the S1 profile is linearly resampled along the temporal axis onto the target S2 DOYs so full-season radar and optical tokens are temporally synchronized.
 * **Sinusoidal spatio-temporal embeddings**: Encodes continuous geographic coordinates (latitude, longitude) and seasonal acquisition months, conditioning model attention on geographic and bioclimatic context.
-* **Latent representation extraction**: Outputs **128-dimensional multi-temporal token embeddings** from S1 SAR sequences and **128-dimensional embeddings** from S2 optical sequences, capturing complex non-linear phenological dynamics superior to standard handcrafted summary metrics.
+* **384-dimensional latent representation extraction**: Outputs three **128-dimensional multi-temporal token embeddings** (**384 dimensions total**): `E_Presto_Joint` (128d joint multimodal cross-attention), `E_Presto_S1` (128d SAR sequence), and `E_Presto_S2` (128d optical sequence), capturing complex non-linear phenological dynamics superior to standard handcrafted summary metrics.
 
 ---
 
@@ -263,16 +263,17 @@ Before performing segmentation, Stage 2 generates a dedicated 1-channel high-SNR
 |                             MULTIMODAL DUAL-TIER FEATURE FUSION PIPELINE                           |
 +----------------------------------------------------------------------------------------------------+
 |  [Tier 1: Physical Handcrafted Remote Sensing Features]                                             |
-|  - S1 Temporal Statistics (VH, VV, VH/VV): Mean, Std, Min, Max, Dynamic Range (Max-Min), Slope     |
+|  - S1 Temporal Statistics (VH, VV, VH/VV): Linear-power Mean (dB), CV Texture, RVI, CR, Delta_VH   |
 |  - S2 Multi-Spectral Reflectances: 14 DOYs * 9 Bands (B02-B12) = 126 spectral temporal features     |
-|  - S2 Dynamic Indices: Multi-temporal NDVI, NDRE1, NDRE2, and NDWI canopy water trajectories       |
+|  - S2 Biophysical Indices: Multi-temporal NDVI, NDRE1 (B06/B05), NDRE2 (B07/B05), NDWI & texture    |
 |                                                  |                                                 |
-|  [Tier 2: NASA Harvest Presto Geospatial Foundation Model Latent Embeddings]                       |
-|  - S1 SAR Transformer Latent Representation: 128-dimensional multi-temporal token embedding        |
-|  - S2 Optical Transformer Latent Representation: 128-dimensional multi-temporal token embedding    |
+|  [Tier 2: NASA Harvest Presto Geospatial Foundation Model Latent Embeddings (384D)]                 |
+|  - Joint S1+S2 Cross-Attention Representation: 128d embedding (temporally aligned S1->S2 DOYs)      |
+|  - S1 SAR Transformer Latent Representation:   128d multi-temporal token embedding                  |
+|  - S2 Optical Transformer Latent Representation: 128d multi-temporal token embedding                |
 |                                                  |                                                 |
-|  [Concatenated High-Dimensional Feature Vector X]                                                  |
-|  X = [ F_S1_stats || F_S2_spectral || E_Presto_S1 (128d) || E_Presto_S2 (128d) ]                  |
+|  [Concatenated High-Dimensional Feature Vector X (~550+ features)]                                 |
+|  X = [ F_S1_stats || F_S2_spectral || F_phys_indices || E_Joint (128d) || E_S1 (128d) || E_S2 ]    |
 +--------------------------------------------------+-------------------------------------------------+
                                                    |
                                                    v
@@ -280,10 +281,10 @@ Before performing segmentation, Stage 2 generates a dedicated 1-channel high-SNR
 |                      HYBRID MULTI-PARADIGM ENSEMBLE CLASSIFICATION SUITE                           |
 +----------------------------------------------------------------------------------------------------+
 |  [Branch A: PyTorch Deep MLP]                 |  [Branch B: XGBoost GBDT Engine]                   |
-|  - 3 Dense Layers (512 -> 256 -> 128)         |  - 250 Gradient Boosted Decision Trees             |
+|  - 3 Dense Layers (512 -> 256 -> 128)         |  - 350 Gradient Boosted Decision Trees             |
 |  - BatchNorm1d & Dropout (p=0.3)              |  - Histogram-based splitting (tree_method='hist')  |
-|  - Class-Weighted Cross-Entropy Loss          |  - Subsample=0.8, Colsample_bytree=0.25            |
-|  - Cosine Annealing Learning Rate Schedule    |  - Max depth = 6, learning rate = 0.08             |
+|  - Class-Weighted Cross-Entropy Loss          |  - Subsample=0.85, Colsample_bytree=0.85           |
+|  - Cosine Annealing Learning Rate Schedule    |  - Max depth = 7, learning rate = 0.08             |
 |  -> Probability Vector P_MLP                  |  -> Probability Vector P_XGB                       |
 +-----------------------------------------------+----------------------------------------------------+
                                                    |
@@ -294,28 +295,27 @@ Before performing segmentation, Stage 2 generates a dedicated 1-channel high-SNR
 +----------------------------------------------------------------------------------------------------+
 ```
 
-#### 1. Tier 1: Handcrafted temporal, spectral & object texture features (100D feature suite)
-* **Sentinel-1 SAR temporal moments**: For each polarization (VV, VH) and cross-ratio (VH/VV), the pipeline extracts statistical moments across the agricultural calendar:
-  Mean, Standard Deviation (Std), Minimum (Min), Maximum (Max), and Dynamic Range (Max - Min).
-  These metrics capture surface roughness, canopy closure speed, and abrupt drops in backscatter caused by harvesting.
+#### 1. Tier 1: Handcrafted temporal, spectral & object texture features
+* **Sentinel-1 SAR temporal moments**: For each polarization (VV, VH) and cross-ratio (VH/VV), the pipeline extracts unbiased statistical moments in the physical linear power domain before converting back to dB, alongside scale-invariant Coefficient of Variation (`CV = Std / Mean`) texture.
 * **Specialized SAR phenological indices (RVI & Dual-Pol vegetation metrics)**:
-  `RVI = 4 * VH / (VV + VH)`
+  `RVI = 4 * VH / (VV + VH)` and `CR = VH_dB - VV_dB`
   Tracks canopy volume fraction and vegetative biomass accumulation independent of soil surface dielectric variations.
-* **Seasonal SAR backscatter dynamics (Delta_VH)**:
+* **Seasonal SAR backscatter dynamics (Delta_VH & Delta_VV)**:
   `Delta_VH = VH_summer - VH_spring`
   Provides discriminative power to differentiate winter cereals (established autumn canopy) from spring-sown crops (bare soil in early spring transitioning to lush vegetation by mid-summer).
-* **Intra-object texture variance & dispersion (field-level std & IQR)**:
-  Captures internal parcel spatial heterogeneity: `std` and `IQR` (interquartile range) for VH backscatter and NDVI reflectances. Distinguishes dense uniform field canopies (wheat, barley) from wide-row crops (maize, sugar beets) and structured woody vegetation (vineyards, orchards, olive groves).
-* **Sentinel-2 multi-spectral trajectories**: Standardized 14-DOY reflectances across 9 spectral bands (14 x 9 = 126 features) plus time-series vegetation indices (NDVI, NDRE1, NDRE2, NDWI) tracking chlorophyll absorption, red-edge shift, and canopy moisture.
+* **Intra-object texture variance & dispersion (field-level CV & Std)**:
+  Captures internal parcel spatial heterogeneity: scale-invariant SAR Coefficient of Variation (`CV`) and optical intra-parcel standard deviation (`s2_intra_std`, `ndvi_intra_std`). Distinguishes dense uniform field canopies (wheat, barley) from wide-row crops (maize, sugar beets) and structured woody vegetation (vineyards, orchards, olive groves).
+* **Sentinel-2 multi-spectral trajectories & Red-Edge indices**: Standardized 14-DOY reflectances across 9 spectral bands (14 x 9 = 126 features) plus biophysical time-series vegetation indices (`NDVI = (B8A - B04)/(B8A + B04)`, `NDRE1 = (B06 - B05)/(B06 + B05)`, `NDRE2 = (B07 - B05)/(B07 + B05)`, `NDWI = (B8A - B11)/(B8A + B11)`) tracking chlorophyll absorption, red-edge shift across `B05`/`B06`/`B07`, and canopy moisture.
 
-#### 2. Tier 2: NASA Harvest Presto 256-dimensional foundation embeddings
-NASA Harvest Presto encodes raw multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into two 128-dimensional latent vectors:
-* `E_S1` (128 dimensions): SAR dynamics.
-* `E_S2` (128 dimensions): Optical dynamics.
+#### 2. Tier 2: NASA Harvest Presto 384-dimensional foundation embeddings (Joint + S1 + S2)
+NASA Harvest Presto encodes multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into three 128-dimensional latent vectors (384 dimensions total):
+* `E_Joint` (128 dimensions): Joint multimodal cross-attention across temporally aligned S1 + S2 + NDVI sequences.
+* `E_S1` (128 dimensions): SAR temporal dynamics.
+* `E_S2` (128 dimensions): Optical multispectral phenology.
 
 #### 3. Unified concatenated feature vector
 The complete feature vector combines domain-specific physical interpretability with deep self-supervised representation learning:
-`X_fused = [ F_S1_stats_texture || F_S2_spectral_texture || E_Presto_S1 || E_Presto_S2 ]`
+`X_fused = [ F_S1_stats_texture || F_S2_spectral_texture || F_phys_indices || E_Presto_Joint || E_Presto_S1 || E_Presto_S2 ]`
 
 ---
 
@@ -409,29 +409,29 @@ Located in `1a_Sentinel-2_preprocessor/`, this toolbox creates cloud-free, regul
                      |
                      v
     +----------------------------------+
-    |  Stage 1: Retrieval & masking    |  --> S2 L2A tile download/extraction to shared country pool,
-    |  (SCL cloud & shadow filtering)  |      SCL filtering for clouds, shadows, snow, and invalid pixels
+    |  Stage 1: Retrieval & masking    |  --> S2 L2A tile download/extraction to shared country pool
+    |  (Native 10m B02-B04 + 20m B05+) |      (native R10m for B02-B04, R20m for B05-B12 & SCL masking)
     +----------------+-----------------+
                      |
                      v
     +----------------------------------+
-    |  Stage 2: Synthetic DOY          |  --> Multi-temporal spline interpolation across 14 standardized DOYs
-    |  time-series interpolation       |      (computed once per country tile, eliminating duplicate processing)
+    |  Stage 2: Synthetic DOY          |  --> Multi-temporal linear interpolation + Whittaker smoothing
+    |  time-series & Whittaker smooth  |      across 14 standardized DOYs (dynamic 10m/20m SCL resampling)
     +----------------+-----------------+
                      |
                      v
     +----------------------------------+
     |  Stage 3: Per-orbit stacking     |  --> Sub-pixel warping to Sentinel-1 raster bounding box,
-    |  & 126-band BigTIFF generation   |      126-band BigTIFF creation, and 6 pyramid overviews per orbit
+    |  & 126-band BigTIFF generation   |      126-band ZSTD BigTIFF creation, and 6 pyramid overviews
     +----------------------------------+
 ```
 
 * **Master runner script**: `run_s2_preprocessor.py`
 * **Internal modules (`modules/`)**:
-  * `s2_download_cdse.py`: Automated search, download, and SCL cloud masking from CDSE API directly to `workingDirs/{COUNTRY}/S2/`.
-  * `s2_extract_creodias.py`: Direct extraction from local CreoDIAS archives (`Y:/Sentinel-2/MSI/L2A`).
-  * `s2_time_series.py`: Pure Python multi-temporal interpolation across 14 standardized agricultural DOYs per country tile.
-  * `s2_mosaic_stack.py`: Dynamic discovery of shared country tiles, sub-pixel grid alignment to Sentinel-1 SAR raster, 126-band BigTIFF creation, and pyramid overview generation.
+  * `s2_download_cdse.py`: Automated search, download, native 10 m (`R10m` for `B02–B04`) & 20 m (`R20m` for `B05–B12`) band extraction, and SCL cloud masking from CDSE API directly to `workingDirs/{COUNTRY}/S2/`.
+  * `s2_extract_creodias.py`: Direct multi-resolution (10 m + 20 m) extraction from local CreoDIAS archives (`/eodata/Sentinel-2/MSI/L2A`).
+  * `s2_time_series.py`: Pure Python multi-temporal interpolation and vectorized Whittaker smoothing (`--enable_whittaker`) across 14 standardized agricultural DOYs per country tile, with dynamic per-band resolution matching and bounded LRU caching for `SCL` masks.
+  * `s2_mosaic_stack.py`: Dynamic discovery of shared country tiles, sub-pixel grid alignment to Sentinel-1 SAR raster, 126-band ZSTD BigTIFF creation, and pyramid overview generation.
   * `s2_pipeline.py`: Object-oriented pipeline orchestrator.
 
 ---
@@ -446,19 +446,19 @@ Located in `2_classifier/`, this toolbox implements object-based image analysis 
 +----------------------------------------------------------------------------------------------------+
 |  [1] Footprint Gen.     --> Intersection of valid S1 SAR and S2 Optical coverage                   |
 |  [2] Segmentation       --> Object delineation: SLIC superpixels / Meta AI SAM / LPIS parcels      |
-|  [3] Sample Partition   --> Stratified split: 70% Learn (train) / 30% Control (validation)         |
-|  [4] Feature Extraction --> S1 Stats + S2 Reflectances + Presto 128d S1/S2 Token Embeddings        |
-|  [5] Model Training     --> Class-weighted PyTorch Deep MLP + XGBoost GBDT Fusion Ensemble         |
-|  [6] Vectorized Infer.  --> High-performance tile inference with dynamic Bayesian calibration       |
-|  [7] Cropland Masking   --> Agricultural mask application & non-cropland suppression               |
-|  [8] Accuracy Reporting --> Out-of-bag validation metrics, F1-scores, and styled Excel report      |
+|  [3] Sample Partition   --> Parcel-grouped stratified split: 70% Learn / 30% Control (no leakage)  |
+|  [4] Feature Extraction --> S1 Linear-Power Stats + S2 + Red-Edge + Presto 384d (Joint + S1 + S2)  |
+|  [5] Model Training     --> IQR Outlier Cleaning + Class-weighted PyTorch MLP + XGBoost Ensemble   |
+|  [6] Vectorized Infer.  --> Asynchronous CPU-GPU tile inference with dynamic Bayesian calibration  |
+|  [7] Cropland Masking   --> Agricultural mask application, footprint clipping & pyramid overviews  |
+|  [8] Accuracy Reporting --> Memory-safe point validation metrics, F1-scores & styled Excel report  |
 +----------------------------------------------------------------------------------------------------+
 ```
 
 * **Master runner script**: `run_classifier.py`
 * **Internal engines (`modules/`)**:
-  * `classifier_mlpxgb_presto.py`: Enhanced multimodal fusion ensemble combining NASA Harvest Presto transformer embeddings, PyTorch Deep MLP, XGBoost GBDT, vectorized chunk I/O, and spatial uncertainty estimation (`[S1 + S2] [SOTA]`). Aliases: `mlpxgb_presto_s1s2`, `s1s2`.
-  * `multi_orbit_merger.py`: Nationwide multi-orbit confidence merger and seamless blender.
+  * `classifier_mlpxgb_presto.py`: Enhanced multimodal fusion ensemble combining NASA Harvest Presto 384d transformer embeddings (with temporal S1-to-S2 interpolation), biophysical Red-Edge (`NDRE1`, `NDRE2`) and SAR (`RVI`, `CR`, `Delta_VH`) indices, parcel-grouped (`seg_id`) train/validation splitting, IQR-normalized outlier pruning, PyTorch Deep MLP, XGBoost GBDT, vectorized chunk I/O, and spatial uncertainty estimation (`[S1 + S2] [SOTA]`). Aliases: `mlpxgb_presto_s1s2`, `s1s2`.
+  * `multi_orbit_merger.py`: Nationwide multi-orbit mosaic blender supporting `--method confidence`, `priority`, and `majority`.
   * `presto_model.py`: Embedded NASA Harvest Presto transformer foundation architecture.
   *(Note: Legacy engines `classifier_otb.py` and `classifier_presto_s1.py` have been archived to `Archive_scripts/`)*
 
@@ -484,17 +484,18 @@ Located in `2_classifier/`, this tool combines multiple single-orbit classificat
                                                      |
                                                      v
                      +----------------------------------------------------------+
-                     | [Multi-Orbit Confidence-Weighted Blending]               |
-                     | In overlapping swath zones:                              |
-                     | Pixel = Orbit_1 if Conf_1 >= Conf_2 else Orbit_2         |
+                     | [Multi-Orbit Swath Overlap Blending (--method)]          |
+                     | - confidence: Select pixel with max posterior confidence |
+                     | - majority:   Majority vote across orbits + conf tiebreak|
+                     | - priority:   First valid non-zero orbit in track order  |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
                      +----------------------------------------------------------+
-                     | [Post-Processing & Masking]                              |
+                     | [Post-Processing, Pyramids & National Validation]        |
                      | 1. Morphological sieve filtering (clump size < 50 px)    |
-                     | 2. National agricultural cropland mask application       |
-                     | 3. Aggregated national confusion matrix computation      |
+                     | 2. Multi-scale pyramid overviews [2, 4, 8, 16, 32, 64]   |
+                     | 3. Aggregated national confusion matrix & area report    |
                      +----------------------------+-----------------------------+
                                                   |
                                                   v
@@ -507,7 +508,7 @@ Located in `2_classifier/`, this tool combines multiple single-orbit classificat
 
 * **Master runner script**: `run_merge.py`
 * **Internal engine (`modules/`)**:
-  * `multi_orbit_merger.py`: Confidence-weighted mosaic blending, morphological sieve post-processing, and national statistical aggregation.
+  * `multi_orbit_merger.py`: Multi-strategy mosaic blending (`confidence`, `priority`, `majority`), morphological sieve post-processing, pyramid overview generation, and national statistical aggregation.
 
 ---
 
@@ -535,7 +536,7 @@ Located in `tools/`, these standalone command-line scripts assist in preparing a
      mamba activate aiml_env
      conda install -y -c conda-forge libgdal-jp2openjpeg
      ```
-2. **Install ESA SNAP**:
+2. **Install ESA SNAP (Optional — only required if running `--engine snap`; not needed for the default `--engine python` Pure Python SAR engine)**:
    - Download and install SNAP from [ESA SNAP Download](https://step.esa.int/main/download/snap-download/).
    - Default recommended path: `D:\Program Files\esa-snap`.
 
@@ -547,11 +548,11 @@ Located in `tools/`, these standalone command-line scripts assist in preparing a
 # System packages (Ubuntu / Debian)
 sudo apt-get update && sudo apt-get install -y gdal-bin libgdal-dev build-essential unzip
 
-# Conda environment
+# Conda environment (includes all dependencies for Pure Python S1, S2, and Classifier)
 mamba env create -f environment.yml
 mamba activate aiml_env
 
-# ESA SNAP for Linux
+# Optional: ESA SNAP for Linux (only required if using --engine snap)
 chmod +x esa-snap_sentinel_unix_*.sh
 ./esa-snap_sentinel_unix_*.sh -q
 ```
@@ -687,14 +688,14 @@ python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py
 ### Phase 2: Sentinel-2 optical preprocessing (`run_s2_preprocessor.py`)
 
 #### What happens behind the scenes:
-1. **Stage 1 (Granule Retrieval & SCL Cloud Masking)**:
-   - Queries Copernicus CDSE API (or CreoDIAS local archive) for Sentinel-2 L2A BOA surface reflectance tiles intersecting the country territory.
-   - Extracts 9 spectral bands (`B02`, `B03`, `B04`, `B05`, `B06`, `B07`, `B8A`, `B11`, `B12`) and the Scene Classification Layer (`SCL`).
-   - Strictly masks out clouds, thin cirrus, cloud shadows, snow, and defective pixels, saving clean GeoTIFFs to `_temp_processing/{TILE}_tif/`.
+1. **Stage 1 (Multi-Resolution Granule Retrieval & SCL Cloud Masking)**:
+   - Queries Copernicus CDSE API (`--source cdse`) or local CreoDIAS `/eodata` archive (`--source creodias`) for Sentinel-2 L2A BOA surface reflectance tiles intersecting the country territory.
+   - Extracts visible bands (`B02`, `B03`, `B04`) from `R10m` at their full **native 10 m spatial resolution** (`10980 x 10980` px) when available, and Red-Edge/NIR/SWIR bands (`B05`, `B06`, `B07`, `B8A`, `B11`, `B12`) + `SCL` from `R20m` (`5490 x 5490` px).
+   - Strictly masks out clouds, thin cirrus, cloud shadows, snow, and defective pixels, saving clean GeoTIFFs to `workingDirs/{COUNTRY}/S2/{TILE}_tif/`.
 2. **Stage 2 (14-DOY Synthetic Time-Series Interpolation & Whittaker Smoothing)**:
    - Evaluates the temporal distribution of cloud-free observations across 14 standardized agricultural reference dates tailored to regional European profiles (Mediterranean DOY 45–280, Continental DOY 80–287, Northern DOY 105–300).
-   - Computes multi-core linear interpolation between nearest forward and backward clear observations for all 9 bands.
-   - Applies an optional vectorized **Whittaker penalized least-squares smoother** (`--enable_whittaker`, `lambda = 15.0`) across the temporal DOY profile, suppressing cloud spikes and shadow artifacts to ensure continuous phenological trajectories.
+   - Computes multi-core linear interpolation between nearest forward and backward clear observations for all 9 bands at their native resolution (`10 m` or `20 m`), dynamically resampling the `SCL` mask with a bounded LRU cache (`<= 24` entries).
+   - Applies a vectorized **Whittaker penalized least-squares smoother** (`--enable_whittaker`, `lambda = 15.0`) across the temporal DOY profile, suppressing cloud spikes and shadow artifacts to ensure continuous phenological trajectories.
    - Saves synthetic composite tiles to `workingDirs/{COUNTRY}/S2/{TILE}/_synthetic_s2/day{DOY}_{YEAR}/`.
 3. **Stage 3 (SAR Grid Matching, ZSTD Stacking & Timestamped Naming)**:
    - Reads the Sentinel-1 SAR stack bounding box and spatial resolution as the master geometric reference.
@@ -703,8 +704,11 @@ python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py
    - Generates standardized temporal filenames matching the SAR standard: `{COUNTRY}_{END_DATE}_{START_DATE}_S2_timeseries.tif` (with instant backward-compatible alias).
 
 #### How to execute:
-```powershell
-# Recommended: Full automated run for Portugal using official CDSE API and Whittaker smoother:
+```bash
+# Recommended: Full automated run for Portugal from local CreoDIAS archive with Whittaker smoother:
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --source creodias -s 2024-10-15 -e 2025-09-15 --enable_whittaker --stage A --threads 8
+
+# Full automated run downloading from Copernicus CDSE API:
 python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --enable_whittaker --stage A --threads 8
 
 # Process a single orbit track:
@@ -728,12 +732,12 @@ python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py
 | :--- | :--- | :--- | :--- |
 | **1** | **Multimodal Data Footprint** | Computes binary spatial intersection of valid S1, S2, and NUTS2 regional boundaries (1 = valid, 0 = NoData). | `0_segmentation/*_data_footprint.tif` |
 | **2** | **High-SNR SAR Composites & OBIA** | Generates high-SNR SAR composite (**seasonal April–August composite** `*_sar_seasonal_composite.tif` or **full-season summed composite** `*_summed_composite.tif`) to suppress speckle. Delineates agricultural parcels using SLIC superpixels (with 64px halo buffer & Union-Find seam stitching), Meta AI SAM, or official LPIS cadastre. | `0_segmentation/*_sar_seasonal_composite.tif`<br>`0_segmentation/*_summed_composite.tif`<br>`0_segmentation/*_segmentation_{MODE}.tif` |
-| **3** | **Stratified Sample Split** | Spatially intersects `samples.shp` with segment parcels. Partitions points into **70% training (`*_learn_{MODE}.shp`)** and **30% independent validation (`*_control_{MODE}.shp`)** with balanced class stratification. | `1_samples_and_features/*_learn_{MODE}.shp`<br>`1_samples_and_features/*_control_{MODE}.shp` |
-| **4** | **Multimodal Feature Extraction** | Extracts linear-power SAR temporal backscatter statistics, 14-DOY optical reflectances (`B02`–`B12`), physical Red-Edge and SAR indices (**RVI, CR, Delta_VH, NDVI, NDRE, NDWI, EVI, texture variance**), and **128d Joint, S1, and S2 Presto token embeddings** (~450+ features). | `1_samples_and_features/*_mlpxgb_presto_learn_features_{MODE}.csv` |
-| **5** | **Model Training** | Fits class-weighted PyTorch Deep MLP (`BatchNorm1d`, `Dropout`, Cosine Annealing) and XGBoost GBDT (250 trees, histogram split). Combines models via soft-voting ensemble blend (65% MLP + 35% XGBoost). | `2_models/*_mlpxgb_presto_model_{MODE}.pkl` |
+| **3** | **Parcel-Grouped Stratified Sample Split** | Spatially intersects `samples.shp` with segment parcels (`seg_id`). Partitions points grouped by parcel into **70% training (`*_learn_{MODE}.shp`)** and **30% independent validation (`*_control_{MODE}.shp`)** so points inside the same field never split across train/validation. | `1_samples_and_features/*_learn_{MODE}.shp`<br>`1_samples_and_features/*_control_{MODE}.shp` |
+| **4** | **Multimodal Feature Extraction** | Extracts linear-power SAR temporal backscatter statistics, 14-DOY optical reflectances (`B02`–`B12`), physical Red-Edge and SAR indices (**RVI, CR, Delta_VH, NDVI, NDRE1 [B06/B05], NDRE2 [B07/B05], NDWI, CV/Std texture**), and **384d Joint (temporally aligned S1->S2), S1, and S2 Presto token embeddings** (~550+ features). | `1_samples_and_features/*_mlpxgb_presto_learn_features_{MODE}.csv` |
+| **5** | **Model Training & Outlier Filtering** | Applies robust IQR feature normalization before 2% multivariate outlier pruning (`_clean_label_noise`), imputes `NaN`/`Inf` values, and fits class-weighted PyTorch Deep MLP (`BatchNorm1d`, `Dropout`, Cosine Annealing) and XGBoost GBDT (350 trees, histogram split) combined via soft-voting blend (65% MLP + 35% XGBoost). | `2_models/*_mlpxgb_presto_model_{MODE}.pkl` |
 | **6** | **Asynchronous Vectorized Tile Inference** | Runs an **asynchronous CPU producer thread** prefetching 2048 x 2048 blocks and computing vectorized `np.bincount` zonal aggregation, while the **GPU consumer** runs batched Presto embeddings and MLP forward passes in parallel. Applies dynamic Bayesian prior calibration and outputs classification, confidence, Shannon entropy uncertainty, and prediction margin maps. | `3_maps/*_classified_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_confidence_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_entropy_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_margin_mlpxgb_presto_{MODE}.tif` |
-| **7** | **Cropland Masking & Sieve Filter** | Applies high-resolution agricultural mask (`AgriMasks/{COUNTRY}/`) and morphological sieve filtering (<10 px), suppressing non-agricultural surfaces (forests, urban, water bodies). | `3_maps/*_classified_masked_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_confidence_masked_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_entropy_masked_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_margin_masked_mlpxgb_presto_{MODE}.tif` |
-| **8** | **Accuracy Assessment** | Evaluates predictions against the independent 30% control dataset. Computes full confusion matrix, Overall Accuracy (OA), Cohen's Kappa, User's Accuracy (Precision), Producer's Accuracy (Recall), and F1-scores. | `4_reports/report_*_mlpxgb_presto_{MODE}.xlsx` |
+| **7** | **Cropland Masking & Pyramid Overviews** | Applies high-resolution agricultural mask (`AgriMasks/{COUNTRY}/`), clips to the multimodal footprint, and builds multi-scale pyramid overviews (`[2, 4, 8, 16, 32, 64]`). | `3_maps/*_classified_masked_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_confidence_masked_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_entropy_masked_mlpxgb_presto_{MODE}.tif`<br>`3_maps/*_margin_masked_mlpxgb_presto_{MODE}.tif` |
+| **8** | **Memory-Safe Accuracy Assessment** | Evaluates predictions against the independent 30% control dataset using O(1) point reads (`ReadAsArray(px, py, 1, 1)`). Computes full confusion matrix, Overall Accuracy (OA), Cohen's Kappa, User's Accuracy (Precision), Producer's Accuracy (Recall), and F1-scores. | `4_reports/report_*_mlpxgb_presto_{MODE}.xlsx` |
 
 #### How to execute:
 ```powershell
