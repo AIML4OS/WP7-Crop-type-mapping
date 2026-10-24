@@ -445,15 +445,30 @@ def mosaic_stack_clip_single_track(
         try: out_vrt.unlink()
         except: pass
 
+    if out_final_tif.exists() and out_final_tif.stat().st_size > 100 * 1024 * 1024 and out_final_dir.exists():
+        try:
+            shutil.rmtree(out_final_dir, ignore_errors=True)
+            logging.info(f"Cleaned up temporary intermediate DOY mosaics directory: {out_final_dir.name}")
+        except Exception:
+            pass
+
     logging.info(f"SUCCESS: Sentinel-2 Multi-Temporal Stack saved to {out_final_tif} ({len(band_descriptions)} bands)!")
 
 
 def discover_s1_orbits(country_code: str) -> List[int]:
     country_dir = BASE_DIR / country_code
     if country_dir.exists():
-        found = [int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name)]
-        if found: return sorted(list(set(found)))
-    return COUNTRY_ORBITS.get(country_code.upper(), [])
+        found = [
+            int(re.search(r'orbit_(\d+)', d.name).group(1))
+            for d in country_dir.glob("orbit_*")
+            if d.is_dir() and re.search(r'orbit_(\d+)', d.name) and any((d / "1_input_stacks").glob("*.tif"))
+        ]
+        if found:
+            return sorted(list(set(found)))
+        found_all = [int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name)]
+        if found_all:
+            return sorted(list(set(found_all)))
+    return []
 
 
 def mosaic_stack_clip_s2(
@@ -480,12 +495,15 @@ def mosaic_stack_clip_s2(
         else:
             orbits = discover_s1_orbits(country_code)
 
-        for o_num in orbits:
-            track_name = f"{country_code}/orbit_{o_num}"
-            try:
-                mosaic_stack_clip_single_track(track_name, country_code, target_epsg, doys, max_workers, overwrite, build_overviews)
-            except Exception as e:
-                logging.error(f"Error processing track {track_name}: {e}")
+        if orbits:
+            for o_num in orbits:
+                track_name = f"{country_code}/orbit_{o_num}"
+                try:
+                    mosaic_stack_clip_single_track(track_name, country_code, target_epsg, doys, max_workers, overwrite, build_overviews)
+                except Exception as e:
+                    logging.error(f"Error processing track {track_name}: {e}")
+        else:
+            mosaic_stack_clip_single_track(country_code, country_code, target_epsg, doys, max_workers, overwrite, build_overviews)
 
 
 def main():

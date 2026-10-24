@@ -34,8 +34,8 @@ Execution Examples:
   # 4. Single orbit track execution in Pure Python (e.g. Portugal Orbit 52):
   python run_s1_preprocessor.py --track PT/orbit_52 --source creodias --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
 
-  # 5. Pure Python with 14-DOY temporal interpolation matching Sentinel-2 DOY nodes:
-  python run_s1_preprocessor.py --track PT/orbit_52 --engine python --temporal_mode doy --stage 3
+  # 5. Pure Python Stage 3 (Full Radar Time-Series Stacking & Cropping):
+  python run_s1_preprocessor.py --track PT/orbit_52 --engine python --stage 3
 
   # 6. Legacy ESA SNAP GPT engine execution:
   python run_s1_preprocessor.py --track PT/orbit_52 --source cog --engine snap -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
@@ -126,7 +126,7 @@ COUNTRY_ORBITS = {
     'MT': [124],
     'NL': [37, 110],
     'NO': [8, 37, 66, 124, 153, 168],
-    'PL': [29, 73, 102, 175],
+    'PL': [29, 73, 102, 131, 175],
     'PT': [52, 125],
     'RO': [29, 58, 102, 131],
     'RS': [102, 175],

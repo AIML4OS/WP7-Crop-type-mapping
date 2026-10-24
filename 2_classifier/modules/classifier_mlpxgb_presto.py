@@ -492,7 +492,7 @@ def _get_priors_for_country(country: str, learn_shp_path: Optional[Path], classe
                 id_to_name = dict(zip(gdf['crop_id'].astype(int), gdf['crop_name'].astype(str)))
         except Exception:
             pass
-    return compute_dynamic_bayesian_priors(classes, class_counts, total_samples, id_to_name)
+    return compute_dynamic_bayesian_priors(classes, class_counts, total_samples, id_to_name, country=country)
 
 
 def _calculate_class_weights(y_data: np.ndarray, all_classes: np.ndarray) -> np.ndarray:
@@ -1629,22 +1629,59 @@ class ProcessingPipelineS1S2:
                     try:
                         ds_c = gdal.Open(str(cand))
                         if ds_c and ds_c.RasterCount >= 126:
-                            dest_dir = self.base_dir / self.track / '1_input_stacks'
-                            dest_dir.mkdir(parents=True, exist_ok=True)
-                            dest_s2 = dest_dir / f"{self.file_prefix}_S2_timeseries.tif"
-                            if not dest_s2.exists():
-                                try:
-                                    os.link(str(cand), str(dest_s2))
-                                    print(f"    [OPTIMIZATION] Reused country S2 stack from {cand.name} via instant hardlink to {dest_s2.name}!")
-                                except Exception:
-                                    import shutil
-                                    shutil.copy2(str(cand), str(dest_s2))
-                                    print(f"    [OPTIMIZATION] Reused country S2 stack from {cand.name} via copy to {dest_s2.name}!")
-                            return dest_s2 if dest_s2.exists() else cand
+                            return cand
                     except Exception:
                         continue
 
         return None
+
+    def _open_s2_aligned(self, ds_s1=None):
+        """
+        Opens the Sentinel-2 dataset and verifies pixel-grid alignment with Sentinel-1.
+        If S2 comes from a country-wide stack or another orbit with different GeoTransform
+        origin or dimensions, wraps S2 in a zero-copy in-memory/on-disk GDAL VRT aligned
+        to the exact S1 grid while preserving all 126 band descriptions.
+        """
+        if not self.s2_ras or not self.s2_ras.exists():
+            return None
+        ds_s2_raw = gdal.Open(str(self.s2_ras), gdal.GA_ReadOnly)
+        if not ds_s2_raw or ds_s1 is None:
+            return ds_s2_raw
+
+        s1_cols, s1_rows = ds_s1.RasterXSize, ds_s1.RasterYSize
+        s2_cols, s2_rows = ds_s2_raw.RasterXSize, ds_s2_raw.RasterYSize
+        gt1 = ds_s1.GetGeoTransform()
+        gt2 = ds_s2_raw.GetGeoTransform()
+
+        same_dims = (s1_cols == s2_cols and s1_rows == s2_rows)
+        same_origin = (abs(gt1[0] - gt2[0]) <= 5.0 and abs(gt1[3] - gt2[3]) <= 5.0)
+        if same_dims and same_origin:
+            return ds_s2_raw
+
+        vrt_path = self.seg_dir / f"{self.file_prefix}_s2_aligned_to_s1.vrt"
+        minx = gt1[0]
+        maxy = gt1[3]
+        maxx = minx + s1_cols * gt1[1]
+        miny = maxy + s1_rows * gt1[5]
+        proj1 = ds_s1.GetProjection()
+
+        warp_opts = gdal.WarpOptions(
+            format='VRT',
+            outputBounds=(minx, miny, maxx, maxy),
+            width=s1_cols,
+            height=s1_rows,
+            dstSRS=proj1,
+            resampleAlg=gdal.GRA_NearestNeighbour
+        )
+        ds_vrt = gdal.Warp(str(vrt_path), ds_s2_raw, options=warp_opts)
+        if ds_vrt:
+            for b in range(1, ds_s2_raw.RasterCount + 1):
+                desc = ds_s2_raw.GetRasterBand(b).GetDescription()
+                if desc:
+                    ds_vrt.GetRasterBand(b).SetDescription(desc)
+            ds_vrt.FlushCache()
+            return ds_vrt
+        return ds_s2_raw
 
     def _resolve_samples_shp(self) -> Optional[Path]:
         samples_base = self.aux_dir / 'shapefiles_samples'
@@ -1975,7 +2012,7 @@ class ProcessingPipelineS1S2:
             raise FileNotFoundError("Neither S1 nor S2 raster found.")
 
         ds_s1 = gdal.Open(str(self.s1_ras)) if self.s1_ras else None
-        ds_s2 = gdal.Open(str(self.s2_ras)) if self.s2_ras else None
+        ds_s2 = self._open_s2_aligned(ds_s1) if self.s2_ras else None
         ref_ds = ds_s1 if ds_s1 else ds_s2
 
         cols, rows = ref_ds.RasterXSize, ref_ds.RasterYSize
@@ -2414,7 +2451,7 @@ class ProcessingPipelineS1S2:
         target_sids = set(target_segments.keys())
 
         ds_s1 = gdal.Open(str(self.s1_ras)) if self.s1_ras else None
-        ds_s2 = gdal.Open(str(self.s2_ras)) if self.s2_ras else None
+        ds_s2 = self._open_s2_aligned(ds_s1) if self.s2_ras else None
 
         nbands_s1 = ds_s1.RasterCount if ds_s1 else 0
         nbands_s2 = ds_s2.RasterCount if ds_s2 else 0
@@ -2743,7 +2780,7 @@ class ProcessingPipelineS1S2:
         extractor = PrestoMultimodalExtractor(device=device)
 
         ds_s1 = gdal.Open(str(self.s1_ras)) if self.s1_ras else None
-        ds_s2 = gdal.Open(str(self.s2_ras)) if self.s2_ras else None
+        ds_s2 = self._open_s2_aligned(ds_s1) if self.s2_ras else None
         nbands_s1 = ds_s1.RasterCount if ds_s1 else 0
         nbands_s2 = ds_s2.RasterCount if ds_s2 else 0
         num_dates_s1 = nbands_s1 // 2
@@ -2790,6 +2827,7 @@ class ProcessingPipelineS1S2:
                     tile_cnt = idx + 1
                     sub_seg = safe_read_tile(seg_ds, x, y, xsize, ysize, band_idx=1, dtype=np.int32)
                     foot_arr = safe_read_tile(foot_ds, x, y, xsize, ysize, band_idx=1, dtype=np.uint8)
+                    sub_seg[foot_arr == 0] = 0
 
                     u_all, inv_arr = np.unique(sub_seg, return_inverse=True)
                     has_zero = (len(u_all) > 0 and u_all[0] == 0)
@@ -3416,16 +3454,40 @@ class ProcessingPipelineS1S2:
                 cell.border = thin_border
                 cell.alignment = align_center
 
-        # Area estimation table
-        unique_cls, counts = np.unique(cls_arr, return_counts=True)
-        valid_cls_mask = unique_cls > 0
-        if np.any(valid_cls_mask):
-            unique_cls = unique_cls[valid_cls_mask]
-            counts = counts[valid_cls_mask]
+        # Area estimation table (computed via memory-safe chunked tile iteration with Web Mercator cos^2(lat) correction)
+        class_counts_map = {}
+        ds_area = gdal.Open(str(target_tif), gdal.GA_ReadOnly)
+        if ds_area is not None:
+            band_area = ds_area.GetRasterBand(1)
+            area_tile_sz = 4096
+            for ay in range(0, rows, area_tile_sz):
+                for ax in range(0, cols, area_tile_sz):
+                    axs = min(area_tile_sz, cols - ax)
+                    ays = min(area_tile_sz, rows - ay)
+                    blk = band_area.ReadAsArray(ax, ay, axs, ays)
+                    if blk is None:
+                        continue
+                    v_blk = blk[blk > 0]
+                    if v_blk.size > 0:
+                        u_b, c_b = np.unique(v_blk, return_counts=True)
+                        for uid_val, ucnt_val in zip(u_b, c_b):
+                            class_counts_map[int(uid_val)] = class_counts_map.get(int(uid_val), 0) + int(ucnt_val)
+            ds_area = None
+
+        if class_counts_map:
+            unique_cls = np.array(sorted(class_counts_map.keys()), dtype=np.int32)
+            counts = np.array([class_counts_map[int(k)] for k in unique_cls], dtype=np.int64)
             
             resx = abs(gt[1])
             resy = abs(gt[5])
-            pixel_ha = (resx * resy) / 10000.0
+            lat_area_factor = 1.0
+            try:
+                y_center = gt[3] + 0.5 * rows * gt[5]
+                if abs(y_center) > 100000.0:
+                    lat_area_factor = 1.0 / (math.cosh(y_center / 6378137.0) ** 2)
+            except Exception:
+                lat_area_factor = 1.0
+            pixel_ha = ((resx * resy) * lat_area_factor) / 10000.0
             total_ha = float(np.sum(counts) * pixel_ha)
 
             r += 3

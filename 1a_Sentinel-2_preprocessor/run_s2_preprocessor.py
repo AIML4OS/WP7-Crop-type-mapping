@@ -333,9 +333,8 @@ class Sentinel2Pipeline:
                 build_overviews=True
             )
         else:
-            mosaic_mod.mosaic_stack_clip_single_track(
-                track=self.country,
-                country_code=self.country,
+            mosaic_mod.mosaic_stack_clip_s2(
+                country=self.country,
                 target_epsg=3857,
                 doys=self.doys,
                 max_workers=self.threads,

@@ -178,18 +178,9 @@ def load_country_geometry(country_code: str, aux_dir: pathlib.Path = None) -> og
     if is_master:
         layer.SetAttributeFilter(f"CNTR_CODE = '{c}'")
 
-    overseas_Codes = {"FRY1", "FRY2", "FRY3", "FRY4", "FRY5", "FRZZ", "PT20", "PT30", "ES70", "NO0B"}
     union_geom = ogr.Geometry(ogr.wkbMultiPolygon)
 
     for feat in layer:
-        nuts_id = ""
-        for idx in range(feat.GetFieldCount()):
-            if feat.GetFieldDefnRef(idx).GetName().upper() == "NUTS_ID":
-                nuts_id = str(feat.GetField(idx))
-                break
-        if nuts_id in overseas_Codes:
-            continue
-
         geom = feat.GetGeometryRef()
         if not geom:
             continue
