@@ -1,6 +1,6 @@
-# AIML CropMapper Cloud: Sentinel-1 & Sentinel-2 OBIA crop type mapping pipeline (v3.0)
+# AIML CropMapper Cloud: Sentinel-1, Sentinel-2 & NISAR OBIA crop type mapping pipeline (v3.0)
 
-An automated, cloud-optimized object-based image analysis (OBIA) pipeline designed to process **Sentinel-1 SAR** and **Sentinel-2 multispectral optical** time series for large-scale, national and regional crop type classification. Developed under the European Statistical System (ESS) **AIML4OS (One Stop Shop for Artificial Intelligence in Official Statistics - Work Package 7)** project funded by Eurostat and the European Commission, this toolbox enables National Statistical Institutes (NSIs), agricultural paying agencies, and IT practitioners to generate standardized, high-accuracy crop type statistics across Europe.
+An automated, cloud-optimized object-based image analysis (OBIA) pipeline designed to process **Sentinel-1 C-band SAR**, **Sentinel-2 multispectral optical**, and optional **NISAR L-band SAR (`L2 GCOV`)** time series (with **automatic seamless fallback to `Sentinel-1 + Sentinel-2`** whenever NISAR data is absent) for large-scale, national and regional crop type classification. Developed under the European Statistical System (ESS) **AIML4OS (One Stop Shop for Artificial Intelligence in Official Statistics - Work Package 7)** project funded by Eurostat and the European Commission, this toolbox enables National Statistical Institutes (NSIs), agricultural paying agencies, and IT practitioners to generate standardized, high-accuracy crop type statistics across Europe.
 
 ---
 
@@ -19,6 +19,7 @@ An automated, cloud-optimized object-based image analysis (OBIA) pipeline design
 6. [Complete toolbox guides and architecture](#complete-toolbox-guides-and-architecture)
    - [Toolbox 1: Sentinel-1 SAR preprocessor](#toolbox-1-sentinel-1-sar-preprocessor)
    - [Toolbox 2: Sentinel-2 optical preprocessor](#toolbox-2-sentinel-2-optical-preprocessor)
+   - [Toolbox 2b: NISAR L-band SAR preprocessor (optional)](#toolbox-2b-nisar-l-band-sar-preprocessor-optional)
    - [Toolbox 3: Multimodal machine learning classifier](#toolbox-3-multimodal-machine-learning-classifier)
    - [Toolbox 4: Nationwide multi-orbit merger](#toolbox-4-nationwide-multi-orbit-merger)
    - [Toolbox 5: Data preparation utilities](#toolbox-5-data-preparation-utilities)
@@ -436,6 +437,43 @@ Located in `1a_Sentinel-2_preprocessor/`, this toolbox creates cloud-free, regul
 
 ---
 
+### Toolbox 2b: NISAR L-band SAR preprocessor (optional)
+
+Located in `1b_NISAR_preprocessor/`, this optional toolbox processes **NASA-ISRO Synthetic Aperture Radar (NISAR) Level-2 Geocoded Polarimetric Covariance (`L2 GCOV`, 24 cm L-band)** HDF5 granules into multi-temporal, radiometrically harmonized BigTIFF cubes (`EPSG:3857`, `10.0 m`) co-registered pixel-for-pixel with `Sentinel-1` and `Sentinel-2`. When `*_NISAR_GCOV_L_timeseries.tif` is present in `1_input_stacks/`, the classifier automatically activates **tri-sensor `S1 + S2 + NISAR` fusion**; when absent, the classifier **automatically falls back to `Sentinel-1 + Sentinel-2`**.
+
+```
+[NASA ASF DAAC API (--source asf) / Local NISAR HDF5 Archive (--source local)]
+                                           |
+                                           v
+     +--------------------------------------------------------------------------+
+     |  Stage 1: Granule discovery, HDF5 extraction & radiometric calibration   |
+     |  - Extracts HHHH_gamma0, HVHV_gamma0, RVI_L, and ratio_HH_HV [dB]        |
+     |  - Cross-track border erosion, pinhole EDT fill & 2D range de-tapering   |
+     +-------------------------------------+------------------------------------+
+                                           |
+                                           v
+     +--------------------------------------------------------------------------+
+     |  Stage 2: 12-day cycle mosaicking & EPSG:3857 (10.0 m) alignment         |
+     |  - Along-track slit healing, cross-seam harmonization & C1 feathering    |
+     |  - Exact sub-pixel alignment to the Sentinel-1 / Sentinel-2 master grid  |
+     +-------------------------------------+------------------------------------+
+                                           |
+                                           v
+     +--------------------------------------------------------------------------+
+     |  Stage 3: Multi-temporal L-band BigTIFF stacking & pyramid overviews     |
+     |  - Outputs {COUNTRY}_orbit_{ORBIT}_{DATES}_NISAR_GCOV_L_timeseries.tif   |
+     +--------------------------------------------------------------------------+
+```
+
+* **Master runner script**: `run_nisar_preprocessor.py`
+* **Internal modules (`modules/`)**:
+  * `nisar_asf_search.py`: S1/S2 reference grid resolution, Eurostat NUTS country geometry loading, local `/eodata/NISAR` scanner, and NASA ASF DAAC search (`asf_search` or built-in REST GeoJSON fallback).
+  * `nisar_extract_gcov.py`: HDF5 `L2 GCOV` extraction (`h5py` or native GDAL HDF5 driver fallback), cross-track border erosion, internal pinhole EDT imputation, and 2D adaptive monotonic range-edge de-tapering.
+  * `nisar_mosaic_stack.py`: Along-track slit healing, cross-seam radiometric harmonization, $C^1$ distance-squared feathering, `EPSG:3857` (`10.0 m`) warping, and multi-temporal BigTIFF stacking (`stack_nisar_timeseries`).
+  * `nisar_pipeline.py`: 3-stage pipeline coordinator (`CalculateTrackNISAR`) with 12-day orbital cycle grouping.
+
+---
+
 ### Toolbox 3: Multimodal machine learning classifier
 
 Located in `2_classifier/`, this toolbox implements object-based image analysis (OBIA) classification using multimodal fusion, deep learning foundation models, and Bayesian statistical calibration.
@@ -567,6 +605,7 @@ Configuration is stored in **modular JSON files** located directly in their resp
 | :--- | :--- | :--- |
 | **`config_s1.json`** | Sentinel-1 pipeline parameters, SNAP paths, and CDSE credentials | `1_Sentinel-1_preprocessor/config_s1.json` |
 | **`config_s2.json`** | Sentinel-2 pipeline parameters, spectral bands, DOYs, and CDSE credentials | `1a_Sentinel-2_preprocessor/config_s2.json` |
+| **`config_nisar.json`** | Optional NISAR L-band (`L2 GCOV`) parameters and NASA Earthdata credentials | `1b_NISAR_preprocessor/config_nisar.json` |
 
 ### Initializing configuration from templates
 

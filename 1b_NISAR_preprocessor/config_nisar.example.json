@@ -1,0 +1,18 @@
+{
+  "earthdata_username": "YOUR_NASA_EARTHDATA_USERNAME",
+  "earthdata_password": "YOUR_NASA_EARTHDATA_PASSWORD",
+  "working_directory": "../workingDirs",
+  "auxiliary_directory": "../auxiliary_files",
+  "local_nisar_repository": "/eodata/NISAR",
+  "product_type": "GCOV",
+  "flight_direction": "DESCENDING",
+  "target_epsg": 3857,
+  "pixel_resolution_meters": 10.0,
+  "keep_intermediate_h5": false,
+  "grouping_mode": "cycle",
+  "cycle_days": 12,
+  "min_track_coverage_pct": 10.0,
+  "border_trim_pixels": 8,
+  "blend_width_pixels": 350,
+  "min_aoi_coverage_pct": 85.0
+}

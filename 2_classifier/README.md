@@ -1,6 +1,6 @@
 # Multimodal machine learning classifier & national merger toolbox
 
-This toolbox provides an enterprise-grade, object-based image analysis (OBIA) crop type classification suite powered by multimodal fusion of **Sentinel-1 SAR** and **Sentinel-2 optical** time series, **NASA Harvest Presto geospatial foundation model embeddings**, deep neural networks, gradient boosted decision trees, and Bayesian statistical prior calibration.
+This toolbox provides an enterprise-grade, object-based image analysis (OBIA) crop type classification suite powered by multimodal fusion of **Sentinel-1 C-band SAR**, **Sentinel-2 multispectral optical**, and optional **NISAR L-band SAR (`L2 GCOV`)** time series (with **automatic seamless fallback to `Sentinel-1 + Sentinel-2`** whenever NISAR data is not present), **NASA Harvest Presto geospatial foundation model embeddings**, deep neural networks, gradient boosted decision trees, and Bayesian statistical prior calibration.
 
 ---
 
@@ -8,24 +8,26 @@ This toolbox provides an enterprise-grade, object-based image analysis (OBIA) cr
 
 ### 1. Multimodal dual-tier feature fusion architecture
 
-The classification suite combines handcrafted physical remote sensing features with self-supervised geospatial foundation model latent representations:
+The classification suite combines handcrafted physical remote sensing features with self-supervised geospatial foundation model latent representations across two or three sensors (`Sentinel-1 + Sentinel-2`, automatically upgrading to `Sentinel-1 + Sentinel-2 + NISAR` when a NISAR L-band stack is present in `1_input_stacks/`):
 
 ```
 +----------------------------------------------------------------------------------------------------+
 |                             MULTIMODAL DUAL-TIER FEATURE FUSION PIPELINE                           |
 +----------------------------------------------------------------------------------------------------+
 |  [Tier 1: Physical Handcrafted Remote Sensing Features]                                             |
-|  - S1 Temporal Statistics (VH, VV, VH/VV): Linear-power Mean (dB), CV Texture, RVI, CR, Delta_VH   |
+|  - S1 C-Band Temporal Stats (VH, VV, VH/VV): Linear-power Mean (dB), CV Texture, RVI, CR, Delta_VH |
 |  - S2 Multi-Spectral Reflectances: 14 DOYs * 9 Bands (B02-B12) = 126 spectral temporal features     |
 |  - S2 Biophysical Indices: Multi-temporal NDVI, NDRE1 (B06/B05), NDRE2 (B07/B05), NDWI & texture    |
+|  - [Optional] NISAR L-Band Stats (HH, HV, HH/HV): RVI_L, CR_L, Delta_HV_L & Dual-Freq L-vs-C Ratios|
 |                                                  |                                                 |
-|  [Tier 2: NASA Harvest Presto Geospatial Foundation Model Latent Embeddings (384D)]                 |
+|  [Tier 2: NASA Harvest Presto Geospatial Foundation Model Latent Embeddings (384D / 512D)]          |
 |  - Joint S1+S2 Cross-Attention Representation: 128d embedding (full S1 timeline + aligned S2 DOYs)  |
-|  - S1 SAR Transformer Latent Representation:   128d full-time-series token embedding                |
-|  - S2 Optical Transformer Latent Representation: 128d multi-temporal token embedding                |
+|  - S1 C-Band SAR Transformer Representation:   128d full-time-series token embedding                |
+|  - S2 Optical Transformer Representation:      128d multi-temporal token embedding                  |
+|  - [Optional] NISAR L-Band SAR Representation: 128d multi-temporal L-band token embedding           |
 |                                                  |                                                 |
-|  [Concatenated High-Dimensional Feature Vector X (~550+ features)]                                 |
-|  X = [ F_S1_stats || F_S2_spectral || F_phys_indices || E_Joint (128d) || E_S1 (128d) || E_S2 ]    |
+|  [Concatenated High-Dimensional Feature Vector X (~550+ features, or ~700+ with NISAR)]             |
+|  X = [ F_S1_stats || F_S2_spectral || F_phys_indices (|| F_NISAR_L) || E_Presto (384d / 512d) ]    |
 +--------------------------------------------------+-------------------------------------------------+
                                                    |
                                                    v
@@ -60,12 +62,19 @@ The classification suite combines handcrafted physical remote sensing features w
 * **Intra-object texture variance & dispersion (field-level std & CV)**:
   Captures internal parcel spatial heterogeneity: scale-invariant SAR Coefficient of Variation (`CV`) and optical intra-parcel standard deviation (`s2_intra_std`, `ndvi_intra_std`). Distinguishes dense uniform field canopies (wheat, barley) from wide-row crops (maize, sugar beets) and structured woody vegetation (vineyards, orchards, olive groves).
 * **Sentinel-2 multi-spectral trajectories & Red-Edge indices**: Standardized 14-DOY reflectances across 9 spectral bands (14 x 9 = 126 features) plus biophysical time-series vegetation indices (`NDVI = (B8A - B04)/(B8A + B04)`, `NDRE1 = (B06 - B05)/(B06 + B05)`, `NDRE2 = (B07 - B05)/(B07 + B05)`, `NDWI = (B8A - B11)/(B8A + B11)`) tracking chlorophyll absorption, red-edge inflection shift across `B05`/`B06`/`B07`, and canopy moisture.
+* **Optional NISAR L-band SAR & dual-frequency L/C-band canopy penetration features (with automatic `S1 + S2` fallback)**:
+  When a co-registered NISAR L-band stack (`*_NISAR_GCOV_L_timeseries.tif`) is detected in `1_input_stacks/` (or supplied via `--nisar_raster`), the pipeline extracts:
+  - L-band polarimetric moments (`nisar_hh_mean_dB`, `nisar_hv_mean_dB`, `nisar_hv_std`, `nisar_hh_hv_ratio_dB`),
+  - L-band Radar Vegetation Index (`RVI_L = 4 * HV / (HH + HV)`), L-band cross-ratio (`CR_L = HV_dB - HH_dB`), and spring-to-summer biomass accumulation (`nisar_delta_hv_spring_summer`),
+  - **Dual-frequency L-vs-C-band ratios (`nisar_s1_crosspol_diff_dB`, `nisar_s1_copol_diff_dB`, `nisar_s1_rvi_diff`)** comparing 24 cm L-band penetration with 5.6 cm C-band canopy scattering to separate woody/high-biomass crops (maize, rapeseed, orchards, vineyards, potatoes) from fine-stemmed cereals.
+  - **Seamless fallback**: If no NISAR stack is present (or if a trained `.pkl` checkpoint was trained on `S1 + S2` only), the classifier automatically runs in standard `Sentinel-1 + Sentinel-2` mode with zero configuration changes.
 
-#### Tier 2: NASA Harvest Presto 384-dimensional foundation embeddings (Joint + S1 + S2)
-NASA Harvest Presto encodes multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into three 128-dimensional latent vectors (384 dimensions total):
+#### Tier 2: NASA Harvest Presto 384-dimensional / 512-dimensional foundation embeddings
+NASA Harvest Presto encodes multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into 128-dimensional latent vectors:
 * `E_Joint` (128 dimensions): True multimodal cross-attention preserving the **full native Sentinel-1 radar time series (`T_s1` dates)** as the primary timeline and temporally interpolating the 14 cloud-free Sentinel-2 DOY composites onto the full S1 sequence.
-* `E_S1` (128 dimensions): Full-resolution SAR temporal dynamics.
+* `E_S1` (128 dimensions): Full-resolution C-band SAR temporal dynamics.
 * `E_S2` (128 dimensions): Optical multispectral phenology.
+* `E_NISAR` (128 dimensions, optional): Full-series L-band SAR transformer embedding (`presto_nisar_0..127`) extracted when NISAR data is present.
 
 #### Unified concatenated feature vector
 The complete feature vector combines domain-specific physical interpretability with deep self-supervised representation learning into a unified vector:
@@ -393,6 +402,7 @@ python 2_classifier/run_merge.py --country PT --classifier mlpxgb_presto --seg_m
 | `--mlp_weight` | float | `0.65` | Weight of MLP in fusion ensemble (0.0 to 1.0; remaining weight assigned to XGBoost). |
 | `--s1_raster` | string | `None` | Optional explicit path override to Sentinel-1 BigTIFF raster. |
 | `--s2_raster` | string | `None` | Optional explicit path override to Sentinel-2 BigTIFF raster. |
+| `--nisar_raster` | string | `None` | Optional explicit path override to NISAR L-band BigTIFF raster (`*_NISAR_GCOV_L_timeseries.tif`). Automatically falls back to `S1 + S2` if absent. |
 | `--lpis_vector` | string | `None` | Optional explicit path to official LPIS parcel vector file (`.shp`, `.gpkg`). |
 | `--slic_segment_ha` | float | `None` | Target superpixel parcel area in hectares for SLIC (adaptive: 1.8 ha for PT/ES/PL, 3.0 ha for NL/FR/DE). |
 | `--slic_compactness` | float | `0.05` | SLIC boundary compactness (default: 0.05, elastic adherence to landscape boundaries). |

@@ -132,6 +132,7 @@ def run_pipeline(
     mlp_weight: float = 0.65,
     s1_override: Optional[str] = None,
     s2_override: Optional[str] = None,
+    nisar_override: Optional[str] = None,
     lpis_vector: Optional[str] = None,
     slic_segment_ha: Optional[float] = None,
     slic_compactness: float = 0.05,
@@ -188,6 +189,7 @@ def run_pipeline(
         mlp_weight=mlp_weight,
         s1_override=s1_override,
         s2_override=s2_override,
+        nisar_override=nisar_override,
         lpis_vector=lpis_vector,
         slic_segment_ha=slic_segment_ha,
         slic_compactness=slic_compactness,
@@ -451,6 +453,7 @@ Examples:
     parser.add_argument('--mlp_weight', type=float, default=0.65, help="Weight of MLP in fusion ensemble (0.0 to 1.0, default: 0.65)")
     parser.add_argument('--s1_raster', default=None, help="Override path to Sentinel-1 Sigma0 GeoTIFF raster")
     parser.add_argument('--s2_raster', default=None, help="Override path to Sentinel-2 Multi-temporal GeoTIFF raster")
+    parser.add_argument('--nisar_raster', default=None, help="Optional override path to NISAR L2 GCOV GeoTIFF stack or mosaic folder (auto-fallback to S1+S2 if absent)")
     parser.add_argument('--lpis_vector', default=None, help="Path to official LPIS parcel vector file (.shp, .gpkg)")
     parser.add_argument('--slic_segment_ha', type=float, default=None, help="Target superpixel parcel area in hectares for SLIC (default: adaptive, 1.8 ha for PT/ES/PL, 3.0 ha for NL/FR/DE)")
     parser.add_argument('--slic_compactness', type=float, default=0.05, help="SLIC superpixel boundary compactness (default: 0.05, highly elastic to follow physical field boundaries)")
@@ -498,6 +501,7 @@ Examples:
             mlp_weight=args.mlp_weight,
             s1_override=args.s1_raster,
             s2_override=args.s2_raster,
+            nisar_override=args.nisar_raster,
             lpis_vector=args.lpis_vector,
             slic_segment_ha=args.slic_segment_ha,
             slic_compactness=args.slic_compactness,

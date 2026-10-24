@@ -520,13 +520,23 @@ def compute_vegetation_and_sar_indices(
     num_dates_s1: int,
     num_dates_s2: int,
     s1_stds: Optional[np.ndarray] = None,
-    s2_stds: Optional[np.ndarray] = None
+    s2_stds: Optional[np.ndarray] = None,
+    nisar_means: Optional[np.ndarray] = None,
+    num_dates_nisar: int = 0,
+    nisar_stds: Optional[np.ndarray] = None,
+    nisar_bands_per_date: int = 4
 ) -> Tuple[np.ndarray, List[str]]:
     """
-    Computes physiological red-edge (NDRE1, NDRE2), optical (NDVI, NDWI), polarimetric SAR (RVI, CR),
-    temporal rate-of-change (Delta-VH), and intra-object texture/variance across multi-temporal observations.
+    Computes physiological red-edge (NDRE1, NDRE2), optical (NDVI, NDWI), polarimetric C-band SAR (RVI, CR),
+    optional L-band NISAR polarimetric & dual-frequency L/C-band canopy penetration indices,
+    temporal rate-of-change (Delta-VH / Delta-HV), and intra-object texture/variance across multi-temporal observations.
+    Automatically falls back to S1 + S2 features when NISAR is not present.
     """
-    N = s1_means.shape[0] if s1_means is not None else (s2_means.shape[0] if s2_means is not None else 0)
+    N = (
+        s1_means.shape[0] if s1_means is not None else
+        (s2_means.shape[0] if s2_means is not None else
+         (nisar_means.shape[0] if nisar_means is not None else 0))
+    )
     if N == 0:
         return np.zeros((0, 0), dtype=np.float32), []
 
@@ -635,6 +645,74 @@ def compute_vegetation_and_sar_indices(
             vh_intra_std_max = np.max(s1_stds[:, :num_dates_s1], axis=1).reshape(-1, 1)
             feats.append(np.hstack([vh_intra_std_mean, vv_intra_std_mean, vh_intra_std_max]))
             feat_names.extend(["s1_vh_intra_std_mean", "s1_vv_intra_std_mean", "s1_vh_intra_std_max"])
+
+    if nisar_means is not None and num_dates_nisar > 0:
+        bpd = max(2, int(nisar_bands_per_date))
+        nisar_rvi_list, nisar_cr_list, hh_db_list, hv_db_list = [], [], [], []
+        for d in range(num_dates_nisar):
+            base_idx = d * bpd
+            hh_db = nisar_means[:, base_idx]
+            hv_db = nisar_means[:, base_idx + 1]
+            hh_db_list.append(hh_db)
+            hv_db_list.append(hv_db)
+
+            if bpd >= 3:
+                rvi_l = nisar_means[:, base_idx + 2]
+            else:
+                hh_lin = np.power(10.0, np.clip(hh_db, -35.0, 10.0) / 10.0)
+                hv_lin = np.power(10.0, np.clip(hv_db, -35.0, 10.0) / 10.0)
+                rvi_l = (4.0 * hv_lin) / (hh_lin + hv_lin + 1e-6)
+            cr_l = hv_db - hh_db
+            nisar_rvi_list.append(rvi_l)
+            nisar_cr_list.append(cr_l)
+
+        feat_names.extend([f"nisar_rvi_d{d}" for d in range(num_dates_nisar)])
+        feat_names.extend([f"nisar_cr_d{d}" for d in range(num_dates_nisar)])
+
+        nisar_rvi_arr = np.column_stack(nisar_rvi_list)
+        nisar_cr_arr = np.column_stack(nisar_cr_list)
+        hh_db_arr = np.column_stack(hh_db_list)
+        hv_db_arr = np.column_stack(hv_db_list)
+
+        nisar_temporal_stats = np.column_stack([
+            np.max(nisar_rvi_arr, axis=1), np.min(nisar_rvi_arr, axis=1),
+            np.max(nisar_rvi_arr, axis=1) - np.min(nisar_rvi_arr, axis=1), np.mean(nisar_rvi_arr, axis=1),
+            np.max(nisar_cr_arr, axis=1), np.min(nisar_cr_arr, axis=1), np.mean(nisar_cr_arr, axis=1)
+        ])
+        feat_names.extend([
+            "nisar_rvi_max", "nisar_rvi_min", "nisar_rvi_amp", "nisar_rvi_mean",
+            "nisar_cr_max", "nisar_cr_min", "nisar_cr_mean"
+        ])
+        feats.append(np.hstack([nisar_rvi_arr, nisar_cr_arr, nisar_temporal_stats]))
+
+        if num_dates_nisar >= 2:
+            spring_d = max(0, min(int(num_dates_nisar * 0.25), num_dates_nisar - 1))
+            summer_d = max(0, min(int(num_dates_nisar * 0.65), num_dates_nisar - 1))
+            if summer_d == spring_d and num_dates_nisar > 1:
+                summer_d = num_dates_nisar - 1
+            delta_hv_l = (hv_db_arr[:, summer_d] - hv_db_arr[:, spring_d]).reshape(-1, 1)
+            delta_hh_l = (hh_db_arr[:, summer_d] - hh_db_arr[:, spring_d]).reshape(-1, 1)
+            hv_amp_l = (np.max(hv_db_arr, axis=1) - np.min(hv_db_arr, axis=1)).reshape(-1, 1)
+            feats.append(np.hstack([delta_hv_l, delta_hh_l, hv_amp_l]))
+            feat_names.extend(["nisar_delta_hv_spring_summer", "nisar_delta_hh_spring_summer", "nisar_hv_temporal_amp"])
+
+        if nisar_stds is not None and nisar_stds.shape[1] >= num_dates_nisar * bpd:
+            hh_std_mean = np.mean(nisar_stds[:, 0::bpd], axis=1).reshape(-1, 1)
+            hv_std_mean = np.mean(nisar_stds[:, 1::bpd], axis=1).reshape(-1, 1)
+            feats.append(np.hstack([hh_std_mean, hv_std_mean]))
+            feat_names.extend(["nisar_hh_intra_std_mean", "nisar_hv_intra_std_mean"])
+
+        # Dual-frequency L-band (24 cm, NISAR) vs C-band (5.6 cm, Sentinel-1) canopy penetration features
+        if s1_means is not None and num_dates_s1 > 0:
+            c_vh_mean = np.mean(s1_means[:, :num_dates_s1], axis=1)
+            c_vv_mean = np.mean(s1_means[:, num_dates_s1:num_dates_s1 * 2], axis=1)
+            l_hv_mean = np.mean(hv_db_arr, axis=1)
+            l_hh_mean = np.mean(hh_db_arr, axis=1)
+            dual_hv_vh = (l_hv_mean - c_vh_mean).reshape(-1, 1)
+            dual_hh_vv = (l_hh_mean - c_vv_mean).reshape(-1, 1)
+            dual_rvi_diff = (np.mean(nisar_rvi_arr, axis=1) - np.mean(rvi_arr, axis=1)).reshape(-1, 1)
+            feats.append(np.hstack([dual_hv_vh, dual_hh_vv, dual_rvi_diff]))
+            feat_names.extend(["dual_freq_hv_vh_diff_mean", "dual_freq_hh_vv_diff_mean", "dual_freq_rvi_l_minus_c"])
 
     arr_res = np.hstack(feats).astype(np.float32) if feats else np.zeros((N, 0), dtype=np.float32)
     return arr_res, feat_names
@@ -1381,6 +1459,7 @@ class ProcessingPipelineS1S2:
         mlp_weight: float = 0.65,
         s1_override: Optional[str] = None,
         s2_override: Optional[str] = None,
+        nisar_override: Optional[str] = None,
         lpis_vector: Optional[str] = None,
         slic_segment_ha: Optional[float] = None,
         slic_compactness: float = 0.05,
@@ -1430,15 +1509,17 @@ class ProcessingPipelineS1S2:
 
         self._ensure_directories()
 
-        # Resolve Sentinel-1 and Sentinel-2 rasters
+        # Resolve Sentinel-1, Sentinel-2, and optional NISAR L-band rasters
         self.s1_ras = Path(s1_override) if s1_override else self._resolve_s1_raster()
         self.s2_ras = Path(s2_override) if s2_override else self._resolve_s2_raster()
+        self.nisar_ras = Path(nisar_override) if nisar_override else self._resolve_nisar_raster()
 
         print(f"============================================================")
-        print(f" Multimodal S1 (Sigma0) + S2 Crop Classifier (Unified MLP+XGB Fusion)")
+        print(f" Multimodal S1 (Sigma0) + S2 + NISAR Crop Classifier (Unified MLP+XGB Fusion)")
         print(f" Track: {self.track} ({self.country})")
-        print(f" S1 SAR Raster: {self.s1_ras.name if self.s1_ras else 'None'}")
-        print(f" S2 Optical Raster: {self.s2_ras.name if self.s2_ras else 'None'}")
+        print(f" S1 SAR Raster:    {self.s1_ras.name if self.s1_ras else 'None'}")
+        print(f" S2 Optical Raster:{' ' + self.s2_ras.name if self.s2_ras else ' None'}")
+        print(f" NISAR L-Band SAR: {self.nisar_ras.name if self.nisar_ras else 'None (Fallback -> S1 + S2)'}")
         print(f" Segmentation: {self.seg_mode.upper()} | Fusion weights: {self.mlp_weight:.2f} MLP + {1.0-self.mlp_weight:.2f} XGB")
         print(f"============================================================")
 
@@ -1682,6 +1763,128 @@ class ProcessingPipelineS1S2:
             ds_vrt.FlushCache()
             return ds_vrt
         return ds_s2_raw
+
+    def _resolve_nisar_raster(self) -> Optional[Path]:
+        """
+        Searches for an operational NISAR L2 GCOV multi-temporal GeoTIFF stack for the current
+        orbit or country. If a folder of per-date cycle mosaics (`nisar_cycle_mosaics` or `mozaika`)
+        is found without a stacked GeoTIFF, automatically stacks it into `1_input_stacks/`.
+        Returns `None` if no NISAR data is available so the pipeline cleanly falls back to S1 + S2.
+        """
+        candidate_dirs = [
+            self.base_dir / self.track / '1_input_stacks',
+            self.base_dir / self.country / 'NISAR',
+            self.base_dir / self.country / '1_input_stacks',
+            self.base_dir / self.track / 'processed_raster'
+        ]
+        patterns = [
+            f"*{self.sanitized_track}*NISAR*.tif",
+            f"{self.country}_NISAR_timeseries*.tif",
+            f"*{self.country}*NISAR*.tif",
+            f"*NISAR*.tif"
+        ]
+        for c_dir in candidate_dirs:
+            if c_dir.exists():
+                for pat in patterns:
+                    matches = [
+                        f for f in c_dir.glob(pat)
+                        if f.is_file() and not f.name.endswith(".tmp.tif") and not f.name.endswith(".ovr")
+                    ]
+                    if matches:
+                        return matches[0]
+
+        # Cross-orbit discovery fallback within the same country
+        c_root = self.base_dir / self.country
+        if c_root.exists():
+            for cand in sorted(c_root.glob("orbit_*/1_input_stacks/*NISAR*.tif")):
+                if cand.is_file() and not cand.name.endswith(".tmp.tif") and not cand.name.endswith(".ovr"):
+                    return cand
+
+        # Check if unstacked cycle mosaic folders exist (`nisar_cycle_mosaics` or `mozaika`)
+        mosaic_dirs = [
+            self.base_dir / self.track / "nisar_cycle_mosaics",
+            self.base_dir / self.track / "mozaika",
+            self.base_dir / self.country / "nisar_cycle_mosaics",
+            self.base_dir / self.country / "NISAR" / "mozaika"
+        ]
+        for m_dir in mosaic_dirs:
+            if m_dir.exists() and any(m_dir.glob("*/HHHH_gamma0.tif")):
+                try:
+                    nisar_mod_dir = _PROJECT_ROOT / "1b_NISAR_preprocessor" / "modules"
+                    if str(nisar_mod_dir) not in sys.path:
+                        sys.path.insert(0, str(nisar_mod_dir))
+                    from nisar_mosaic_stack import stack_nisar_timeseries
+                    out_stack = self.proc_dir / f"{self.file_prefix}_NISAR_timeseries.tif"
+                    stacked = stack_nisar_timeseries(m_dir, out_stack, convert_gamma0_to_db=True, build_overviews=True)
+                    if stacked and stacked.exists():
+                        return stacked
+                except Exception as e:
+                    print(f"    [WARNING] Could not auto-stack NISAR mosaic directory {m_dir}: {e}")
+        return None
+
+    def _open_nisar_aligned(self, ds_ref=None):
+        """
+        Opens the NISAR L-band stack and ensures exact pixel-for-pixel grid alignment
+        with the Sentinel-1 (or Sentinel-2) reference raster via a zero-copy GDAL VRT.
+        """
+        if not self.nisar_ras:
+            return None
+        if self.nisar_ras.is_dir():
+            try:
+                nisar_mod_dir = _PROJECT_ROOT / "1b_NISAR_preprocessor" / "modules"
+                if str(nisar_mod_dir) not in sys.path:
+                    sys.path.insert(0, str(nisar_mod_dir))
+                from nisar_mosaic_stack import stack_nisar_timeseries
+                out_stack = self.proc_dir / f"{self.file_prefix}_NISAR_timeseries.tif"
+                stacked = stack_nisar_timeseries(self.nisar_ras, out_stack, convert_gamma0_to_db=True, build_overviews=True)
+                if stacked and stacked.exists():
+                    self.nisar_ras = stacked
+            except Exception as e:
+                print(f"    [WARNING] Failed to stack NISAR directory {self.nisar_ras}: {e}")
+                return None
+
+        if not self.nisar_ras.exists():
+            return None
+
+        ds_nisar_raw = gdal.Open(str(self.nisar_ras), gdal.GA_ReadOnly)
+        if not ds_nisar_raw or ds_ref is None:
+            return ds_nisar_raw
+
+        ref_cols, ref_rows = ds_ref.RasterXSize, ds_ref.RasterYSize
+        n_cols, n_rows = ds_nisar_raw.RasterXSize, ds_nisar_raw.RasterYSize
+        gt_ref = ds_ref.GetGeoTransform()
+        gt_n = ds_nisar_raw.GetGeoTransform()
+        proj_ref = ds_ref.GetProjection()
+        proj_n = ds_nisar_raw.GetProjection()
+
+        same_dims = (ref_cols == n_cols and ref_rows == n_rows)
+        same_origin = (abs(gt_ref[0] - gt_n[0]) <= 5.0 and abs(gt_ref[3] - gt_n[3]) <= 5.0)
+        if same_dims and same_origin and proj_ref == proj_n:
+            return ds_nisar_raw
+
+        vrt_path = self.seg_dir / f"{self.file_prefix}_nisar_aligned_to_s1.vrt"
+        minx = gt_ref[0]
+        maxy = gt_ref[3]
+        maxx = minx + ref_cols * gt_ref[1]
+        miny = maxy + ref_rows * gt_ref[5]
+
+        warp_opts = gdal.WarpOptions(
+            format='VRT',
+            outputBounds=(minx, miny, maxx, maxy),
+            width=ref_cols,
+            height=ref_rows,
+            dstSRS=proj_ref,
+            resampleAlg=gdal.GRA_Bilinear
+        )
+        ds_vrt = gdal.Warp(str(vrt_path), ds_nisar_raw, options=warp_opts)
+        if ds_vrt:
+            for b in range(1, ds_nisar_raw.RasterCount + 1):
+                desc = ds_nisar_raw.GetRasterBand(b).GetDescription()
+                if desc:
+                    ds_vrt.GetRasterBand(b).SetDescription(desc)
+            ds_vrt.FlushCache()
+            return ds_vrt
+        return ds_nisar_raw
 
     def _resolve_samples_shp(self) -> Optional[Path]:
         samples_base = self.aux_dir / 'shapefiles_samples'
@@ -2398,8 +2601,11 @@ class ProcessingPipelineS1S2:
             try:
                 df_test = pd.read_csv(self.sel_csv, nrows=5)
                 n_feats = df_test.shape[1] - 2
+                csv_has_nisar = any('nisar' in str(c).lower() for c in df_test.columns)
                 if self.s1_ras and self.s2_ras and n_feats < 400:
                     print(f"[Stage {stage}/{self.total_stages}] Existing CSV has only {n_feats} features (expected ~450+ multimodal features). Re-extracting...")
+                elif bool(self.nisar_ras) != csv_has_nisar:
+                    print(f"[Stage {stage}/{self.total_stages}] NISAR modality state changed (NISAR present={bool(self.nisar_ras)}, CSV has NISAR={csv_has_nisar}). Re-extracting...")
                 else:
                     print(f"[Stage {stage}/{self.total_stages}] Multimodal features already extracted ({n_feats} features in {self.sel_csv.name}), skipping.")
                     return
@@ -2452,20 +2658,26 @@ class ProcessingPipelineS1S2:
 
         ds_s1 = gdal.Open(str(self.s1_ras)) if self.s1_ras else None
         ds_s2 = self._open_s2_aligned(ds_s1) if self.s2_ras else None
+        ds_nisar = self._open_nisar_aligned(ds_s1 if ds_s1 else ds_s2) if self.nisar_ras else None
 
         nbands_s1 = ds_s1.RasterCount if ds_s1 else 0
         nbands_s2 = ds_s2.RasterCount if ds_s2 else 0
+        nbands_nisar = ds_nisar.RasterCount if ds_nisar else 0
+        nisar_bpd = 4 if (nbands_nisar > 0 and nbands_nisar % 4 == 0) else (2 if nbands_nisar > 0 else 4)
         num_dates_s1 = nbands_s1 // 2
         num_dates_s2 = nbands_s2 // 9
+        num_dates_nisar = nbands_nisar // nisar_bpd if nbands_nisar > 0 else 0
 
         months_s1 = [parse_month_from_description(ds_s1.GetRasterBand(b).GetDescription()) for b in range(1, num_dates_s1 + 1)] if ds_s1 else [0]
         months_s2 = [parse_month_from_description(ds_s2.GetRasterBand(b).GetDescription()) for b in range(1, nbands_s2 + 1, 9)] if ds_s2 else [0]
+        months_nisar = [parse_month_from_description(ds_nisar.GetRasterBand(b).GetDescription()) for b in range(1, nbands_nisar + 1, nisar_bpd)] if ds_nisar else [0]
         needs_s2_boa_offset = _check_s2_needs_boa_offset_correction(ds_s2)
         if needs_s2_boa_offset:
             print("    [BOA OFFSET HARMONIZATION] Detected legacy N0400+/N05xx S2 stack without BOA_ADD_OFFSET correction; subtracting 1000 DN offset on the fly.")
 
         month_tensor_s1 = torch.tensor(months_s1, dtype=torch.long, device=device)
         month_tensor_s2 = torch.tensor(months_s2, dtype=torch.long, device=device)
+        month_tensor_nisar = torch.tensor(months_nisar, dtype=torch.long, device=device)
         month_tensor_joint = torch.tensor(months_s2 if num_dates_s2 >= num_dates_s1 else months_s1, dtype=torch.long, device=device)
 
         print("    Accumulating segment statistics using fast vectorized chunked I/O...")
@@ -2476,6 +2688,8 @@ class ProcessingPipelineS1S2:
         accum_s1_sq_sums = {sid: np.zeros(nbands_s1, dtype=np.float64) for sid in target_sids} if ds_s1 else {}
         accum_s2_sums = {sid: np.zeros(nbands_s2, dtype=np.float64) for sid in target_sids} if ds_s2 else {}
         accum_s2_sq_sums = {sid: np.zeros(nbands_s2, dtype=np.float64) for sid in target_sids} if ds_s2 else {}
+        accum_nisar_sums = {sid: np.zeros(nbands_nisar, dtype=np.float64) for sid in target_sids} if ds_nisar else {}
+        accum_nisar_sq_sums = {sid: np.zeros(nbands_nisar, dtype=np.float64) for sid in target_sids} if ds_nisar else {}
         target_sids_set = set(target_sids)
 
         for y in range(0, rows, tile_size):
@@ -2522,6 +2736,26 @@ class ProcessingPipelineS1S2:
                             accum_s2_sums[sid][b] += float(sums[idx])
                             accum_s2_sq_sums[sid][b] += float(sq_sums[idx])
 
+                if ds_nisar:
+                    nisar_tile = safe_read_tile(ds_nisar, x, y, xsize, ysize)
+                    if nisar_tile.ndim == 2: nisar_tile = nisar_tile[np.newaxis, ...]
+                    for b in range(nbands_nisar):
+                        b_mod = b % nisar_bpd
+                        b_arr = nisar_tile[b]
+                        if b_mod in (0, 1):
+                            # Power bands (HHHH, HVHV): handle both dB (< 0) and linear gamma0 (> 0)
+                            if np.any(b_arr < -0.5):
+                                b_vals = np.power(10.0, np.clip(b_arr, -45.0, 15.0) / 10.0).ravel()
+                            else:
+                                b_vals = np.clip(b_arr, 1e-6, 10.0).ravel()
+                        else:
+                            b_vals = b_arr.ravel()
+                        sums = np.bincount(flat_inv, weights=b_vals)
+                        sq_sums = np.bincount(flat_inv, weights=b_vals ** 2)
+                        for sid, idx in present_pairs:
+                            accum_nisar_sums[sid][b] += float(sums[idx])
+                            accum_nisar_sq_sums[sid][b] += float(sq_sums[idx])
+
         print(f"    Vectorized chunk I/O completed in {time.time() - t_io_start:.1f}s.")
 
         valid_sids = [sid for sid in target_sids if accum_counts[sid] > 0]
@@ -2529,9 +2763,12 @@ class ProcessingPipelineS1S2:
         s1_stds_list = []
         s2_means_list = []
         s2_stds_list = []
+        nisar_means_list = []
+        nisar_stds_list = []
         batch_records = []
         batch_s1_profiles = []
         batch_s2_profiles = []
+        batch_nisar_profiles = []
         batch_latlons = []
 
         for sid in valid_sids:
@@ -2579,6 +2816,29 @@ class ProcessingPipelineS1S2:
                         s2_prof[d, band_idx] = s2_mean[d * 9 + band_idx] / 10000.0
                 batch_s2_profiles.append(s2_prof)
 
+            if ds_nisar:
+                nisar_mean = np.zeros(nbands_nisar, dtype=np.float32)
+                nisar_std = np.zeros(nbands_nisar, dtype=np.float32)
+                for b_i in range(nbands_nisar):
+                    m_val = float(accum_nisar_sums[sid][b_i] / cnt)
+                    v_val = max(0.0, float(accum_nisar_sq_sums[sid][b_i] / cnt) - (m_val ** 2))
+                    sd_val = math.sqrt(v_val)
+                    if (b_i % nisar_bpd) in (0, 1):
+                        nisar_mean[b_i] = float(10.0 * math.log10(max(m_val, 1e-4)))
+                        nisar_std[b_i] = float(sd_val / (m_val + 1e-6))
+                    else:
+                        nisar_mean[b_i] = float(m_val)
+                        nisar_std[b_i] = float(sd_val)
+                    record[f'nisar_b{b_i}'] = float(nisar_mean[b_i])
+                nisar_means_list.append(nisar_mean)
+                nisar_stds_list.append(nisar_std)
+
+                nisar_prof = np.zeros((num_dates_nisar, 2), dtype=np.float32)
+                for d in range(num_dates_nisar):
+                    nisar_prof[d, 0] = (nisar_mean[d * nisar_bpd] + 25.0) / 25.0
+                    nisar_prof[d, 1] = (nisar_mean[d * nisar_bpd + 1] + 25.0) / 25.0
+                batch_nisar_profiles.append(nisar_prof)
+
             batch_records.append(record)
             batch_latlons.append([lat, lon])
 
@@ -2587,10 +2847,14 @@ class ProcessingPipelineS1S2:
         s1_stds_arr = np.array(s1_stds_list, dtype=np.float32) if s1_stds_list else None
         s2_means_arr = np.array(s2_means_list, dtype=np.float32) if s2_means_list else None
         s2_stds_arr = np.array(s2_stds_list, dtype=np.float32) if s2_stds_list else None
+        nisar_means_arr = np.array(nisar_means_list, dtype=np.float32) if nisar_means_list else None
+        nisar_stds_arr = np.array(nisar_stds_list, dtype=np.float32) if nisar_stds_list else None
 
         phys_indices_arr, phys_names = compute_vegetation_and_sar_indices(
             s1_means_arr, s2_means_arr, num_dates_s1, num_dates_s2,
-            s1_stds=s1_stds_arr, s2_stds=s2_stds_arr
+            s1_stds=s1_stds_arr, s2_stds=s2_stds_arr,
+            nisar_means=nisar_means_arr, num_dates_nisar=num_dates_nisar,
+            nisar_stds=nisar_stds_arr, nisar_bands_per_date=nisar_bpd
         )
         print(f"    Computed {phys_indices_arr.shape[1]} physical Red-Edge, SAR phenological & texture features.")
         for r_idx, rec in enumerate(batch_records):
@@ -2607,6 +2871,7 @@ class ProcessingPipelineS1S2:
 
             b_s1_t = torch.from_numpy(np.stack(batch_s1_profiles[start_i:end_i], axis=0)).to(device) if batch_s1_profiles else None
             b_s2_t = torch.from_numpy(np.stack(batch_s2_profiles[start_i:end_i], axis=0)).to(device) if batch_s2_profiles else None
+            b_nisar_t = torch.from_numpy(np.stack(batch_nisar_profiles[start_i:end_i], axis=0)).to(device) if batch_nisar_profiles else None
 
             embs_joint = extractor.get_joint_embeddings(b_s1_t, b_s2_t, b_ll, month_tensor_joint)
             for rec_i, emb in enumerate(embs_joint):
@@ -2625,6 +2890,12 @@ class ProcessingPipelineS1S2:
                     for f_i, f_val in enumerate(emb):
                         batch_records[start_i + rec_i][f'presto_s2_{f_i}'] = float(f_val)
 
+            if b_nisar_t is not None:
+                embs_nisar = extractor.get_s1_embeddings(b_nisar_t, b_ll, month_tensor_nisar)
+                for rec_i, emb in enumerate(embs_nisar):
+                    for f_i, f_val in enumerate(emb):
+                        batch_records[start_i + rec_i][f'presto_nisar_{f_i}'] = float(f_val)
+
             sys.stdout.write(f"\r    Presto batch progress: {end_i}/{len(batch_records)} segments ({(end_i/len(batch_records)*100):.1f}%)...  ")
             sys.stdout.flush()
 
@@ -2635,8 +2906,19 @@ class ProcessingPipelineS1S2:
     def stage_5_train_classifier(self, force_recompute=False, **kwargs):
         stage = 5
         if self.model_pkl.exists() and not force_recompute:
-            print(f"[Stage {stage}/{self.total_stages}] Fusion Ensemble model exists ({self.model_pkl.name}), skipping.")
-            return
+            try:
+                df_hdr = pd.read_csv(self.sel_csv, nrows=2)
+                csv_feat_cnt = df_hdr.shape[1] - 2
+                saved_data = joblib.load(self.model_pkl)
+                model_feat_cnt = len(saved_data.get('features', []))
+                if model_feat_cnt > 0 and model_feat_cnt != csv_feat_cnt:
+                    print(f"[Stage {stage}/{self.total_stages}] Feature count changed ({model_feat_cnt} -> {csv_feat_cnt}). Re-training Fusion Ensemble...")
+                else:
+                    print(f"[Stage {stage}/{self.total_stages}] Fusion Ensemble model exists ({self.model_pkl.name}), skipping.")
+                    return
+            except Exception:
+                print(f"[Stage {stage}/{self.total_stages}] Fusion Ensemble model exists ({self.model_pkl.name}), skipping.")
+                return
 
         print(f"[Stage {stage}/{self.total_stages}] Training Unified Multimodal Fusion Ensemble (PyTorch MLP + XGBoost with Label Noise Filtering)...")
 
@@ -2781,18 +3063,27 @@ class ProcessingPipelineS1S2:
 
         ds_s1 = gdal.Open(str(self.s1_ras)) if self.s1_ras else None
         ds_s2 = self._open_s2_aligned(ds_s1) if self.s2_ras else None
+        saved_features = data.get('features', [])
+        model_uses_nisar = any('nisar' in str(f).lower() for f in saved_features) if saved_features else (self.nisar_ras is not None)
+        ds_nisar = self._open_nisar_aligned(ds_s1 if ds_s1 else ds_s2) if (self.nisar_ras and model_uses_nisar) else None
+
         nbands_s1 = ds_s1.RasterCount if ds_s1 else 0
         nbands_s2 = ds_s2.RasterCount if ds_s2 else 0
+        nbands_nisar = ds_nisar.RasterCount if ds_nisar else 0
+        nisar_bpd = 4 if (nbands_nisar > 0 and nbands_nisar % 4 == 0) else (2 if nbands_nisar > 0 else 4)
         num_dates_s1 = nbands_s1 // 2
         num_dates_s2 = nbands_s2 // 9
+        num_dates_nisar = nbands_nisar // nisar_bpd if nbands_nisar > 0 else 0
 
         months_s1 = [parse_month_from_description(ds_s1.GetRasterBand(b).GetDescription()) for b in range(1, num_dates_s1 + 1)] if ds_s1 else [0]
         months_s2 = [parse_month_from_description(ds_s2.GetRasterBand(b).GetDescription()) for b in range(1, nbands_s2 + 1, 9)] if ds_s2 else [0]
+        months_nisar = [parse_month_from_description(ds_nisar.GetRasterBand(b).GetDescription()) for b in range(1, nbands_nisar + 1, nisar_bpd)] if ds_nisar else [0]
         needs_s2_boa_offset = _check_s2_needs_boa_offset_correction(ds_s2)
         if needs_s2_boa_offset:
             print("    [BOA OFFSET HARMONIZATION] Detected legacy N0400+/N05xx S2 stack without BOA_ADD_OFFSET correction; subtracting 1000 DN offset on the fly.")
         month_tensor_s1 = torch.tensor(months_s1, dtype=torch.long, device=device)
         month_tensor_s2 = torch.tensor(months_s2, dtype=torch.long, device=device)
+        month_tensor_nisar = torch.tensor(months_nisar, dtype=torch.long, device=device)
         month_tensor_joint = torch.tensor(months_s2 if num_dates_s2 >= num_dates_s1 else months_s1, dtype=torch.long, device=device)
 
         from scipy import ndimage
@@ -2908,10 +3199,50 @@ class ProcessingPipelineS1S2:
                                 s2_profiles[:, d, band_idx] = s2_means[:, d * 9 + band_idx] / 10000.0
                         b_s2 = torch.from_numpy(s2_profiles)
 
+                    nisar_means = None
+                    nisar_stds = None
+                    b_nisar = None
+                    if ds_nisar:
+                        nisar_tile = safe_read_tile(ds_nisar, x, y, xsize, ysize)
+                        if nisar_tile.ndim == 2: nisar_tile = nisar_tile[np.newaxis, ...]
+                        nisar_means = np.zeros((len(u_sids), nbands_nisar), dtype=np.float32)
+                        nisar_stds = np.zeros((len(u_sids), nbands_nisar), dtype=np.float32)
+                        for b in range(nbands_nisar):
+                            b_mod = b % nisar_bpd
+                            b_arr = nisar_tile[b]
+                            if b_mod in (0, 1):
+                                if np.any(b_arr < -0.5):
+                                    b_vals = np.power(10.0, np.clip(b_arr, -45.0, 15.0) / 10.0).ravel()
+                                else:
+                                    b_vals = np.clip(b_arr, 1e-6, 10.0).ravel()
+                                sums_n = np.bincount(flat_inv, weights=b_vals)
+                                sq_sums_n = np.bincount(flat_inv, weights=b_vals ** 2)
+                                m_n = sums_n[offset:] / valid_counts
+                                v_n = np.maximum(0.0, (sq_sums_n[offset:] / valid_counts) - (m_n ** 2))
+                                sd_n = np.sqrt(v_n)
+                                nisar_means[:, b] = (10.0 * np.log10(np.maximum(m_n, 1e-4))).astype(np.float32)
+                                nisar_stds[:, b] = (sd_n / (m_n + 1e-6)).astype(np.float32)
+                            else:
+                                b_vals = b_arr.ravel()
+                                sums_n = np.bincount(flat_inv, weights=b_vals)
+                                sq_sums_n = np.bincount(flat_inv, weights=b_vals ** 2)
+                                m_n = sums_n[offset:] / valid_counts
+                                v_n = np.maximum(0.0, (sq_sums_n[offset:] / valid_counts) - (m_n ** 2))
+                                nisar_means[:, b] = m_n.astype(np.float32)
+                                nisar_stds[:, b] = np.sqrt(v_n).astype(np.float32)
+
+                        nisar_profiles = np.zeros((len(u_sids), num_dates_nisar, 2), dtype=np.float32)
+                        for d in range(num_dates_nisar):
+                            nisar_profiles[:, d, 0] = (nisar_means[:, d * nisar_bpd] + 25.0) / 25.0
+                            nisar_profiles[:, d, 1] = (nisar_means[:, d * nisar_bpd + 1] + 25.0) / 25.0
+                        b_nisar = torch.from_numpy(nisar_profiles)
+
                     # Physical indices with intra-object variance / texture features
                     phys_indices, _ = compute_vegetation_and_sar_indices(
                         s1_means, s2_means, num_dates_s1, num_dates_s2,
-                        s1_stds=s1_stds, s2_stds=s2_stds
+                        s1_stds=s1_stds, s2_stds=s2_stds,
+                        nisar_means=nisar_means, num_dates_nisar=num_dates_nisar,
+                        nisar_stds=nisar_stds, nisar_bands_per_date=nisar_bpd
                     )
 
                     batch_queue.put({
@@ -2920,8 +3251,8 @@ class ProcessingPipelineS1S2:
                         'tile_cnt': tile_cnt,
                         'u_all': u_all, 'inv_arr': inv_arr, 'offset': offset,
                         'u_sids': u_sids, 'foot_arr': foot_arr,
-                        'b_ll': b_ll, 'b_s1': b_s1, 'b_s2': b_s2,
-                        's1_means': s1_means, 's2_means': s2_means,
+                        'b_ll': b_ll, 'b_s1': b_s1, 'b_s2': b_s2, 'b_nisar': b_nisar,
+                        's1_means': s1_means, 's2_means': s2_means, 'nisar_means': nisar_means,
                         'phys_indices': phys_indices
                     })
                 batch_queue.put(None)
@@ -2965,23 +3296,28 @@ class ProcessingPipelineS1S2:
             foot_arr = item['foot_arr']
             s1_means = item['s1_means']
             s2_means = item['s2_means']
+            nisar_means = item.get('nisar_means')
             phys_indices = item['phys_indices']
 
             b_ll = item['b_ll'].to(device, non_blocking=True)
             b_s1 = item['b_s1'].to(device, non_blocking=True) if item['b_s1'] is not None else None
             b_s2 = item['b_s2'].to(device, non_blocking=True) if item['b_s2'] is not None else None
+            b_nisar = item['b_nisar'].to(device, non_blocking=True) if item.get('b_nisar') is not None else None
 
             embs_s1 = extractor.get_s1_embeddings(b_s1, b_ll, month_tensor_s1) if b_s1 is not None else None
             embs_s2 = extractor.get_s2_embeddings(b_s2, b_ll, month_tensor_s2) if b_s2 is not None else None
+            embs_nisar = extractor.get_s1_embeddings(b_nisar, b_ll, month_tensor_nisar) if b_nisar is not None else None
             embs_joint = extractor.get_joint_embeddings(b_s1, b_s2, b_ll, month_tensor_joint)
 
             feat_blocks = []
             if s1_means is not None: feat_blocks.append(s1_means)
             if s2_means is not None: feat_blocks.append(s2_means)
+            if nisar_means is not None: feat_blocks.append(nisar_means)
             if phys_indices.shape[1] > 0: feat_blocks.append(phys_indices)
             if embs_joint is not None: feat_blocks.append(embs_joint)
             if embs_s1 is not None: feat_blocks.append(embs_s1)
             if embs_s2 is not None: feat_blocks.append(embs_s2)
+            if embs_nisar is not None: feat_blocks.append(embs_nisar)
 
             X_tile = np.hstack(feat_blocks)
             X_tile_scaled = scaler.transform(X_tile)
