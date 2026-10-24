@@ -85,9 +85,12 @@ def try_reuse_existing_country_s2_stack(track_name: str, country_code: str, over
     # Search for candidates across the country
     candidate_paths = [
         mosaic_stack.BASE_DIR / country_code.upper() / "S2" / f"{country_code.upper()}_S2_timeseries.tif",
-        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / "S2" / f"{country_code.upper()}_S2_timeseries.tif",
     ]
-    for c_dir in [mosaic_stack.BASE_DIR / country_code.upper(), Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper()]:
+    cand_country_dirs = [mosaic_stack.BASE_DIR / country_code.upper()]
+    if os.name == "nt":
+        candidate_paths.append(Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / "S2" / f"{country_code.upper()}_S2_timeseries.tif")
+        cand_country_dirs.append(Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper())
+    for c_dir in cand_country_dirs:
         if c_dir.exists():
             for o_stack in c_dir.glob("orbit_*/1_input_stacks/*S2*.tif"):
                 if o_stack.resolve() != dest_s2_stack.resolve() and not o_stack.name.endswith(".tmp.tif"):

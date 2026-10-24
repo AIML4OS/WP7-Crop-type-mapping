@@ -19,15 +19,18 @@ import os
 # How to run the script for a specific orbit (e.g., 161 for Netherlands):
 # python 1a_slice_calibration.py -s 2024-10-15 -e 2025-09-15 -c NL -o 161
 
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 GPT_EXE = os.environ.get("SNAP_GPT_EXE", r"D:/Program Files/esa-snap/bin/gpt.exe")
 
 # Path to SNAP AuxData
 AUXDATA_PATH = os.environ.get("SNAP_AUXDATA_PATH", r"C:/Users/Administrator/.snap/auxdata")
 
 # Repository where raw .SAFE data is stored
-LOCAL_REPO_PATH = os.environ.get("S1_REPO_PATH", r"Y:\Sentinel-1\SAR\IW_GRDH_1S")
+_DEFAULT_S1_REPO = "/eodata/Sentinel-1/SAR/IW_GRDH_1S" if (os.name != "nt" or pathlib.Path("/eodata").exists()) else r"Y:\Sentinel-1\SAR\IW_GRDH_1S"
+LOCAL_REPO_PATH = os.environ.get("S1_REPO_PATH", _DEFAULT_S1_REPO)
 # Directory where processing results (calibrated/sliced) will be saved
-WORKING_DIR = os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs")
+WORKING_DIR = os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs"))
+AUX_DIR = os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files"))
 
 
 # ================= XML TEMPLATES =================
@@ -169,7 +172,7 @@ CALIB_NODE = r'''  <node id="Calibration">
 
 
 # Path to NUTS shapefiles
-SHAPEFILES_DIR = pathlib.Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files")) / "shapefiles_nuts"
+SHAPEFILES_DIR = pathlib.Path(os.environ.get("AIML_AUX_DIR", AUX_DIR)) / "shapefiles_nuts"
 
 
 def load_shapefile_geometry_ogr(shp_path, target_epsg=4326):

@@ -25,8 +25,9 @@ from typing import List, Dict, Optional, Tuple
 from osgeo import gdal, ogr, osr
 
 # ================= CONFIGURATION =================
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
-AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxiliary_files"))
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
+AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files")))
 SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
 DEFAULT_DOYS = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]
 S2_SPECTRAL_BANDS = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B8A', 'B11', 'B12']
@@ -390,6 +391,7 @@ def mosaic_stack_clip_single_track(
     ds_final = gdal.Translate(str(out_final_tmp), str(out_vrt), options=trans_opts)
 
     if ds_final:
+        ds_final.SetMetadataItem("BOA_OFFSET_CORRECTED", "1")
         for b_idx, desc in enumerate(band_descriptions, start=1):
             band_obj = ds_final.GetRasterBand(b_idx)
             band_obj.SetDescription(desc)

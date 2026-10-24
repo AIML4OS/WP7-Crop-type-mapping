@@ -91,7 +91,11 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
+_PROJECT_ROOT = script_dir.parent
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
+AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files")))
+os.environ.setdefault("AIML_WORKING_DIR", str(BASE_DIR))
+os.environ.setdefault("AIML_AUX_DIR", str(AUX_DIR))
 
 # Register unpickling compatibility in __main__
 try:
@@ -107,7 +111,9 @@ except Exception:
 def discover_available_tracks() -> List[str]:
     """Scans workingDirs and workingDir to find all available country/orbit directories."""
     tracks = set()
-    candidate_bases = [BASE_DIR, Path(r"D:/AIML_CropMapper_Cloud/workingDir")]
+    candidate_bases = [BASE_DIR]
+    if os.name == "nt":
+        candidate_bases.append(Path(r"D:/AIML_CropMapper_Cloud/workingDir"))
     for b in candidate_bases:
         if b.exists():
             for country_dir in sorted(b.iterdir()):

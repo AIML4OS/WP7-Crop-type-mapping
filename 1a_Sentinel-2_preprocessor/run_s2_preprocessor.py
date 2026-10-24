@@ -60,7 +60,23 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
+_PROJECT_ROOT = script_dir.parent
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
+AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files")))
+try:
+    _cfg_path = script_dir / "config_s2.json"
+    if _cfg_path.exists():
+        with open(_cfg_path, "r", encoding="utf-8") as _f:
+            _cfg_data = json.load(_f)
+            if "paths" in _cfg_data:
+                if "AIML_WORKING_DIR" not in os.environ and "working_dir" in _cfg_data["paths"]:
+                    BASE_DIR = Path(_cfg_data["paths"]["working_dir"])
+                if "AIML_AUX_DIR" not in os.environ and "aux_dir" in _cfg_data["paths"]:
+                    AUX_DIR = Path(_cfg_data["paths"]["aux_dir"])
+except Exception:
+    pass
+os.environ.setdefault("AIML_WORKING_DIR", str(BASE_DIR))
+os.environ.setdefault("AIML_AUX_DIR", str(AUX_DIR))
 DEFAULT_DOYS = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]
 
 REGIONAL_DOYS = {
@@ -134,7 +150,10 @@ def detect_s2_source() -> str:
 def discover_country_orbits(country_code: str) -> List[int]:
     """Finds existing orbit folders or falls back to master orbit registry."""
     found = set()
-    for b in [BASE_DIR, Path(r"D:/AIML_CropMapper_Cloud/workingDir")]:
+    cand_bases = [BASE_DIR]
+    if os.name == "nt":
+        cand_bases.append(Path(r"D:/AIML_CropMapper_Cloud/workingDir"))
+    for b in cand_bases:
         c_dir = b / country_code.upper()
         if c_dir.exists():
             for d in c_dir.glob("orbit_*"):

@@ -29,12 +29,14 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from zipfile import ZipFile, BadZipfile
 
+import numpy as np
 import requests
 from osgeo import gdal, ogr, osr
 
 # ================= CONFIGURATION =================
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
-AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxiliary_files"))
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
+AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files")))
 SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
 
 CDSE_USERNAME = os.environ.get("CDSE_USERNAME", "")
@@ -58,9 +60,9 @@ try:
                 if not CDSE_PASSWORD:
                     CDSE_PASSWORD = _data.get("cdse", {}).get("password") or _data.get("password", "")
                 if "paths" in _data:
-                    if "working_dir" in _data["paths"]:
+                    if "AIML_WORKING_DIR" not in os.environ and "working_dir" in _data["paths"]:
                         BASE_DIR = Path(_data["paths"]["working_dir"])
-                    if "aux_dir" in _data["paths"]:
+                    if "AIML_AUX_DIR" not in os.environ and "aux_dir" in _data["paths"]:
                         AUX_DIR = Path(_data["paths"]["aux_dir"])
                         SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
 except Exception:
@@ -392,6 +394,21 @@ def download_single_product(product: Dict, output_dir: Path, username: str, pass
         return None
 
 
+def detect_boa_add_offset(safe_dir: Path) -> int:
+    """
+    Detects ESA Processing Baseline 04.00+ / 05.xx BOA_ADD_OFFSET (typically -1000 DN).
+    Since Jan 25, 2022 (N0400+), ESA adds +1000 DN to all L2A spectral reflectance bands.
+    """
+    try:
+        m = re.search(r'_N(\d{4})_', safe_dir.name)
+        if m:
+            baseline_num = int(m.group(1))
+            return -1000 if baseline_num >= 400 else 0
+    except Exception:
+        pass
+    return 0
+
+
 def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
     output_dest_dir.mkdir(parents=True, exist_ok=True)
     g_dir = safe_dir / 'GRANULE'
@@ -413,6 +430,7 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
     if not b02_file or not b02_file.exists():
         return False
 
+    boa_offset = detect_boa_add_offset(safe_dir)
     stem_name = safe_dir.stem
     b02_str = str(b02_file)
     img_data_dir = b02_file.parent.parent if b02_file.parent.name in ('R20m', 'R10m') else b02_file.parent
@@ -448,10 +466,30 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
         try:
             ds = gdal.Open(str(band_src))
             if ds is not None:
-                options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
-                out_ds = gdal.Translate(str(band_dst_tif), ds, options=options)
-                out_ds = None  # Explicitly close and flush to disk to avoid Windows handle locks
-                ds = None
+                if band != 'SCL' and boa_offset != 0:
+                    arr = ds.GetRasterBand(1).ReadAsArray()
+                    if arr is not None:
+                        corr = np.where(arr > 0, np.clip(arr.astype(np.int32) + boa_offset, 1, 65535), 0).astype(np.uint16)
+                        drv = gdal.GetDriverByName('GTiff')
+                        out_ds = drv.Create(
+                            str(band_dst_tif), ds.RasterXSize, ds.RasterYSize, 1, gdal.GDT_UInt16,
+                            options=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS']
+                        )
+                        out_ds.SetGeoTransform(ds.GetGeoTransform())
+                        out_ds.SetProjection(ds.GetProjection())
+                        out_ds.SetMetadataItem("BOA_OFFSET_CORRECTED", "1")
+                        out_b = out_ds.GetRasterBand(1)
+                        out_b.SetNoDataValue(0)
+                        out_b.WriteArray(corr)
+                        out_ds = None
+                    ds = None
+                else:
+                    options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
+                    out_ds = gdal.Translate(str(band_dst_tif), ds, options=options)
+                    if out_ds is not None and band != 'SCL':
+                        out_ds.SetMetadataItem("BOA_OFFSET_CORRECTED", "1")
+                    out_ds = None  # Explicitly close and flush to disk to avoid Windows handle locks
+                    ds = None
                 if not (band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024):
                     success = False
             else:

@@ -13,8 +13,10 @@ from osgeo import gdal, gdalconst, ogr, osr
 
 # ================= CONFIGURATION =================
 # Update these paths to match your system
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", "D:/AIML_CropMapper_Cloud/workingDirs"))
-SHAPEFILES_DIR = Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files")) / "shapefiles_nuts"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
+WORKING_DIR = BASE_DIR
+SHAPEFILES_DIR = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files"))) / "shapefiles_nuts"
 
 
 
@@ -105,8 +107,9 @@ def stack_and_clip(track: str):
     candidate_finals = [
         track_dir / '_temp_processing' / 's1_sar' / '3_coregistered',
         track_dir / 'S1_final_preprocessing',
-        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track / 'S1_final_preprocessing'
     ]
+    if os.name == 'nt':
+        candidate_finals.append(Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track / 'S1_final_preprocessing')
     final_dir = candidate_finals[0]
     for c in candidate_finals:
         if c.exists() and (list(c.glob('*_VH.data')) or list(c.glob('*_VV.data'))):

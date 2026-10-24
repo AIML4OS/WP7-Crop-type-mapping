@@ -89,8 +89,9 @@ except ImportError:
     HAS_SKIMAGE = False
 
 # Global project directories
-base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
-aux_dir = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxiliary_files"))
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+base_dir = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
+aux_dir = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files")))
 presto_dir = aux_dir / "Presto_models"
 
 TOTAL_STAGES = 8
@@ -185,16 +186,60 @@ def safe_read_tile(ds, x: int, y: int, xsize: int, ysize: int, band_idx: int = N
 # =====================================================================
 
 def parse_month_from_description(desc: str) -> int:
-    """Parses month index (0-11) from raster band descriptions."""
+    """
+    Parses 0-indexed month (0-11) from raster band descriptions across all S1/S2 formats:
+      - DDMonYYYY: e.g. 'S2_B02_14Feb2025_doy45', 'Sigma0_VH_16Oct2024_db', 'Sigma0_VH_db_12Mar2025'
+      - YYYYMMDD / YYYY-MM-DD: e.g. 'VH_20250312', '2025-03-12'
+      - DOY: e.g. 'doy062', 'day62'
+    """
+    s = str(desc)
     months_map = {
         'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5,
         'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
     }
-    match = re.search(r'_(?:\d+)?([a-zA-Z]{3})\d{4}_', str(desc))
+    match = re.search(r'(?:_|\b)(?:\d{1,2})?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\d{4}(?:_|\b)', s, re.IGNORECASE)
     if match:
-        mon_str = match.group(1).lower()
-        return months_map.get(mon_str, 0)
+        return months_map.get(match.group(1).lower(), 0)
+    match_ymd = re.search(r'(20\d{2})[-_]?(\d{2})[-_]?(\d{2})', s)
+    if match_ymd:
+        m = int(match_ymd.group(2))
+        if 1 <= m <= 12:
+            return m - 1
+    match_doy = re.search(r'(?:doy|day)(\d{1,3})', s, re.IGNORECASE)
+    if match_doy:
+        doy = max(1, min(365, int(match_doy.group(1))))
+        dt = datetime.date(2025, 1, 1) + datetime.timedelta(days=doy - 1)
+        return dt.month - 1
     return 0
+
+
+def _check_s2_needs_boa_offset_correction(ds_s2) -> bool:
+    """
+    Detects whether a Sentinel-2 L2A multi-temporal raster stack was generated from
+    ESA Processing Baseline 04.00+ / 05.xx (2022+) without subtracting BOA_ADD_OFFSET (-1000 DN).
+    """
+    if ds_s2 is None or ds_s2.RasterCount == 0:
+        return False
+    if ds_s2.GetMetadataItem("BOA_OFFSET_CORRECTED") == "1":
+        return False
+    desc1 = str(ds_s2.GetRasterBand(1).GetDescription() or "")
+    m_yr = re.search(r'(202[2-9]|203\d)', desc1)
+    if not m_yr:
+        return False
+    try:
+        # Sample central window of Band 1 (B02 Blue); true B02 1st percentile is < 500 DN,
+        # whereas uncorrected N0400+/N05xx scenes have a +1000 DN baseline floor.
+        w, h = ds_s2.RasterXSize, ds_s2.RasterYSize
+        sw, sh = min(512, w), min(512, h)
+        x0, y0 = max(0, (w - sw) // 2), max(0, (h - sh) // 2)
+        arr = ds_s2.GetRasterBand(1).ReadAsArray(x0, y0, sw, sh)
+        if arr is not None:
+            v = arr[arr > 0]
+            if len(v) > 50 and float(np.percentile(v, 1)) >= 650.0:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def get_crop_aggregation(country: str, learn_shp_path: Optional[Path]) -> dict:
@@ -218,66 +263,67 @@ def _match_crop_keyword(keywords: list, text: str) -> bool:
     return False
 
 
-def get_crop_area_multiplier(cid: int, crop_name: str = "", expected_classes: int = 16) -> float:
+def get_crop_area_multiplier(cid: int, crop_name: str = "", expected_classes: int = 16, country: str = "") -> float:
     """
     Returns the typical physical parcel size in square meters (m^2) for a given crop.
-    Directly incorporates the multi-crop area table from FullImageClassification.py,
-    supporting multi-lingual keywords (Polish, English, Portuguese, Dutch, French, German, Spanish, Italian),
-    broad aggregated classes, and adaptive default fallbacks based on classification taxonomy depth.
+    Supports multi-lingual EU-27 keywords, EuroCrops HCAT2 nomenclature, broad aggregated classes,
+    and adaptive default fallbacks based on classification taxonomy depth.
     """
-    name = (crop_name or "").lower().strip()
+    name = (crop_name or "").lower().replace('_', ' ').strip()
 
-    # 1. Broad aggregated classes (from FullImageClassification.py MR / WOSU configs)
-    if _match_crop_keyword(['zboza ozime', 'uprawy ozime', 'oleiste', 'gorczycowate'], name):
+    # 1. Broad aggregated classes (from FullImageClassification.py MR / WOSU configs & EuroCrops)
+    if _match_crop_keyword(['zboza ozime', 'uprawy ozime', 'oleiste', 'gorczycowate', 'winter cereal', 'oilseed'], name):
         return 70000.0
-    if _match_crop_keyword(['zboza jare', 'uprawy jare', 'straczkowe', 'warzywa i okopowe', 'warzywa_okopowe'], name):
+    if _match_crop_keyword(['zboza jare', 'uprawy jare', 'straczkowe', 'warzywa i okopowe', 'warzywa okopowe', 'spring cereal', 'pulses'], name):
         return 40000.0
-    if _match_crop_keyword(['owoce i krzewy', 'owoce_krzewy'], name):
+    if _match_crop_keyword(['owoce i krzewy', 'owoce krzewy', 'permanent crop'], name):
         return 20000.0
-    if _match_crop_keyword(['zboza'], name):
+    if _match_crop_keyword(['zboza', 'arable crops', 'cereals'], name):
         return 100000.0
 
-    # 2. Multi-lingual Keyword Matching across EN, PT, PL, NL, FR, DE, ES, IT
+    # 2. Multi-lingual Keyword Matching across EU-27 & EuroCrops HCAT2
     # Tier 1: Large broadacre & grasslands (50,000 - 70,000 m^2)
     if _match_crop_keyword([
         'grass', 'pasture', 'pastagem', 'prado', 'fallow', 'pousio', 'trawa', 'trawiast',
         'ugor', 'braak', 'blijvend', 'tijdelijk', 'prairie', 'weide', 'clover', 'trevo',
-        'koniczyna', 'klaver', 'lucerne', 'luzerna', 'lucerna', 'luzerne', 'pastos', 'barbecho', 'tiuz'
+        'koniczyna', 'klaver', 'lucerne', 'luzerna', 'lucerna', 'luzerne', 'alfalfa', 'pastos',
+        'barbecho', 'tiuz', 'meadow', 'louka', 'luka', 'pasune', 'pajiste', 'gyep', 'legelo',
+        'nurmi', 'vall', 'betesmark', 'gras', 'gwr', 'grunland'
     ], name):
         return 70000.0
-    if _match_crop_keyword(['maize', 'milho', 'kukurydza', 'corn', 'mais', 'maiz'], name):
+    if _match_crop_keyword(['maize', 'milho', 'kukurydza', 'corn', 'mais', 'maiz', 'kukurice', 'kukuruz', 'porumb', 'kukorica', ' царевица', 'αραβόσιτος'], name):
         return 70000.0
-    if _match_crop_keyword(['wheat', 'trigo', 'pszenica', 'tarwe', 'ble', 'weizen'], name):
+    if _match_crop_keyword(['wheat', 'trigo', 'pszenica', 'tarwe', 'ble', 'weizen', 'spelt', 'durum', 'psenice', 'psenica', 'grau', 'buza', 'vete', 'hvede', 'vehna', 'kvieciai', 'kviesi', 'nisu', 'пшеница', 'σιτάρι'], name):
         return 70000.0
-    if _match_crop_keyword(['rapeseed', 'canola', 'colza', 'rzepak', 'koolzaad', 'raps'], name):
+    if _match_crop_keyword(['rapeseed', 'rape', 'canola', 'colza', 'rzepak', 'koolzaad', 'raps', 'repka', 'rapita', 'repce', 'rapsi', 'rypsi', 'рапица'], name):
         return 60000.0
-    if _match_crop_keyword(['triticale', 'pszenzyto', 'koorn'], name):
+    if _match_crop_keyword(['triticale', 'pszenzyto', 'koorn', 'tritikale', 'тритикале'], name):
         return 50000.0
-    if _match_crop_keyword(['rice', 'arroz', 'ryz', 'riz', 'reis', 'riso'], name):
+    if _match_crop_keyword(['rice', 'arroz', 'ryz', 'riz', 'reis', 'riso', 'orez', 'rizs', 'ориз', 'ρύζι'], name):
         return 50000.0
-    if _match_crop_keyword(['sunflower', 'girassol', 'slonecznik', 'tournesol', 'zonnebloem', 'sonnenblume', 'girasole'], name):
+    if _match_crop_keyword(['sunflower', 'girassol', 'slonecznik', 'tournesol', 'zonnebloem', 'sonnenblume', 'girasole', 'slunecnice', 'slnecnica', 'floarea soarelui', 'napraforgo', 'слънчоглед', 'ηλίανθος'], name):
         return 50000.0
 
     # Tier 2: Standard cereals & field crops (30,000 - 40,000 m^2)
-    if _match_crop_keyword(['barley', 'cevada', 'jeczmien', 'gerst', 'orge', 'gerste', 'cebada', 'orzo'], name):
+    if _match_crop_keyword(['barley', 'cevada', 'jeczmien', 'gerst', 'orge', 'gerste', 'cebada', 'orzo', 'jecmen', 'jacmen', 'orz', 'arpa', 'korn', 'byg', 'ohra', 'miežiai', 'miezi', 'oder', 'ечемик', 'κριθάρι'], name):
         return 40000.0
-    if _match_crop_keyword(['rye', 'centeio', 'zyto', 'rogge', 'seigle', 'roggen', 'centeno', 'segale'], name):
+    if _match_crop_keyword(['rye', 'centeio', 'zyto', 'rogge', 'seigle', 'roggen', 'centeno', 'segale', 'zito', 'secara', 'rozs', 'rag', 'ruis', 'rugiai', 'rudzi', 'rukis', 'ръж'], name):
         return 40000.0
-    if _match_crop_keyword(['oats', 'aveia', 'owies', 'haver', 'avoine', 'hafer', 'avena'], name):
+    if _match_crop_keyword(['oats', 'aveia', 'owies', 'haver', 'avoine', 'hafer', 'avena', 'oves', 'ovaz', 'zab', 'havre', 'kaura', 'avizos', 'auzas', 'kaer', 'овес', 'βρώμη'], name):
         return 40000.0
-    if _match_crop_keyword(['sorghum', 'sorgo'], name):
+    if _match_crop_keyword(['sorghum', 'sorgo', 'cirok', 'sorg'], name):
         return 40000.0
-    if _match_crop_keyword(['sugar beet', 'beet', 'beterraba', 'burak', 'suikerbiet', 'betterave', 'zuckerruebe', 'remolacha', 'barbabietola'], name):
+    if _match_crop_keyword(['sugar beet', 'beet', 'beterraba', 'burak', 'suikerbiet', 'betterave', 'zuckerruebe', 'remolacha', 'barbabietola', 'repa', 'sfecla', 'cukorrepa', 'sockerbeta', 'sukkerroe', 'sokerijuurikas'], name):
         return 40000.0
-    if _match_crop_keyword(['mieszanki zbozowe'], name):
+    if _match_crop_keyword(['mieszanki zbozowe', 'mixed cereal'], name):
         return 40000.0
-    if _match_crop_keyword(['cotton', 'algodao', 'algodon', 'coton'], name):
+    if _match_crop_keyword(['cotton', 'algodao', 'algodon', 'coton', 'βαμβάκι', 'памук'], name):
         return 40000.0
-    if _match_crop_keyword(['olive', 'olival', 'oliva', 'oliven', 'olivier', 'olivo'], name):
+    if _match_crop_keyword(['olive', 'olival', 'oliva', 'oliven', 'olivier', 'olivo', 'ελιά'], name):
         return 30000.0
     if _match_crop_keyword(['lubin', 'lupin', 'tremo'], name):
         return 30000.0
-    if _match_crop_keyword(['pea', 'ervilha', 'groch', 'erwt', 'pois', 'erbse', 'guisante', 'pisello'], name):
+    if _match_crop_keyword(['pea', 'ervilha', 'groch', 'erwt', 'pois', 'erbse', 'guisante', 'pisello', 'hrach', 'mazare', 'borso', 'arter', 'herne', 'zirniai', 'zirni'], name):
         return 30000.0
 
     # Tier 3: Orchards, vineyards & tubers (20,000 - 25,000 m^2)
@@ -346,16 +392,17 @@ def get_crop_area_multiplier(cid: int, crop_name: str = "", expected_classes: in
     if _match_crop_keyword(['leszczyna', 'hazelnut'], name):
         return 2000.0
 
-    # 3. Country-Specific Class ID Fallbacks (e.g. Standard 37 Classes in Poland)
-    area_thresholds_pl = {
-        1: 3000, 2: 5000, 3: 5000, 4: 40000, 5: 5000, 6: 10000, 7: 5000, 8: 30000, 9: 15000,
-        10: 20000, 11: 30000, 12: 40000, 13: 5000, 14: 70000, 15: 2000, 16: 30000, 17: 5000,
-        18: 3000, 19: 40000, 20: 2000, 21: 40000, 22: 2000, 23: 10000, 24: 25000, 25: 70000,
-        26: 10000, 27: 50000, 28: 2000, 29: 60000, 30: 3000, 31: 15000, 32: 70000, 33: 5000,
-        34: 3000, 35: 5000, 36: 20000, 37: 40000
-    }
-    if cid in area_thresholds_pl:
-        return float(area_thresholds_pl[cid])
+    # 3. Country-Specific Class ID Fallbacks (strictly for Poland 37-class taxonomy)
+    if country.upper() == 'PL' or (not country and expected_classes == 37):
+        area_thresholds_pl = {
+            1: 3000, 2: 5000, 3: 5000, 4: 40000, 5: 5000, 6: 10000, 7: 5000, 8: 30000, 9: 15000,
+            10: 20000, 11: 30000, 12: 40000, 13: 5000, 14: 70000, 15: 2000, 16: 30000, 17: 5000,
+            18: 3000, 19: 40000, 20: 2000, 21: 40000, 22: 2000, 23: 10000, 24: 25000, 25: 70000,
+            26: 10000, 27: 50000, 28: 2000, 29: 60000, 30: 3000, 31: 15000, 32: 70000, 33: 5000,
+            34: 3000, 35: 5000, 36: 20000, 37: 40000
+        }
+        if cid in area_thresholds_pl:
+            return float(area_thresholds_pl[cid])
 
     # 4. Adaptive default agricultural fallback based on taxonomy depth (from FullImageClassification.py line 120)
     return 50000.0 if expected_classes < 10 else 10000.0
@@ -365,7 +412,8 @@ def compute_dynamic_bayesian_priors(
     classes: np.ndarray,
     class_counts: dict,
     total_samples: int,
-    id_to_name: Optional[dict] = None
+    id_to_name: Optional[dict] = None,
+    country: str = ""
 ) -> np.ndarray:
     """
     Computes intelligent dynamic Bayesian priors combining:
@@ -383,7 +431,7 @@ def compute_dynamic_bayesian_priors(
 
     # 1. P_true: physical parcel surface area distribution
     area_multipliers = np.array([
-        get_crop_area_multiplier(int(c), id_to_name.get(int(c), ""), expected_classes=n_classes)
+        get_crop_area_multiplier(int(c), id_to_name.get(int(c), ""), expected_classes=n_classes, country=country)
         for c in classes
     ], dtype=np.float64)
 
@@ -2099,7 +2147,18 @@ class ProcessingPipelineS1S2:
         if self.seg_mode == 'sam':
             self._run_python_segmentation_tiled(comp_ras, self.stage1_params, 'python_sam')
         else:
-            pixels_per_seg = max(10, int((self.slic_segment_ha * 10000.0) / 100.0))
+            # Apply Web Mercator (EPSG:3857) latitude scale correction relative to mid-latitude Europe (50 deg N)
+            # so superpixel physical ground area remains consistent from Mediterranean (37 deg) to Scandinavia (65 deg)
+            lat_scale = 1.0
+            try:
+                y_center = gt[3] + 0.5 * rows * gt[5]
+                if abs(y_center) > 100000.0:  # Projected meters in EPSG:3857
+                    cos2_phi = 1.0 / (math.cosh(y_center / 6378137.0) ** 2)
+                    cos2_ref = math.cos(math.radians(50.0)) ** 2  # ~0.4132
+                    lat_scale = float(np.clip(cos2_ref / max(cos2_phi, 0.05), 0.65, 2.2))
+            except Exception:
+                lat_scale = 1.0
+            pixels_per_seg = max(10, int(((self.slic_segment_ha * 10000.0) / 100.0) * lat_scale))
             tile_sz = 2048
             buf_sz = 64
             max_tile_pixels = (tile_sz + 2 * buf_sz) ** 2
@@ -2363,7 +2422,10 @@ class ProcessingPipelineS1S2:
         num_dates_s2 = nbands_s2 // 9
 
         months_s1 = [parse_month_from_description(ds_s1.GetRasterBand(b).GetDescription()) for b in range(1, num_dates_s1 + 1)] if ds_s1 else [0]
-        months_s2 = [parse_month_from_description(ds_s2.GetRasterBand(b).GetDescription()) for b in range(1, num_dates_s2 + 1)] if ds_s2 else [0]
+        months_s2 = [parse_month_from_description(ds_s2.GetRasterBand(b).GetDescription()) for b in range(1, nbands_s2 + 1, 9)] if ds_s2 else [0]
+        needs_s2_boa_offset = _check_s2_needs_boa_offset_correction(ds_s2)
+        if needs_s2_boa_offset:
+            print("    [BOA OFFSET HARMONIZATION] Detected legacy N0400+/N05xx S2 stack without BOA_ADD_OFFSET correction; subtracting 1000 DN offset on the fly.")
 
         month_tensor_s1 = torch.tensor(months_s1, dtype=torch.long, device=device)
         month_tensor_s2 = torch.tensor(months_s2, dtype=torch.long, device=device)
@@ -2413,6 +2475,8 @@ class ProcessingPipelineS1S2:
                 if ds_s2:
                     s2_tile = safe_read_tile(ds_s2, x, y, xsize, ysize)
                     if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
+                    if needs_s2_boa_offset:
+                        s2_tile = np.where(s2_tile > 0, np.maximum(1.0, s2_tile - 1000.0), 0.0)
                     for b in range(nbands_s2):
                         b_vals = s2_tile[b].ravel()
                         sums = np.bincount(flat_inv, weights=b_vals)
@@ -2641,8 +2705,8 @@ class ProcessingPipelineS1S2:
             try:
                 gdf_n = gpd.read_file(str(shp_to_check), engine="pyogrio")
                 col_map = {c.lower(): c for c in gdf_n.columns}
-                id_col_key = next((k for k in ['crop_id', 'crop_ids', 'code', 'id', 'class_id'] if k in col_map), None)
-                name_col_key = next((k for k in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom'] if k in col_map), None)
+                id_col_key = next((k for k in ['crop_id', 'crop_ids', 'code', 'id', 'class_id', 'ec_hcat_c', 'hcat2_code'] if k in col_map), None)
+                name_col_key = next((k for k in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom', 'ec_hcat_n', 'hcat2_name', 'crop_eng'] if k in col_map), None)
                 if id_col_key and name_col_key:
                     id_to_name = dict(zip(gdf_n[col_map[id_col_key]].astype(int), gdf_n[col_map[name_col_key]].astype(str)))
             except Exception as e:
@@ -2663,7 +2727,8 @@ class ProcessingPipelineS1S2:
             classes=classes,
             class_counts=class_counts,
             total_samples=len(df_learn),
-            id_to_name=id_to_name
+            id_to_name=id_to_name,
+            country=self.country
         )
         print("    Dynamic Bayesian class priors calculated:")
         for c_val, p_val in zip(classes, priors_arr):
@@ -2685,7 +2750,10 @@ class ProcessingPipelineS1S2:
         num_dates_s2 = nbands_s2 // 9
 
         months_s1 = [parse_month_from_description(ds_s1.GetRasterBand(b).GetDescription()) for b in range(1, num_dates_s1 + 1)] if ds_s1 else [0]
-        months_s2 = [parse_month_from_description(ds_s2.GetRasterBand(b).GetDescription()) for b in range(1, num_dates_s2 + 1)] if ds_s2 else [0]
+        months_s2 = [parse_month_from_description(ds_s2.GetRasterBand(b).GetDescription()) for b in range(1, nbands_s2 + 1, 9)] if ds_s2 else [0]
+        needs_s2_boa_offset = _check_s2_needs_boa_offset_correction(ds_s2)
+        if needs_s2_boa_offset:
+            print("    [BOA OFFSET HARMONIZATION] Detected legacy N0400+/N05xx S2 stack without BOA_ADD_OFFSET correction; subtracting 1000 DN offset on the fly.")
         month_tensor_s1 = torch.tensor(months_s1, dtype=torch.long, device=device)
         month_tensor_s2 = torch.tensor(months_s2, dtype=torch.long, device=device)
         month_tensor_joint = torch.tensor(months_s2 if num_dates_s2 >= num_dates_s1 else months_s1, dtype=torch.long, device=device)
@@ -2783,6 +2851,8 @@ class ProcessingPipelineS1S2:
                     if ds_s2:
                         s2_tile = safe_read_tile(ds_s2, x, y, xsize, ysize)
                         if s2_tile.ndim == 2: s2_tile = s2_tile[np.newaxis, ...]
+                        if needs_s2_boa_offset:
+                            s2_tile = np.where(s2_tile > 0, np.maximum(1.0, s2_tile - 1000.0), 0.0)
                         s2_means = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
                         s2_stds = np.zeros((len(u_sids), nbands_s2), dtype=np.float32)
                         for b in range(nbands_s2):

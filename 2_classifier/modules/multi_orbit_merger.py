@@ -30,12 +30,15 @@
 #    python 2_merge_classifications.py --track NL --suffix _prithvi_sam
 
 import argparse
+import math
 import os
 from pathlib import Path
 from typing import List, Tuple
 import json
 import numpy as np
 from osgeo import gdal
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 import geopandas as gpd
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 import openpyxl
@@ -226,11 +229,16 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
 
 def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = '', method: str = 'confidence'):
     prefix = country.upper()
-    base_dir = Path(os.environ.get("AIML_WORKING_DIR", r"D:\AIML_CropMapper_Cloud\workingDirs"))
+    base_dir = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
+    aux_dir = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files")))
     if not base_dir.exists() or not (base_dir / prefix).exists():
-        fallback_dir = Path(r"D:\AIML_CropMapper_Cloud\workingDir")
-        if (fallback_dir / prefix).exists():
-            base_dir = fallback_dir
+        cand_fallbacks = [_PROJECT_ROOT / "workingDir"]
+        if os.name == "nt":
+            cand_fallbacks.extend([Path(r"D:\AIML_CropMapper_Cloud\workingDirs"), Path(r"D:\AIML_CropMapper_Cloud\workingDir")])
+        for fb in cand_fallbacks:
+            if (fb / prefix).exists():
+                base_dir = fb
+                break
 
     if not suffix:
         candidate_suffixes = [
@@ -442,7 +450,7 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
         print(f"Merged control points: {len(ctrl)} total (dropped {before_len - len(ctrl)} duplicates)")
     else:
         # Fallback to the country-wide main samples database (if exists) or error
-        national_samples_shp = base_dir.parent / 'auxiliary_files' / 'shapefiles_samples' / base_country / 'samples.shp'
+        national_samples_shp = aux_dir / 'shapefiles_samples' / base_country / 'samples.shp'
         if national_samples_shp.exists():
             print(f"No track-specific control shapefiles found. Falling back to national main samples: {national_samples_shp}")
             ctrl = gpd.read_file(str(national_samples_shp))
@@ -450,8 +458,13 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
             raise FileNotFoundError(f"No control shapefiles found and national fallback not found at {national_samples_shp}")
     inv      = gdal.InvGeoTransform(gt_global)
 
-    x_coords = ctrl.geometry.x.values
-    y_coords = ctrl.geometry.y.values
+    ctrl_proj = ctrl.to_crs(proj) if (ctrl.crs and proj) else ctrl
+    if len(ctrl_proj) > 0 and ctrl_proj.geometry.iloc[0].geom_type == 'Point':
+        x_coords = ctrl_proj.geometry.x.values
+        y_coords = ctrl_proj.geometry.y.values
+    else:
+        x_coords = ctrl_proj.geometry.centroid.x.values
+        y_coords = ctrl_proj.geometry.centroid.y.values
 
     # Crop aggregation for NL to reduce semantic confusion and match model classes
     if base_country == 'NL':
@@ -465,7 +478,7 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
                 ref_shp = track_ctrl_shp
                 break
         if not ref_shp:
-            ref_shp = base_dir.parent / 'auxiliary_files' / 'shapefiles_samples' / base_country / 'samples.shp'
+            ref_shp = aux_dir / 'shapefiles_samples' / base_country / 'samples.shp'
             
         crop_aggregation = get_crop_aggregation(base_country, ref_shp)
         ctrl['crop_id'] = ctrl['crop_id'].apply(lambda val: crop_aggregation.get(val, val))
@@ -509,29 +522,36 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
     oa    = np.trace(cm) / total
     kappa = (oa - exp) / (1 - exp) if (1 - exp) else np.nan
 
-    # Calculate areas block-by-block
-    areas_counts = {}
+    # Calculate true ground areas block-by-block with Web Mercator (EPSG:3857) latitude cos^2(phi) correction
+    resx, resy = abs(gt_global[1]), abs(gt_global[5])
+    nominal_px_ha = (resx * resy) / 10000.0
+    is_web_mercator = ('3857' in str(proj)) or ('Pseudo-Mercator' in str(proj)) or ('Mercator' in str(proj) and abs(gt_global[3]) > 100000.0)
+    areas_ha_map = {}
     for y in range(0, rows, tile_size):
+        ysize = min(tile_size, rows - y)
+        tile_px_ha = nominal_px_ha
+        if is_web_mercator:
+            y_merc = gt_global[3] + (y + 0.5 * ysize) * gt_global[5]
+            if abs(y_merc) > 1000.0:
+                # Exact spherical Mercator identity: cos^2(phi) = 1 / cosh^2(y / R)
+                tile_px_ha = nominal_px_ha / (math.cosh(y_merc / 6378137.0) ** 2)
         for x in range(0, cols, tile_size):
             xsize = min(tile_size, cols - x)
-            ysize = min(tile_size, rows - y)
             block = band_out.ReadAsArray(x, y, xsize, ysize)
             unique, counts = np.unique(block, return_counts=True)
             for u, c in zip(unique, counts):
                 if u != 0:
-                    areas_counts[u] = areas_counts.get(u, 0) + c
+                    areas_ha_map[int(u)] = areas_ha_map.get(int(u), 0.0) + float(c) * tile_px_ha
 
-    resx, resy = abs(gt_global[1]), abs(gt_global[5])
-    area_ha    = resx * resy / 10000
-    areas      = [{
+    areas = [{
         'Class':   c,
-        'Area_ha': round(areas_counts.get(c, 0) * area_ha, 2)
+        'Area_ha': round(areas_ha_map.get(int(c), 0.0), 2)
     } for c in labels]
 
     # --- Resolve English crop names mapping ---------------------------------
     crop_name_map = {}
-    id_cols = [c for c in ['crop_id', 'crop_ids', 'code', 'id', 'class_id'] if c in ctrl.columns]
-    name_cols = [c for c in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom'] if c in ctrl.columns]
+    id_cols = [c for c in ['crop_id', 'crop_ids', 'code', 'id', 'class_id', 'ec_hcat_c', 'hcat2_code'] if c in ctrl.columns]
+    name_cols = [c for c in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom', 'ec_hcat_n', 'hcat2_name', 'crop_eng'] if c in ctrl.columns]
     if id_cols and name_cols:
         for _, row in ctrl[[id_cols[0], name_cols[0]]].drop_duplicates().iterrows():
             try:
@@ -543,12 +563,12 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
                 pass
 
     # Fallback to auxiliary samples shapefile
-    aux_samples = Path(r"D:/AIML_CropMapper_Cloud/auxiliary_files/shapefiles_samples") / base_country / "samples.shp"
+    aux_samples = aux_dir / "shapefiles_samples" / base_country / "samples.shp"
     if aux_samples.exists():
         try:
             gdf_s = gpd.read_file(str(aux_samples), engine="pyogrio")
-            id_cols_s = [c for c in ['crop_id', 'crop_ids', 'code', 'id', 'class_id'] if c in gdf_s.columns]
-            name_cols_s = [c for c in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom'] if c in gdf_s.columns]
+            id_cols_s = [c for c in ['crop_id', 'crop_ids', 'code', 'id', 'class_id', 'ec_hcat_c', 'hcat2_code'] if c in gdf_s.columns]
+            name_cols_s = [c for c in ['crop_name', 'crop_names', 'crop_type', 'label', 'name', 'class_name', 'crop', 'nom', 'ec_hcat_n', 'hcat2_name', 'crop_eng'] if c in gdf_s.columns]
             if id_cols_s and name_cols_s:
                 for _, row in gdf_s[[id_cols_s[0], name_cols_s[0]]].drop_duplicates().iterrows():
                     try:
@@ -562,7 +582,7 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
             pass
 
     # Fallback to priors.json
-    aux_priors = Path(r"D:/AIML_CropMapper_Cloud/auxiliary_files/shapefiles_samples") / base_country / "priors.json"
+    aux_priors = aux_dir / "shapefiles_samples" / base_country / "priors.json"
     if aux_priors.exists():
         try:
             with open(aux_priors, 'r', encoding='utf-8') as pf:

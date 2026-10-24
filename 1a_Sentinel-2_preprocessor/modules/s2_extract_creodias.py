@@ -29,12 +29,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
+import numpy as np
 from osgeo import gdal, ogr, osr
 
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
-AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", r"D:/AIML_CropMapper_Cloud/auxiliary_files"))
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
+AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files")))
 SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
-S2_REPO_PATH = Path(os.environ.get("S2_REPO_PATH", r"Y:\Sentinel-2\MSI\L2A"))
+_DEFAULT_S2_REPO = "/eodata/Sentinel-2/MSI/L2A" if (os.name != "nt" or Path("/eodata").exists()) else r"Y:\Sentinel-2\MSI\L2A"
+S2_REPO_PATH = Path(os.environ.get("S2_REPO_PATH", _DEFAULT_S2_REPO))
 
 # Auto-load from JSON configuration files
 try:
@@ -49,12 +52,12 @@ try:
             with open(_cp, 'r', encoding='utf-8') as _f:
                 _data = json.load(_f)
                 if "paths" in _data:
-                    if "working_dir" in _data["paths"]:
+                    if "AIML_WORKING_DIR" not in os.environ and "working_dir" in _data["paths"]:
                         BASE_DIR = Path(_data["paths"]["working_dir"])
-                    if "aux_dir" in _data["paths"]:
+                    if "AIML_AUX_DIR" not in os.environ and "aux_dir" in _data["paths"]:
                         AUX_DIR = Path(_data["paths"]["aux_dir"])
                         SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
-                    if "s2_repo_path" in _data["paths"]:
+                    if "S2_REPO_PATH" not in os.environ and "s2_repo_path" in _data["paths"]:
                         S2_REPO_PATH = Path(_data["paths"]["s2_repo_path"])
 except Exception:
     pass
@@ -310,6 +313,30 @@ def find_b02_path_in_safe(safe_dir: Path) -> Optional[Path]:
     return None
 
 
+def detect_boa_add_offset(safe_dir: Path) -> int:
+    """
+    Detects ESA Processing Baseline 04.00+ / 05.xx BOA_ADD_OFFSET (typically -1000 DN).
+    Since Jan 25, 2022 (N0400+), ESA adds +1000 DN to all L2A spectral reflectance bands.
+    """
+    try:
+        m = re.search(r'_N(\d{4})_', safe_dir.name)
+        if m:
+            baseline_num = int(m.group(1))
+            if baseline_num >= 400:
+                return -1000
+            else:
+                return 0
+        xml_path = safe_dir / "MTD_MSIL2A.xml"
+        if xml_path.exists():
+            tree = ET.parse(str(xml_path))
+            for elem in tree.getroot().iter():
+                if elem.tag.endswith("BOA_ADD_OFFSET") and elem.text:
+                    return int(float(elem.text))
+    except Exception:
+        pass
+    return 0
+
+
 def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
     try:
         output_dest_dir.mkdir(parents=True, exist_ok=True)
@@ -328,6 +355,7 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
         if not b02_file or not b02_file.exists():
             return False
 
+        boa_offset = detect_boa_add_offset(safe_dir)
         success = True
         b02_str = str(b02_file)
         img_data_dir = b02_file.parent.parent if b02_file.parent.name in ('R20m', 'R10m') else b02_file.parent
@@ -367,10 +395,31 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
                 ds = gdal.Open(str(band_src))
                 if ds is None:
                     continue
-                options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
-                out_ds = gdal.Translate(str(band_dst_tif), ds, options=options)
-                out_ds = None  # Explicitly close and flush to disk to avoid Windows handle locks
-                ds = None
+                if band != 'SCL' and boa_offset != 0:
+                    # Harmonize ESA Processing Baseline 04.00+/05.xx BOA_ADD_OFFSET (-1000 DN)
+                    arr = ds.GetRasterBand(1).ReadAsArray()
+                    if arr is not None:
+                        corr = np.where(arr > 0, np.clip(arr.astype(np.int32) + boa_offset, 1, 65535), 0).astype(np.uint16)
+                        drv = gdal.GetDriverByName('GTiff')
+                        out_ds = drv.Create(
+                            str(band_dst_tif), ds.RasterXSize, ds.RasterYSize, 1, gdal.GDT_UInt16,
+                            options=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS']
+                        )
+                        out_ds.SetGeoTransform(ds.GetGeoTransform())
+                        out_ds.SetProjection(ds.GetProjection())
+                        out_ds.SetMetadataItem("BOA_OFFSET_CORRECTED", "1")
+                        out_b = out_ds.GetRasterBand(1)
+                        out_b.SetNoDataValue(0)
+                        out_b.WriteArray(corr)
+                        out_ds = None
+                    ds = None
+                else:
+                    options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
+                    out_ds = gdal.Translate(str(band_dst_tif), ds, options=options)
+                    if out_ds is not None and band != 'SCL':
+                        out_ds.SetMetadataItem("BOA_OFFSET_CORRECTED", "1")
+                    out_ds = None  # Explicitly close and flush to disk to avoid Windows handle locks
+                    ds = None
                 if not (band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024):
                     success = False
             except Exception as e:

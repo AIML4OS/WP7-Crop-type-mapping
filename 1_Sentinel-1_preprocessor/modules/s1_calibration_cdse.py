@@ -9,6 +9,8 @@ import shutil
 import requests
 import zipfile
 import json
+import time
+import threading
 from collections import defaultdict
 from osgeo import ogr, osr
 import os
@@ -18,9 +20,11 @@ import os
 # python 1c_slice_calibration_cdse.py -s 2024-10-15 -e 2024-11-30 -c PL
 # python 1c_slice_calibration_cdse.py -s 2024-10-15 -e 2024-11-30 -c FR
 
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 GPT_EXE = os.environ.get("SNAP_GPT_EXE", r"D:/Program Files/esa-snap/bin/gpt.exe")
 AUXDATA_PATH = os.environ.get("SNAP_AUXDATA_PATH", r"C:/Users/Administrator/.snap/auxdata")
-WORKING_DIR = os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs")
+WORKING_DIR = os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs"))
+AUX_DIR = os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files"))
 
 # CDSE Credentials
 CDSE_USERNAME = os.environ.get("CDSE_USERNAME")
@@ -46,7 +50,10 @@ try:
                 if "paths" in _data:
                     GPT_EXE = _data["paths"].get("snap_gpt_exe", GPT_EXE)
                     AUXDATA_PATH = _data["paths"].get("snap_auxdata_path", AUXDATA_PATH)
-                    WORKING_DIR = _data["paths"].get("working_dir", WORKING_DIR)
+                    if "AIML_WORKING_DIR" not in os.environ:
+                        WORKING_DIR = _data["paths"].get("working_dir", WORKING_DIR)
+                    if "AIML_AUX_DIR" not in os.environ:
+                        AUX_DIR = _data["paths"].get("aux_dir", AUX_DIR)
 except Exception:
     pass
 
@@ -189,7 +196,7 @@ CALIB_NODE = r'''  <node id="Calibration">
 
 
 # Path to NUTS shapefiles
-SHAPEFILES_DIR = pathlib.Path(os.environ.get("AIML_AUX_DIR", "D:/AIML_CropMapper_Cloud/auxiliary_files")) / "shapefiles_nuts"
+SHAPEFILES_DIR = pathlib.Path(os.environ.get("AIML_AUX_DIR", AUX_DIR)) / "shapefiles_nuts"
 
 
 def load_shapefile_geometry_ogr(shp_path, target_epsg=4326):
@@ -254,6 +261,8 @@ class CDSETokenManager:
         self.username = username
         self.password = password
         self.token = None
+        self.token_fetch_time = 0.0
+        self._lock = threading.Lock()
 
     def get_token(self):
         token_url = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
@@ -263,17 +272,21 @@ class CDSETokenManager:
             "password": self.password,
             "grant_type": "password",
         }
-        res = requests.post(token_url, data=data)
+        res = requests.post(token_url, data=data, timeout=30)
         if res.status_code == 200:
             self.token = res.json()["access_token"]
+            self.token_fetch_time = time.time()
             return self.token
         else:
             raise Exception(f"Failed to authenticate with CDSE Keycloak: {res.status_code} - {res.text}")
 
     def get_headers(self, force_refresh=False):
-        if not self.token or force_refresh:
-            self.get_token()
-        return {"Authorization": f"Bearer {self.token}"}
+        with self._lock:
+            now = time.time()
+            # CDSE access tokens expire after 600s; proactively refresh after 480s
+            if not self.token or force_refresh or (now - self.token_fetch_time) > 480.0:
+                self.get_token()
+            return {"Authorization": f"Bearer {self.token}"}
 
 
 # ================= LOGIC: DOWNLOADER =================
@@ -571,8 +584,15 @@ class CDSESentinel1Finder:
                 date_str_formatted = prod_date.strftime("%Y%m%d")
                 final_output_dir = working_dir / country_code / f"orbit_{orbit_num}" / "slice_assembly"
                 if final_output_dir.exists():
-                    existing_finals = [f for f in final_output_dir.glob(f"{date_str_formatted}_{country_code}_orbit_{orbit_num}_*.dim") if
-                                       f.with_suffix('.data').is_dir()]
+                    existing_dims = [
+                        f for f in final_output_dir.glob(f"{date_str_formatted}_{country_code}_orbit_{orbit_num}_*.dim")
+                        if f.with_suffix('.data').is_dir()
+                    ]
+                    existing_tifs = [
+                        f for f in final_output_dir.glob(f"{date_str_formatted}_{country_code}_orbit_{orbit_num}_*.tif")
+                        if f.stat().st_size > 1024
+                    ]
+                    existing_finals = existing_dims + existing_tifs
                     if existing_finals:
                         logging.info(f"Skipping download/processing for {date_str_formatted}: Final output already exists ({existing_finals[0].name})")
                         continue
@@ -584,6 +604,18 @@ class CDSESentinel1Finder:
                     safe_folder_name = p_name
                 else:
                     safe_folder_name = p_name + ".SAFE"
+
+                # CDSE / CreoDIAS local /eodata fast-path: if running inside CDSE cloud with /eodata mounted,
+                # read directly from /eodata instead of downloading over HTTP
+                eodata_cand_dirs = [
+                    pathlib.Path(f"/eodata/Sentinel-1/SAR/IW_GRDH_1S/{prod_date.year:04d}/{prod_date.month:02d}/{prod_date.day:02d}") / safe_folder_name,
+                    pathlib.Path(f"/eodata/Sentinel-1/SAR/IW_GRDH_1S-COG/{prod_date.year:04d}/{prod_date.month:02d}/{prod_date.day:02d}") / safe_folder_name.replace(".SAFE", "_COG.SAFE"),
+                ]
+                eodata_hit = next((ep for ep in eodata_cand_dirs if ep.exists()), None)
+                if eodata_hit is not None:
+                    logging.info(f"Using mounted CDSE /eodata SAFE folder directly: {eodata_hit}")
+                    local_safe_paths.append(eodata_hit)
+                    continue
 
                 local_safe_path = self.download_dir / safe_folder_name
                 
