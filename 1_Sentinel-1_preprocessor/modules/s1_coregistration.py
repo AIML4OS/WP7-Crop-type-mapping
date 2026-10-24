@@ -217,12 +217,12 @@ TEMPLATE_FILTER_TC_FULL = r'''<graph id="Graph">
       <sourceProduct refid="Speckle-Filter"/>
     </sources>
     <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-      <demName>SRTM 3Sec</demName>
+      <demName>Copernicus 30m Global DEM</demName>
       <externalDEMFile/>
       <externalDEMNoDataValue>0.0</externalDEMNoDataValue>
       <externalDEMApplyEGM>true</externalDEMApplyEGM>
-      <demResamplingMethod>NEAREST_NEIGHBOUR</demResamplingMethod>
-      <imgResamplingMethod>NEAREST_NEIGHBOUR</imgResamplingMethod>
+      <demResamplingMethod>BILINEAR_INTERPOLATION</demResamplingMethod>
+      <imgResamplingMethod>BILINEAR_INTERPOLATION</imgResamplingMethod>
       <pixelSpacingInMeter>10.0</pixelSpacingInMeter>
       <pixelSpacingInDegree>8.983152841195215E-5</pixelSpacingInDegree>
       <mapProjection>{map_projection}</mapProjection>
@@ -435,24 +435,63 @@ def run_full_processing(selected_tracks, overwrite=False):
         logging.info(f"Finished {track}")
 
 
-def process_track(track: str, overwrite: bool = False):
+def process_track(track: str, overwrite: bool = False, engine: str = "python"):
     """Programmatic API for single track coregistration."""
-    run_full_processing([track], overwrite=overwrite)
+    track_clean = track.replace("\\", "/")
+    parts = [p for p in track_clean.split("/") if p]
+    if len(parts) >= 2 and parts[-1].startswith("orbit_"):
+        country = parts[-2].upper()
+        orbit = int(parts[-1].replace("orbit_", ""))
+        process_orbit_coregistration(country=country, orbit=orbit, overwrite=overwrite, engine=engine)
+    else:
+        run_full_processing([track], overwrite=overwrite)
+
+
+def process_orbit_coregistration(
+    country: str,
+    orbit: int,
+    overwrite: bool = False,
+    engine: str = "python",
+):
+    """Programmatic API for orbit coregistration supporting both Pure Python and SNAP."""
+    c = country.upper()
+    track = f"{c}/orbit_{orbit}"
+    track_dir = pathlib.Path(WORKING_DIR) / track
+    slice_dir = track_dir / "slice_assembly"
+
+    has_python_tifs = slice_dir.exists() and len(list(slice_dir.glob("*.tif"))) > 0
+    has_snap_dims = slice_dir.exists() and len(list(slice_dir.glob("*.dim"))) > 0
+
+    use_python = (
+        str(engine).lower() == "python"
+        or (str(engine).lower() == "auto" and (has_python_tifs or not pathlib.Path(GPT_EXE).exists()))
+    )
+    if use_python and not (has_snap_dims and not has_python_tifs):
+        try:
+            from modules.s1_python_processor import process_orbit_coregistration_python
+        except ImportError:
+            from s1_python_processor import process_orbit_coregistration_python
+        return process_orbit_coregistration_python(
+            country=c,
+            orbit=orbit,
+            work_dir=pathlib.Path(WORKING_DIR),
+            overwrite=overwrite,
+        )
+    else:
+        return run_full_processing([track], overwrite=overwrite)
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-t', '--track', nargs='+', required=True, help="Track path(s) to process, e.g. PL/orbit_12")
-    parser.add_argument('--overwrite', action='store_true', help="Force recreation of the wrapped stack file.")
+    parser = argparse.ArgumentParser(description="Sentinel-1 Multi-Temporal Coregistration (Stage 2)")
+    parser.add_argument('-t', '--track', nargs='+', required=True, help="Track path(s) to process, e.g. PL/orbit_29")
+    parser.add_argument('--engine', choices=['python', 'snap', 'auto'], default='python', help="Processing engine: 'python' (pure Python, default) or 'snap' (ESA SNAP GPT).")
+    parser.add_argument('--overwrite', action='store_true', help="Force recreation of the coregistered stack.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
-    if not pathlib.Path(GPT_EXE).exists():
-        logging.error(f"GPT not found at {GPT_EXE}")
-        sys.exit(1)
-
-    run_full_processing(args.track, args.overwrite)
+    for tr in args.track:
+        process_track(tr, overwrite=args.overwrite, engine=args.engine)
 
 
 if __name__ == '__main__':

@@ -154,7 +154,7 @@ AOF_NODE = r'''  <node id="Apply-Orbit-File">
       <sourceProduct refid="ThermalNoiseRemoval"/>
     </sources>
     <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-      <orbitType>Sentinel Restituted (Auto Download)</orbitType>
+      <orbitType>Sentinel Precise (Auto Download)</orbitType>
       <polyDegree>3</polyDegree>
       <continueOnFail>true</continueOnFail>
     </parameters>
@@ -817,7 +817,17 @@ def run_slice_assembly_stage(track_name, calibrated_dims, working_dir, roi_wkt=N
         logging.info(f"Clean up disabled by user. Keeping intermediate files in: {calibrated_dir}")
 
 
-def process_orbit_cdse(country: str, orbit: int, start_date: str, end_date: str, exclude_winter: bool = False, download_dir: str = None):
+def process_orbit_cdse(
+    country: str,
+    orbit: int,
+    start_date: str,
+    end_date: str,
+    exclude_winter: bool = False,
+    download_dir: str = None,
+    max_workers: int = 4,
+    engine: str = "python",
+    overwrite: bool = False,
+):
     """Programmatic API to query, download, calibrate, and slice a Sentinel-1 orbit from CDSE."""
     start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date() if isinstance(start_date, str) else start_date
     end = datetime.datetime.strptime(end_date, "%Y-%m-%d").date() if isinstance(end_date, str) else end_date
@@ -837,18 +847,43 @@ def process_orbit_cdse(country: str, orbit: int, start_date: str, end_date: str,
     env = country_geom.GetEnvelope()
     roi_wkt = f"POLYGON (({env[0]} {env[2]}, {env[1]} {env[2]}, {env[1]} {env[3]}, {env[0]} {env[3]}, {env[0]} {env[2]}))"
 
+    use_python = str(engine).lower() == "python" or (
+        str(engine).lower() == "auto" and not pathlib.Path(GPT_EXE).exists()
+    )
+    if use_python:
+        try:
+            from modules.s1_python_processor import process_date_slices_python, CopernicusDEMManager
+        except ImportError:
+            from s1_python_processor import process_date_slices_python, CopernicusDEMManager
+        dem_mgr = CopernicusDEMManager()
+
     finder = CDSESentinel1Finder(token_manager, dl_dir)
     track_name = f"{country_code}/orbit_{orbit}"
 
-    logging.info(f"--- STARTING CDSE ORBIT: {orbit} (Country: {country_code}, Range: {start} to {end}, Exclude Winter: {exclude_winter}) ---")
+    logging.info(
+        f"--- STARTING CDSE ORBIT: {orbit} (Country: {country_code}, Engine: {'Python' if use_python else 'SNAP'}, "
+        f"Range: {start} to {end}, Exclude Winter: {exclude_winter}) ---"
+    )
     for date_obj, found_safes in finder.find_products_by_orbit(
         orbit, country_geom, start, end, working_dir=work_dir, country_code=country_code, exclude_winter=exclude_winter
     ):
+        date_str = date_obj.strftime("%Y%m%d")
         logging.info(f"Processing {len(found_safes)} products for date {date_obj}")
-        calibrated_files = run_calibration_stage(track_name, found_safes, work_dir)
-        if not calibrated_files:
-            continue
-        run_slice_assembly_stage(track_name, calibrated_files, work_dir, roi_wkt=roi_wkt)
+        if use_python:
+            process_date_slices_python(
+                track_name=track_name,
+                date_str=date_str,
+                safe_dirs=found_safes,
+                work_dir=work_dir,
+                country_geom_4326=country_geom,
+                dem_manager=dem_mgr,
+                overwrite=overwrite,
+            )
+        else:
+            calibrated_files = run_calibration_stage(track_name, found_safes, work_dir)
+            if not calibrated_files:
+                continue
+            run_slice_assembly_stage(track_name, calibrated_files, work_dir, roi_wkt=roi_wkt)
     logging.info(f"--- FINISHED CDSE ORBIT: {orbit} (Country: {country_code}) ---")
 
 
@@ -859,7 +894,11 @@ def main():
     parser.add_argument('-s', '--start_date', required=True, help="Start date YYYY-MM-DD")
     parser.add_argument('-e', '--end_date', required=True, help="End date YYYY-MM-DD")
     parser.add_argument('-c', '--country', required=True, help="Country code (e.g. PL, AT, FR...) for automatic orbit selection.")
+    parser.add_argument('-o', '--orbit', type=int, help="Specify a single relative orbit number to process (skips auto-discovery).")
     parser.add_argument('-d', '--download_dir', help="Directory to cache downloaded S1 ZIP and SAFE products.")
+    parser.add_argument('--engine', choices=['python', 'snap', 'auto'], default='python', help="Processing engine: 'python' (pure Python, default) or 'snap' (ESA SNAP GPT).")
+    parser.add_argument('--exclude_winter', action='store_true', help="Exclude winter freeze scenes (Dec 1 - Feb 14).")
+    parser.add_argument('--overwrite', action='store_true', help="Overwrite existing output files.")
 
     args = parser.parse_args()
 
@@ -869,10 +908,12 @@ def main():
         handlers=[logging.StreamHandler(sys.stdout)]
     )
 
-    gpt_path = pathlib.Path(GPT_EXE)
-    if not gpt_path.exists():
-        logging.error(f"CRITICAL ERROR: SNAP gpt.exe not found at: {gpt_path}")
-        sys.exit(1)
+    use_python = args.engine == 'python' or (args.engine == 'auto' and not pathlib.Path(GPT_EXE).exists())
+    if not use_python:
+        gpt_path = pathlib.Path(GPT_EXE)
+        if not gpt_path.exists():
+            logging.error(f"CRITICAL ERROR: SNAP gpt.exe not found at: {gpt_path}. Use --engine python instead.")
+            sys.exit(1)
 
     try:
         start = datetime.datetime.strptime(args.start_date, "%Y-%m-%d").date()
@@ -882,62 +923,43 @@ def main():
         sys.exit(1)
 
     work_dir = pathlib.Path(WORKING_DIR)
-    
-    # Resolve download directory
-    if args.download_dir:
-        download_dir = pathlib.Path(args.download_dir)
-    else:
-        download_dir = work_dir / "S1_downloads"
+    download_dir = pathlib.Path(args.download_dir) if args.download_dir else work_dir / "S1_downloads"
     download_dir.mkdir(parents=True, exist_ok=True)
 
     if not CDSE_USERNAME or not CDSE_PASSWORD:
-        logging.error("CRITICAL ERROR: CDSE_USERNAME or CDSE_PASSWORD environment variables are not set. Please export/set them before running this script.")
+        logging.error("CRITICAL ERROR: CDSE_USERNAME or CDSE_PASSWORD environment variables are not set.")
         sys.exit(1)
 
     logging.info(f"Initialising CDSE Token Manager (User: {CDSE_USERNAME})...")
     token_manager = CDSETokenManager(CDSE_USERNAME, CDSE_PASSWORD)
-    
+
     country_code = args.country.upper()
     country_geom = get_country_geometry(country_code)
     if not country_geom:
         logging.error(f"Could not load boundary geometry for country {country_code}")
         sys.exit(1)
 
-    # Optimize orbit selection dynamically using CDSE
-    optimizer = CDSECountryOrbitOptimizer(token_manager, country_geom)
-    selected_orbits, selected_pass = optimizer.discover_and_optimize(start, country_code=country_code)
+    if args.orbit:
+        selected_orbits = [args.orbit]
+    else:
+        optimizer = CDSECountryOrbitOptimizer(token_manager, country_geom)
+        selected_orbits, _ = optimizer.discover_and_optimize(start, country_code=country_code)
 
     if not selected_orbits:
         logging.error(f"No optimal orbits found for country {country_code} in CDSE.")
         sys.exit(1)
 
-    # Get simplified bounding polygon for SNAP Subset
-    env = country_geom.GetEnvelope()  # (minX, maxX, minY, maxY)
-    roi_wkt = f"POLYGON (({env[0]} {env[2]}, {env[1]} {env[2]}, {env[1]} {env[3]}, {env[0]} {env[3]}, {env[0]} {env[2]}))"
-
-    finder = CDSESentinel1Finder(token_manager, download_dir)
-
     for orbit_num in selected_orbits:
-        logging.info(f"--- STARTING ORBIT: {orbit_num} (Country: {country_code}) ---")
-        track_name = f"{country_code}/orbit_{orbit_num}"
-
-        # 1. FIND, DOWNLOAD, EXTRACT LOOP
-        for date_obj, found_safes in finder.find_products_by_orbit(
-            orbit_num, country_geom, start, end, working_dir=work_dir, country_code=country_code, pass_direction=selected_pass
-        ):
-            logging.info(f"Processing {len(found_safes)} products for date {date_obj}")
-
-            # 2. CALIBRATE
-            calibrated_files = run_calibration_stage(track_name, found_safes, work_dir)
-
-            if not calibrated_files:
-                logging.warning(f"No files were successfully calibrated for {date_obj}. Skipping Assembly.")
-                continue
-
-            # 3. SLICE ASSEMBLY & SUBSET
-            run_slice_assembly_stage(track_name, calibrated_files, work_dir, roi_wkt=roi_wkt)
-
-        logging.info(f"--- FINISHED ORBIT: {orbit_num} (Country: {country_code}) ---")
+        process_orbit_cdse(
+            country=country_code,
+            orbit=orbit_num,
+            start_date=start,
+            end_date=end,
+            exclude_winter=args.exclude_winter,
+            download_dir=str(download_dir),
+            engine="python" if use_python else "snap",
+            overwrite=args.overwrite,
+        )
 
 
 if __name__ == '__main__':

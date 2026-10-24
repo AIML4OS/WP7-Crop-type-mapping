@@ -310,67 +310,67 @@ Directly segmenting single-date SAR imagery is problematic due to multiplicative
 ## Execution commands
 
 ### 1. Interactive setup wizard (recommended)
-```powershell
-python run_classifier.py
+```bash
+python 2_classifier/run_classifier.py
 ```
 
 ### 2. SOTA multimodal classification (`[S1 + S2]`)
-```powershell
+```bash
 # SLIC superpixels (fast, fully automated):
-python run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode slic --stage A
+python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode slic --stage A
 
 # Run classification for an entire country across all orbits:
-python run_classifier.py --country PT --classifier mlpxgb_presto --seg_mode slic --stage A
+python 2_classifier/run_classifier.py --country PT --classifier mlpxgb_presto --seg_mode slic --stage A
 
 # Official cadastral parcel vectors (LPIS):
-python run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector auxiliary_files/shapefiles_samples/PT/lpis.shp --stage A
+python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector auxiliary_files/shapefiles_samples/PT/lpis.shp --stage A
 
 # Meta AI SAM deep learning segmentation:
-python run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode sam --stage A
+python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier mlpxgb_presto --seg_mode sam --stage A
 ```
 
 ### 3. Single-radar classification (`[S1 only]`)
-```powershell
-python run_classifier.py --track PT/orbit_52 --classifier presto_s1 --seg_mode slic --stage A
+```bash
+python 2_classifier/run_classifier.py --track PT/orbit_52 --classifier presto_s1 --seg_mode slic --stage A
 ```
 
 ### 4. Running specific single stages (1 to 8)
-```powershell
+```bash
 # Run only data footprint generation (Stage 1):
-python run_classifier.py --track PT/orbit_52 --stage 1
+python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 1
 
 # Run only segmentation & composite creation (Stage 2):
-python run_classifier.py --track PT/orbit_52 --stage 2
+python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 2
 
 # Run only sample point partitioning (Stage 3):
-python run_classifier.py --track PT/orbit_52 --stage 3
+python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 3
 
 # Run only multimodal feature extraction (Stage 4):
-python run_classifier.py --track PT/orbit_52 --stage 4
+python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 4
 
 # Run only model training (Stage 5):
-python run_classifier.py --track PT/orbit_52 --stage 5
+python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 5
 
 # Run only vectorized inference with Bayesian priors (Stage 6):
-python run_classifier.py --track PT/orbit_52 --stage 6
+python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 6
 
 # Run only cropland masking (Stage 7):
-python run_classifier.py --track PT/orbit_52 --stage 7
+python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 7
 
 # Run only accuracy metrics and export Excel report (Stage 8):
-python run_classifier.py --track PT/orbit_52 --stage 8
+python 2_classifier/run_classifier.py --track PT/orbit_52 --stage 8
 ```
 
 ### 5. Phase 4: Nationwide multi-orbit merge
-```powershell
+```bash
 # Merge SLIC classifications into a seamless national map with SOTA ensemble:
-python run_merge.py --country PT --classifier mlpxgb_presto --seg_mode slic
+python 2_classifier/run_merge.py --country PT --classifier mlpxgb_presto --seg_mode slic
 
 # Merge LPIS cadastral classifications for the Netherlands:
-python run_merge.py --country NL --classifier mlpxgb_presto --seg_mode lpis
+python 2_classifier/run_merge.py --country NL --classifier mlpxgb_presto --seg_mode lpis
 
 # Merge Meta AI SAM classifications using confidence blending:
-python run_merge.py --country PT --classifier mlpxgb_presto --seg_mode sam --method confidence
+python 2_classifier/run_merge.py --country PT --classifier mlpxgb_presto --seg_mode sam --method confidence
 ```
 
 ---

@@ -251,8 +251,7 @@ def interactive_setup_wizard():
         sel_c = input(f" Enter country code to merge ({'/'.join(countries)}): ").strip().upper()
         sel_s = input(" Enter segmentation mode used for classification (slic/sam/lpis) [slic]: ").strip().lower() or 'slic'
         merger_mod = importlib.import_module("multi_orbit_merger")
-        merger = merger_mod.MultiOrbitMerger(country=sel_c, seg_mode=sel_s)
-        merger.run_national_mosaic()
+        merger_mod.run_merge_for_country(country=sel_c, seg_mode=sel_s)
         return
     else:
         print("\n Discovered Tracks:")

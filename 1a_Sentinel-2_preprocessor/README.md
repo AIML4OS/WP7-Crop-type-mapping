@@ -150,29 +150,38 @@ To eliminate hundreds of gigabytes of duplicate downloads and redundant time-ser
 ## Execution commands
 
 ### 1. Interactive wizard mode (zero-argument launch)
-```powershell
-python run_s2_preprocessor.py
+```bash
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py
 ```
 
-### 2. Country-wide automated execution
-```powershell
-# Full automated run for Portugal (orbit 52 and orbit 125, 8 parallel threads):
-python run_s2_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
+### 2. Country-wide automated execution (CreoDIAS local archive vs CDSE API)
+```bash
+# Full automated run for Portugal from local CreoDIAS /eodata archive (8 parallel threads):
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --source creodias -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
 
-# Full automated run for the Netherlands:
-python run_s2_preprocessor.py --country NL -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
+# Full automated run for Portugal downloading from Copernicus CDSE API:
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
 
-# Full automated run for Poland:
-python run_s2_preprocessor.py --country PL -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
+# Full automated run for the Netherlands (auto-detects local CreoDIAS or CDSE):
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country NL --source auto -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
+
+# Full automated run for Poland with Whittaker temporal smoothing:
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PL --source creodias -s 2024-10-15 -e 2025-09-15 --enable_whittaker --stage A --threads 8
 ```
 
-### 3. Single orbit track execution
-```powershell
-# Process single orbit track:
-python run_s2_preprocessor.py --track PT/orbit_52 -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
+### 3. Single orbit track & individual stage execution
+```bash
+# Process single orbit track end-to-end:
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track PT/orbit_52 --source creodias -s 2024-10-15 -e 2025-09-15 --stage A --threads 8
 
-# Run specific single stage (e.g. Stage 3 mosaic and stack only):
-python run_s2_preprocessor.py --track PT/orbit_52 --stage 3 --threads 8
+# Stage 1 only (granule download/extraction and SCL cloud masking):
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --stage 1 --threads 8
+
+# Stage 2 only (14-DOY synthetic time-series interpolation across country MGRS tiles):
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --country PT --stage 2 --threads 8
+
+# Stage 3 only (per-orbit SAR grid alignment, 126-band BigTIFF stacking & pyramid overviews):
+python 1a_Sentinel-2_preprocessor/run_s2_preprocessor.py --track PT/orbit_52 --stage 3 --threads 8
 ```
 
 ---

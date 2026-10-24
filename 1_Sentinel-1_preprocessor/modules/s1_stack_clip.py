@@ -251,20 +251,90 @@ def stack_and_clip(track: str):
         vrt_file.unlink()
 
 
-def process_track(track: str):
+def process_track(
+    track: str,
+    overwrite: bool = False,
+    engine: str = "python",
+    filter_window: int = 7,
+    temporal_mode: str = "raw",
+):
     """Programmatic API for single track stacking & clipping."""
-    stack_and_clip(track)
+    track_clean = track.replace("\\", "/")
+    parts = [p for p in track_clean.split("/") if p]
+    if len(parts) >= 2 and parts[-1].startswith("orbit_"):
+        country = parts[-2].upper()
+        orbit = int(parts[-1].replace("orbit_", ""))
+        return process_orbit_stack_and_clip(
+            country=country,
+            orbit=orbit,
+            overwrite=overwrite,
+            engine=engine,
+            filter_window=filter_window,
+            temporal_mode=temporal_mode,
+        )
+    return stack_and_clip(track)
+
+
+def process_orbit_stack_and_clip(
+    country: str,
+    orbit: int,
+    overwrite: bool = False,
+    engine: str = "python",
+    filter_window: int = 7,
+    temporal_mode: str = "raw",
+):
+    """Programmatic API for Stage 3 despeckling, NUTS2 clipping, and BigTIFF stacking."""
+    c = country.upper()
+    track = f"{c}/orbit_{orbit}"
+    track_dir = pathlib.Path(WORKING_DIR) / track
+    manifest_path = track_dir / "wrapped" / "python_stack_manifest.json"
+    slice_dir = track_dir / "slice_assembly"
+    s1_final_dir = track_dir / "S1_final_preprocessing"
+
+    has_python_inputs = manifest_path.exists() or (slice_dir.exists() and len(list(slice_dir.glob("*.tif"))) > 0)
+    has_snap_inputs = s1_final_dir.exists() and len(list(s1_final_dir.glob("*.dim"))) > 0
+
+    use_python = (
+        str(engine).lower() == "python"
+        or (str(engine).lower() == "auto" and has_python_inputs)
+    )
+    if use_python and not (has_snap_inputs and not has_python_inputs):
+        try:
+            from modules.s1_python_processor import process_orbit_stack_and_clip_python
+        except ImportError:
+            from s1_python_processor import process_orbit_stack_and_clip_python
+        return process_orbit_stack_and_clip_python(
+            country=c,
+            orbit=orbit,
+            work_dir=pathlib.Path(WORKING_DIR),
+            overwrite=overwrite,
+            filter_window=filter_window,
+            temporal_mode=temporal_mode,
+        )
+    else:
+        return stack_and_clip(track)
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-t', '--track', nargs='+', required=True, help="Track path(s) to process, e.g. PL/orbit_12")
+    parser = argparse.ArgumentParser(description="Sentinel-1 Stage 3 Despeckling, Stacking & NUTS2 Clipping")
+    parser.add_argument('-t', '--track', nargs='+', required=True, help="Track path(s) to process, e.g. PL/orbit_29")
+    parser.add_argument('--engine', choices=['python', 'snap', 'auto'], default='python', help="Processing engine: 'python' (pure Python, default) or 'snap' (ESA SNAP GPT).")
+    parser.add_argument('--filter_window', type=int, default=7, help="Multi-temporal Quegan speckle filter window size (default: 7).")
+    parser.add_argument('--temporal_mode', choices=['raw', 'doy'], default='raw', help="Temporal output grid: 'raw' (all acquisition dates) or 'doy' (14 standardized regional DOYs).")
+    parser.add_argument('--overwrite', action='store_true', help="Force recreation of the final BigTIFF stack.")
     args = parser.parse_args()
 
-    # Process all requested tracks dynamically
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+
     for track in sorted(list(set(args.track))):
-        print(f"\n=== Processing {track} ===")
-        stack_and_clip(track)
+        print(f"\n=== Processing {track} (Engine: {args.engine}) ===")
+        process_track(
+            track,
+            overwrite=args.overwrite,
+            engine=args.engine,
+            filter_window=args.filter_window,
+            temporal_mode=args.temporal_mode,
+        )
 
 
 if __name__ == '__main__':

@@ -5,42 +5,47 @@ AIML CropMapper Cloud - Sentinel-1 SAR Preprocessing Pipeline
 ================================================================================
 Master orchestrator for multi-temporal Sentinel-1 GRDH SAR data (Sigma0 VH/VV).
 
-Features:
-  - Automated Ingestion & Calibration: Local CREODIAS (/eodata, Y:) or Copernicus CDSE API.
-  - Multi-temporal Coregistration: ESA SNAP GPT for precise pixel alignment.
-  - Time-series Stacking & Area Clipping: Sub-pixel resampling and BigTIFF generation.
-  - Country-wide Greedy Search: Minimum set cover orbit detection across EU countries.
+Supports two data ingestion pathways and two processing engines:
+  Data Ingestion Pathways (--source):
+    1. Copernicus Data Space Ecosystem API (cdse): Automated OData catalog query
+       and .SAFE archive download.
+    2. Local CreoDIAS Repository (creodias / cog): Direct high-speed reading from
+       mounted /eodata (or local drive) .SAFE and .SAFE-COG archives.
+
+  Processing Engines (--engine):
+    1. Pure Python Engine (python - default): 100% standalone Python/NumPy/SciPy/GDAL
+       pipeline performing 2D Thermal Noise Removal (TNR), GRD Border Noise Removal
+       (BNR), Sigma0 LUT Calibration, Range-Doppler Terrain Correction with
+       Copernicus 30m Global DEM onto a locked 10.0m EPSG:3857 grid, and
+       Multi-Temporal Quegan Speckle Filtering without ESA SNAP.
+    2. ESA SNAP GPT Engine (snap): Graph Processing Tool pipeline using
+       Copernicus 30m Global DEM with bilinear interpolation.
 
 Execution Examples:
-  # 1. Full automated pipeline using COG (Cloud-Optimized GeoTIFF) for Portugal:
-  python run_s1_preprocessor.py --country PT --source cog -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 2
-
-  # 2. Single orbit automated run with COG (e.g. Orbit 161 or 81):
-  python run_s1_preprocessor.py --track PT/orbit_161 --source cog -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 2
-
-  # 3. Manual 2-window seasonal split with COG (Autumn + Spring/Summer):
-  #    Step 1a: Autumn COG calibration (15 Oct - 30 Nov)
-  python run_s1_preprocessor.py --country PT --source cog -s 2024-10-15 -e 2024-11-30 --stage 1 --threads 2
-  #    Step 1b: Spring/Summer COG calibration (15 Feb - 15 Sep)
-  python run_s1_preprocessor.py --country PT --source cog -s 2025-02-15 -e 2025-09-15 --stage 1 --threads 2
-  #    Step 2 & 3: SNAP Coregistration & BigTIFF stacking across all calibrated dates:
-  python run_s1_preprocessor.py --country PT --stage 2
-  python run_s1_preprocessor.py --country PT --stage 3
-
-  # 4. Standard SAFE extraction on CREODIAS cloud:
-  python run_s1_preprocessor.py --country PT --source creodias -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 2
-
-  # 5. Direct download from Copernicus Data Space (CDSE API):
-  python run_s1_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 2
-
-  # 6. Interactive English CLI setup wizard (prompts for COG/SAFE, dates, winter exclusion, and orbits):
+  # 1. Interactive CLI setup wizard (zero arguments):
   python run_s1_preprocessor.py
+
+  # 2. Pure Python full pipeline using CreoDIAS local COG/SAFE repository:
+  python run_s1_preprocessor.py --country PT --source creodias --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 4
+
+  # 3. Pure Python full pipeline downloading directly from Copernicus CDSE API:
+  python run_s1_preprocessor.py --country PT --source cdse --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 4
+
+  # 4. Single orbit track execution in Pure Python (e.g. Portugal Orbit 52):
+  python run_s1_preprocessor.py --track PT/orbit_52 --source creodias --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
+
+  # 5. Pure Python with 14-DOY temporal interpolation matching Sentinel-2 DOY nodes:
+  python run_s1_preprocessor.py --track PT/orbit_52 --engine python --temporal_mode doy --stage 3
+
+  # 6. Legacy ESA SNAP GPT engine execution:
+  python run_s1_preprocessor.py --track PT/orbit_52 --source cog --engine snap -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
 ================================================================================
 """
 
 import argparse
 import datetime
 import importlib
+import json
 import logging
 import os
 import pathlib
@@ -63,88 +68,137 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
-BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", r"D:/AIML_CropMapper_Cloud/workingDirs"))
+
+def _load_s1_config() -> dict:
+    cfg_path = script_dir / "config_s1.json"
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.warning(f"Failed to parse {cfg_path}: {e}")
+    return {}
+
+
+_CFG = _load_s1_config()
+_PATHS = _CFG.get("paths", {})
+
+BASE_DIR = Path(
+    os.environ.get(
+        "AIML_WORKING_DIR",
+        _PATHS.get("working_dir", str(script_dir.parent / "workingDirs")),
+    )
+)
+AUX_DIR = Path(
+    os.environ.get(
+        "AIML_AUX_DIR",
+        _PATHS.get("aux_dir", str(script_dir.parent / "auxiliary_files")),
+    )
+)
+
 COUNTRY_ORBITS = {
-    'AL': [80, 153],  # DESCENDING (100.0%) - 2 orbits
-    'AT': [22, 95, 124, 168],  # DESCENDING (100.0%) - 4 orbits
-    'BE': [37, 110],  # DESCENDING (100.0%) - 2 orbits
-    'BG': [7, 36, 80, 109],  # DESCENDING (100.0%) - 4 orbits
-    'CH': [15, 88],  # ASCENDING (100.0%) - 2 orbits
-    'CY': [94, 167],  # DESCENDING (100.0%) - 2 orbits
-    'CZ': [22, 95, 124],  # DESCENDING (100.0%) - 3 orbits
-    'DE': [66, 95, 139, 168],  # DESCENDING (100.0%) - 4 orbits
-    'DK': [139, 168],  # DESCENDING (100.0%) - 2 orbits
-    'EE': [51, 80],  # DESCENDING (100.0%) - 2 orbits
-    'EL': [7, 36, 80, 109],  # DESCENDING (99.91%) - 4 orbits
-    'ES': [1, 30, 59, 74, 103, 132, 147],  # ASCENDING (100.0%) - 7 orbits (Mainland + Balearics)
-    'FI': [7, 95, 124, 153],  # DESCENDING (100.0%) - 4 orbits
-    'FR': [30, 59, 88, 103, 132, 161],  # ASCENDING (100.0%) - 6 orbits
-    'GR': [7, 36, 80, 109],  # DESCENDING (99.91%) - 4 orbits
-    'HR': [22, 51, 124],  # DESCENDING (100.0%) - 3 orbits
-    'HU': [51, 124, 153],  # DESCENDING (100.0%) - 3 orbits
-    'IE': [1, 74],  # ASCENDING (100.0%) - 2 orbits
-    'IS': [53, 82, 111],  # DESCENDING (100.0%) - 3 orbits
-    'IT': [15, 44, 88, 117, 146],  # ASCENDING (100.0%) - 5 orbits
-    'LI': [66],  # DESCENDING (100.0%) - 1 orbits
-    'LT': [58, 131],  # ASCENDING (99.95%) - 2 orbits
-    'LU': [37],  # DESCENDING (100.0%) - 1 orbits
-    'LV': [7, 51, 80],  # DESCENDING (100.0%) - 3 orbits
-    'ME': [153],  # DESCENDING (100.0%) - 1 orbits
-    'MK': [80],  # DESCENDING (100.0%) - 1 orbits
-    'MT': [124],  # DESCENDING (100.0%) - 1 orbits
-    'NL': [37, 110],  # DESCENDING (100.0%) - 2 orbits
-    'NO': [8, 37, 66, 124, 153, 168],  # DESCENDING (100.0%) - 6 orbits (Mainland Norway)
-    'PL': [29, 73, 102, 131, 175],  # ASCENDING (100.0%) - 5 orbits
-    'PT': [52, 125],  # DESCENDING (100.0%) - 2 orbits
-    'RO': [29, 58, 102, 131],  # ASCENDING (100.0%) - 4 orbits
-    'RS': [102, 175],  # ASCENDING (100.0%) - 2 orbits
-    'SE': [22, 66, 168],  # DESCENDING (100.0%) - 3 orbits
-    'SI': [22, 124],  # DESCENDING (100.0%) - 2 orbits
-    'SK': [51, 124, 153],  # DESCENDING (100.0%) - 3 orbits
-    'TR': [21, 36, 50, 65, 94, 123, 138, 152, 167],  # DESCENDING (99.96%) - 9 orbits
-    'UK': [23, 52, 81, 154],  # DESCENDING (100.0%) - 4 orbits
+    'AL': [80, 153],
+    'AT': [22, 95, 124, 168],
+    'BE': [37, 110],
+    'BG': [7, 36, 80, 109],
+    'CH': [15, 88],
+    'CY': [94, 167],
+    'CZ': [22, 95, 124],
+    'DE': [66, 95, 139, 168],
+    'DK': [139, 168],
+    'EE': [51, 80],
+    'EL': [7, 36, 80, 109],
+    'ES': [1, 30, 59, 74, 103, 132, 147],
+    'FI': [7, 95, 124, 153],
+    'FR': [30, 59, 88, 103, 132, 161],
+    'GR': [7, 36, 80, 109],
+    'HR': [22, 51, 124],
+    'HU': [51, 124, 153],
+    'IE': [1, 74],
+    'IS': [53, 82, 111],
+    'IT': [15, 44, 88, 117, 146],
+    'LI': [66],
+    'LT': [58, 131],
+    'LU': [37],
+    'LV': [7, 51, 80],
+    'ME': [153],
+    'MK': [80],
+    'MT': [124],
+    'NL': [37, 110],
+    'NO': [8, 37, 66, 124, 153, 168],
+    'PL': [29, 73, 102, 175],
+    'PT': [52, 125],
+    'RO': [29, 58, 102, 131],
+    'RS': [102, 175],
+    'SE': [22, 66, 168],
+    'SI': [22, 124],
+    'SK': [51, 124, 153],
+    'TR': [21, 36, 50, 65, 94, 123, 138, 152, 167],
+    'UK': [23, 52, 81, 154],
 }
 
 
 def detect_s1_source() -> str:
     """Auto-detects whether COG, CREODIAS local mount, or CDSE API should be used."""
-    cog_path = Path(os.environ.get("S1_COG_REPO_PATH", r"Y:\Sentinel-1\SAR\IW_GRDH_1S-COG"))
-    if cog_path.exists():
-        return "cog"
-    local_repo = os.environ.get("S1_REPO_PATH", r"Y:\Sentinel-1\SAR\IW_GRDH_1S")
+    cog_candidates = [
+        Path(os.environ.get("S1_COG_REPO_PATH", "/eodata/Sentinel-1/SAR/IW_GRDH_1S-COG")),
+        Path(r"Y:\Sentinel-1\SAR\IW_GRDH_1S-COG"),
+    ]
+    for p in cog_candidates:
+        if p.exists():
+            return "cog"
+
+    local_repo = Path(
+        os.environ.get("S1_REPO_PATH", _PATHS.get("s1_repo_path", "/eodata/Sentinel-1/SAR/IW_GRDH_1S"))
+    )
     eodata_path = Path("/eodata/Sentinel-1")
-    if Path(local_repo).exists() or eodata_path.exists():
+    if local_repo.exists() or eodata_path.exists():
         return "creodias"
     return "cdse"
 
 
 def discover_country_orbits(country_code: str) -> List[int]:
-    """Finds existing orbit folders (containing calibrated data) or falls back to master orbit registry."""
+    """Finds existing orbit folders or falls back to greedy optimal orbit registry."""
+    c = country_code.upper()
     found = set()
     for b in [BASE_DIR, Path(r"D:/AIML_CropMapper_Cloud/workingDir")]:
-        c_dir = b / country_code.upper()
+        c_dir = b / c
         if c_dir.exists():
             for d in c_dir.glob("orbit_*"):
                 m = re.search(r'orbit_(\d+)', d.name)
                 if m:
                     has_slice = (d / "slice_assembly").exists() and any((d / "slice_assembly").iterdir())
-                    has_wrapped = (d / "wrapped").exists() and any((d / "wrapped").glob("*.dim"))
+                    has_wrapped = (d / "wrapped").exists() and any((d / "wrapped").iterdir())
                     has_final = (d / "S1_final_preprocessing").exists() and any((d / "S1_final_preprocessing").glob("*.dim"))
                     has_stack = (d / "1_input_stacks").exists() and any((d / "1_input_stacks").glob("*.tif"))
                     if has_slice or has_wrapped or has_final or has_stack:
                         found.add(int(m.group(1)))
     if found:
         return sorted(list(found))
-    json_path = Path(__file__).resolve().parent.parent / "auxiliary_files" / "country_orbits_complete.json"
+
+    greedy_path = AUX_DIR / "country_optimal_greedy_orbits_clean.json"
+    if greedy_path.exists():
+        try:
+            with open(greedy_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if c in data and isinstance(data[c], dict) and data[c].get("orbits"):
+                return [int(o) for o in data[c]["orbits"]]
+        except Exception:
+            pass
+
+    if c in COUNTRY_ORBITS:
+        return COUNTRY_ORBITS[c]
+
+    json_path = AUX_DIR / "country_orbits_complete.json"
     if json_path.exists():
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                if country_code.upper() in data and data[country_code.upper()]:
-                    return data[country_code.upper()]
+                if c in data and data[c]:
+                    return [int(o) for o in data[c]]
         except Exception:
             pass
-    return COUNTRY_ORBITS.get(country_code.upper(), [])
+    return []
 
 
 class Sentinel1Pipeline:
@@ -156,6 +210,9 @@ class Sentinel1Pipeline:
         end_date: Optional[str] = None,
         exclude_winter: bool = False,
         source: str = "auto",
+        engine: str = "python",
+        filter_window: int = 7,
+        temporal_mode: str = "raw",
         threads: int = 4,
         overwrite: bool = False
     ):
@@ -167,6 +224,9 @@ class Sentinel1Pipeline:
         self.threads = threads
         self.overwrite = overwrite
         self.source = detect_s1_source() if source == "auto" else source.lower()
+        self.engine = engine.lower()
+        self.filter_window = filter_window
+        self.temporal_mode = temporal_mode.lower()
 
         if self.orbit:
             self.track = f"{self.country}/orbit_{self.orbit}"
@@ -201,7 +261,10 @@ class Sentinel1Pipeline:
 
         winter_str = " [Excluding Winter 01.12-14.02]" if self.exclude_winter else ""
         logging.info(f"\n============================================================")
-        logging.info(f" [Stage 1/3] Sentinel-1 SAR Ingestion & Calibration ({self.source.upper()}){winter_str}")
+        logging.info(
+            f" [Stage 1/3] Sentinel-1 SAR Ingestion & Calibration "
+            f"(Source: {self.source.upper()} | Engine: {self.engine.upper()}){winter_str}"
+        )
         logging.info(f" Track: {self.track} | Date range: {self.start_date} to {self.end_date}")
         logging.info(f"============================================================")
 
@@ -210,11 +273,16 @@ class Sentinel1Pipeline:
             track_dir = BASE_DIR / self.country / f"orbit_{orb}"
             wrapped_dir = track_dir / "wrapped"
             final_proc_dir = track_dir / "S1_final_preprocessing"
-            has_wrapped = wrapped_dir.exists() and any(f.suffix == '.dim' for f in wrapped_dir.glob('*.dim'))
-            has_final = final_proc_dir.exists() and any(f.suffix == '.dim' for f in final_proc_dir.glob('*.dim'))
+            has_wrapped = wrapped_dir.exists() and (
+                any(wrapped_dir.glob('*.dim')) or (wrapped_dir / "python_stack_manifest.json").exists()
+            )
+            has_final = final_proc_dir.exists() and any(final_proc_dir.glob('*.dim'))
 
             if (has_wrapped or has_final) and not self.overwrite:
-                logging.info(f"[{self.country}/orbit_{orb}] Wrapped stack or final processed products already exist. Skipping Stage 1 Calibration.")
+                logging.info(
+                    f"[{self.country}/orbit_{orb}] Coregistered stack or final processed products already exist. "
+                    f"Skipping Stage 1 Calibration."
+                )
                 continue
 
             if self.source == "cog":
@@ -224,7 +292,10 @@ class Sentinel1Pipeline:
                     orbit=orb,
                     start_date=self.start_date,
                     end_date=self.end_date,
-                    exclude_winter=self.exclude_winter
+                    exclude_winter=self.exclude_winter,
+                    max_workers=self.threads,
+                    engine=self.engine,
+                    overwrite=self.overwrite,
                 )
             elif self.source == "creodias":
                 calib_mod = importlib.import_module("s1_calibration_creodias")
@@ -233,7 +304,10 @@ class Sentinel1Pipeline:
                     orbit=orb,
                     start_date=self.start_date,
                     end_date=self.end_date,
-                    exclude_winter=self.exclude_winter
+                    exclude_winter=self.exclude_winter,
+                    max_workers=self.threads,
+                    engine=self.engine,
+                    overwrite=self.overwrite,
                 )
             else:
                 calib_cdse_mod = importlib.import_module("s1_calibration_cdse")
@@ -243,13 +317,15 @@ class Sentinel1Pipeline:
                     start_date=self.start_date,
                     end_date=self.end_date,
                     exclude_winter=self.exclude_winter,
-                    max_workers=self.threads
+                    max_workers=self.threads,
+                    engine=self.engine,
+                    overwrite=self.overwrite,
                 )
 
     def stage_2_coregistration(self):
-        """Stage 2: Multi-temporal coregistration using ESA SNAP GPT."""
+        """Stage 2: Multi-temporal coregistration (Pure Python grid alignment or ESA SNAP GPT)."""
         logging.info(f"\n============================================================")
-        logging.info(f" [Stage 2/3] Sentinel-1 SNAP Multi-temporal Coregistration")
+        logging.info(f" [Stage 2/3] Sentinel-1 Multi-Temporal Coregistration (Engine: {self.engine.upper()})")
         logging.info(f" Track: {self.track}")
         logging.info(f"============================================================")
 
@@ -259,13 +335,17 @@ class Sentinel1Pipeline:
             coreg_mod.process_orbit_coregistration(
                 country=self.country,
                 orbit=orb,
-                overwrite=self.overwrite
+                overwrite=self.overwrite,
+                engine=self.engine,
             )
 
     def stage_3_stack_clip(self):
-        """Stage 3: Multi-temporal stacking, reprojecting to Web Mercator, and NUTS clipping."""
+        """Stage 3: Multi-temporal despeckling, Web Mercator stacking, and NUTS2 clipping."""
         logging.info(f"\n============================================================")
-        logging.info(f" [Stage 3/3] Sentinel-1 Multi-Temporal Stacking & Area Clipping")
+        logging.info(
+            f" [Stage 3/3] Sentinel-1 Multi-Temporal Despeckling, Stacking & Clipping "
+            f"(Engine: {self.engine.upper()} | Mode: {self.temporal_mode.upper()})"
+        )
         logging.info(f" Track: {self.track}")
         logging.info(f"============================================================")
 
@@ -275,7 +355,10 @@ class Sentinel1Pipeline:
             stack_mod.process_orbit_stack_and_clip(
                 country=self.country,
                 orbit=orb,
-                overwrite=self.overwrite
+                overwrite=self.overwrite,
+                engine=self.engine,
+                filter_window=self.filter_window,
+                temporal_mode=self.temporal_mode,
             )
 
     def run_all(self):
@@ -296,29 +379,41 @@ def interactive_menu(pipeline: Sentinel1Pipeline):
  Sentinel-1 SAR Preprocessing Pipeline (Sigma0 VH/VV)
  Track  : {pipeline.track}
  Source : [{pipeline.source.upper()}] (CREODIAS local / CDSE API)
+ Engine : [{pipeline.engine.upper()}] (Pure Python / ESA SNAP)
  Range  : {range_str}
 ============================================================
- [1] Stage 1: Ingestion & calibration ({pipeline.source.upper()})
- [2] Stage 2: SNAP coregistration & terrain correction
- [3] Stage 3: Multi-temporal stacking & AOI clipping
+ [1] Stage 1: Ingestion & calibration ({pipeline.source.upper()} | {pipeline.engine.upper()})
+ [2] Stage 2: Multi-temporal coregistration ({pipeline.engine.upper()})
+ [3] Stage 3: Despeckling, stacking & NUTS2 clipping ({pipeline.engine.upper()})
  -----------------------------------------------------------
- [D] Change / Enter Acquisition Dates
- [S] Switch data source (Toggle: CREODIAS <-> CDSE)
+ [D] Change / Enter acquisition dates
+ [S] Switch data source (Cycle: COG -> CREODIAS -> CDSE)
+ [E] Switch processing engine (Toggle: PYTHON <-> SNAP)
  [A] Run all stages automatically (1 -> 2 -> 3)
  [Q] Quit
 ============================================================
  Enter choice: """
         try:
             choice = input(menu_text).strip().upper()
-            if choice == '1': pipeline.stage_1_calibration()
-            elif choice == '2': pipeline.stage_2_coregistration()
-            elif choice == '3': pipeline.stage_3_stack_clip()
-            elif choice == 'D': pipeline.prompt_dates()
+            if choice == '1':
+                pipeline.stage_1_calibration()
+            elif choice == '2':
+                pipeline.stage_2_coregistration()
+            elif choice == '3':
+                pipeline.stage_3_stack_clip()
+            elif choice == 'D':
+                pipeline.prompt_dates()
             elif choice == 'S':
-                pipeline.source = 'cdse' if pipeline.source == 'creodias' else 'creodias'
+                cycle = {'cog': 'creodias', 'creodias': 'cdse', 'cdse': 'cog'}
+                pipeline.source = cycle.get(pipeline.source, 'creodias')
                 print(f"\n    Data source switched to: {pipeline.source.upper()}")
-            elif choice == 'A': pipeline.run_all()
-            elif choice == 'Q': break
+            elif choice == 'E':
+                pipeline.engine = 'snap' if pipeline.engine == 'python' else 'python'
+                print(f"\n    Processing engine switched to: {pipeline.engine.upper()}")
+            elif choice == 'A':
+                pipeline.run_all()
+            elif choice == 'Q':
+                break
         except (KeyboardInterrupt, EOFError):
             print("\nExiting pipeline.")
             break
@@ -348,21 +443,22 @@ def interactive_setup_wizard():
         print(" Discovered tracks in working directory:")
         for idx, t in enumerate(tracks, 1):
             print(f"  [{idx}] {t}")
-        print("  [C] Enter custom track (e.g. PL/orbit_22)")
-        print("  [N] Process entire country (e.g. NL, PL, FR)")
+        print("  [C] Enter custom track (e.g. PL/orbit_29)")
+        print("  [N] Process entire country (e.g. NL, PL, FR, PT)")
         print("  [Q] Quit")
         choice = input("\n Select track or option [1-%d/C/N/Q] (default: 1): " % len(tracks)).strip().upper()
-        if choice == 'Q': return
+        if choice == 'Q':
+            return
         elif choice == 'C':
-            selected_track = input(" Enter track identifier (e.g. NL/orbit_88): ").strip()
+            selected_track = input(" Enter track identifier (e.g. NL/orbit_37): ").strip()
         elif choice == 'N':
-            selected_country = input(" Enter country code (e.g. NL, PL, FR): ").strip().upper()
+            selected_country = input(" Enter country code (e.g. NL, PL, FR, PT): ").strip().upper()
         elif choice.isdigit() and 1 <= int(choice) <= len(tracks):
             selected_track = tracks[int(choice) - 1]
         else:
             selected_track = tracks[0]
     else:
-        val = input(" Enter track (e.g. NL/orbit_88) or country (e.g. NL): ").strip()
+        val = input(" Enter track (e.g. NL/orbit_37) or country (e.g. NL): ").strip()
         if '/' in val:
             selected_track = val
         else:
@@ -382,15 +478,25 @@ def interactive_setup_wizard():
 ============================================================
  Select Data Ingestion Source:
   [1] Auto-detect (Current: {detected.upper()})
-  [2] Cloud-Optimized GeoTIFF (COG - Y:\\Sentinel-1\\SAR\\IW_GRDH_1S-COG)
-  [3] CREODIAS Standard SAFE (Y:\\Sentinel-1\\SAR\\IW_GRDH_1S)
+  [2] CreoDIAS Cloud-Optimized GeoTIFF (/eodata/.../IW_GRDH_1S-COG)
+  [3] CreoDIAS Standard SAFE (/eodata/.../IW_GRDH_1S)
   [4] Copernicus Data Space Ecosystem API (CDSE download)
 ============================================================""")
     src_choice = input(" Enter choice [1-4] (default: 1): ").strip()
     sources = {'1': 'auto', '2': 'cog', '3': 'creodias', '4': 'cdse'}
     source = sources.get(src_choice, 'auto')
 
-    # Step 3: Date Range & Winter Exclusion (Forced input, no hidden defaults)
+    # Step 3: Select Processing Engine
+    print("""
+============================================================
+ Select SAR Processing Engine:
+  [1] Pure Python Engine (No ESA SNAP required - Recommended)
+  [2] ESA SNAP GPT Engine (Requires local gpt binary)
+============================================================""")
+    eng_choice = input(" Enter choice [1-2] (default: 1): ").strip()
+    engine = 'snap' if eng_choice == '2' else 'python'
+
+    # Step 4: Date Range & Winter Exclusion
     print("\n--- Mandatory Acquisition Dates Configuration ---")
     while True:
         start_date = input(" Enter acquisition start date [YYYY-MM-DD] (e.g. 2024-10-15): ").strip()
@@ -417,32 +523,36 @@ def interactive_setup_wizard():
         start_date=start_date,
         end_date=end_date,
         exclude_winter=exclude_winter,
-        source=source
+        source=source,
+        engine=engine,
     )
     interactive_menu(pipeline)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Unified Sentinel-1 SAR Preprocessing Pipeline.",
+        description="Unified Sentinel-1 SAR Preprocessing Pipeline (Pure Python & ESA SNAP).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Launch interactive wizard (zero arguments):
   python run_s1_preprocessor.py
 
-  # Single orbit automated run with COG:
-  python run_s1_preprocessor.py --track PT/orbit_161 --source cog -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 2
+  # Pure Python single orbit run from CreoDIAS repository:
+  python run_s1_preprocessor.py --track PT/orbit_52 --source creodias --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
 
-  # Entire country greedy run with COG excluding winter (01.12 - 14.02):
-  python run_s1_preprocessor.py --country PT --source cog -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 2
+  # Pure Python country-wide run downloading from Copernicus CDSE API:
+  python run_s1_preprocessor.py --country PT --source cdse --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 4
 """
     )
-    parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
+    parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_37, PL/orbit_29, PT/orbit_52)")
     parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
     parser.add_argument('-o', '--orbit', type=int, default=None, help="Specific relative orbit number")
-    parser.add_argument('--stage', default=None, choices=['A', '1', '2', '3'], help="Stage to execute: 'A' (all), '1' (calib), '2' (snap), '3' (stack)")
+    parser.add_argument('--stage', default=None, choices=['A', '1', '2', '3'], help="Stage to execute: 'A' (all), '1' (calib), '2' (coreg), '3' (stack)")
     parser.add_argument('--source', default='auto', choices=['auto', 'cog', 'creodias', 'cdse'], help="Data source: 'auto' (detect local), 'cog', 'creodias', 'cdse' (default: auto)")
+    parser.add_argument('--engine', default='python', choices=['python', 'snap', 'auto'], help="SAR processing engine: 'python' (pure Python, default), 'snap' (ESA SNAP GPT), or 'auto'")
+    parser.add_argument('--filter_window', type=int, default=7, help="Multi-temporal Quegan speckle filter window size for Python engine (default: 7)")
+    parser.add_argument('--temporal_mode', default='raw', choices=['raw', 'doy'], help="Temporal output grid for Python Stage 3: 'raw' (all dates) or 'doy' (14 standardized regional DOYs)")
     parser.add_argument('-s', '--start_date', default=None, help="Acquisition start date (YYYY-MM-DD, required for Stage 1/A)")
     parser.add_argument('-e', '--end_date', default=None, help="Acquisition end date (YYYY-MM-DD, required for Stage 1/A)")
     parser.add_argument('--exclude_winter', action='store_true', help="Exclude winter dormancy period (December 1 to February 14) from processing (default: False)")
@@ -481,6 +591,9 @@ Examples:
         end_date=args.end_date,
         exclude_winter=args.exclude_winter,
         source=args.source,
+        engine=args.engine,
+        filter_window=args.filter_window,
+        temporal_mode=args.temporal_mode,
         threads=args.threads,
         overwrite=args.overwrite
     )
@@ -489,10 +602,14 @@ Examples:
         interactive_menu(pipeline)
     else:
         stage_choice = args.stage.strip().upper()
-        if stage_choice == 'A': pipeline.run_all()
-        elif stage_choice == '1': pipeline.stage_1_calibration()
-        elif stage_choice == '2': pipeline.stage_2_coregistration()
-        elif stage_choice == '3': pipeline.stage_3_stack_clip()
+        if stage_choice == 'A':
+            pipeline.run_all()
+        elif stage_choice == '1':
+            pipeline.stage_1_calibration()
+        elif stage_choice == '2':
+            pipeline.stage_2_coregistration()
+        elif stage_choice == '3':
+            pipeline.stage_3_stack_clip()
 
 
 if __name__ == '__main__':

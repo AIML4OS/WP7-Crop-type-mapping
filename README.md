@@ -360,37 +360,43 @@ Supervised models trained with weighted loss functions can introduce bias toward
 
 ### Toolbox 1: Sentinel-1 SAR preprocessor
 
-Located in `1_Sentinel-1_preprocessor/`, this toolbox transforms raw Copernicus Sentinel-1 Level-1 GRD products into multi-temporal, orthorectified, calibrated backscatter stacks.
+Located in `1_Sentinel-1_preprocessor/`, this toolbox transforms raw Copernicus Sentinel-1 Level-1 GRD products into multi-temporal, orthorectified, calibrated backscatter stacks. It supports **two data ingestion pathways** (`--source cdse` for Copernicus Data Space API downloads and `--source creodias` / `cog` for local `/eodata` archives) and **two SAR processing engines** (`--engine python` for 100% Pure Python processing without ESA SNAP, and `--engine snap` for legacy ESA SNAP GPT execution).
 
 ```
-[Copernicus CDSE API / CreoDIAS COG]
-                 |
-                 v
-    +---------------------------+
-    |  Stage 1: Calibration     |  --> Precise orbit (POEORB), TNR, BNR, Sigma0 calibration,
-    |  and slice assembly       |      and daily slice stitching into continuous orbit strips
-    +-------------+-------------+
-                  |
-                  v
-    +---------------------------+
-    |  Stage 2: Coregistration  |  --> ESA SNAP multi-temporal cross-correlation coregistration
-    |  (wrapped stack)          |      aligning all dates across the agricultural season
-    +-------------+-------------+
-                  |
-                  v
-    +---------------------------+
-    |  Stage 3: Despeckling,    |  --> Multi-temporal speckle filtering, Range Doppler terrain
-    |  terrain corr. & stacking |      correction (Copernicus 30 m DEM), NUTS2 clipping (10 m), BigTIFF export
-    +---------------------------+
+[Copernicus CDSE API (--source cdse) / CreoDIAS Local Archive (--source creodias | cog)]
+                                          |
+                                          v
+    +--------------------------------------------------------------------------+
+    |  Stage 1: Radiometric calibration, orthorectification & slice assembly   |
+    |  - Pure Python (--engine python): 2D TNR, BNR, Sigma0 LUT spline,        |
+    |    Range-Doppler Terrain Correction (Copernicus 30 m DEM) & stitching    |
+    |  - ESA SNAP (--engine snap): POEORB, TNR, BNR, Sigma0 & SliceAssembly    |
+    +-------------------------------------+------------------------------------+
+                                          |
+                                          v
+    +--------------------------------------------------------------------------+
+    |  Stage 2: Multi-temporal coregistration                                  |
+    |  - Pure Python: Master 10.0m EPSG:3857 grid alignment manifest           |
+    |  - ESA SNAP: CreateStack cross-correlation & Copernicus 30 m DEM TC      |
+    +-------------------------------------+------------------------------------+
+                                          |
+                                          v
+    +--------------------------------------------------------------------------+
+    |  Stage 3: Multi-temporal despeckling, NUTS2 clipping & BigTIFF stacking  |
+    |  - Vectorized Multi-Temporal Quegan Speckle Filter in linear power domain|
+    |  - Optional 14-DOY temporal interpolation (--temporal_mode doy)          |
+    |  - Linear-to-dB, NUTS2 clipping (10.0m EPSG:3857) & DEFLATE BigTIFF      |
+    +--------------------------------------------------------------------------+
 ```
 
 * **Master runner script**: `run_s1_preprocessor.py`
 * **Internal modules (`modules/`)**:
-  * `s1_calibration_cog.py`: High-speed calibration from local CreoDIAS Cloud-Optimized GeoTIFF (COG) repository.
-  * `s1_calibration_creodias.py`: Fast calibration from local CreoDIAS SAFE archives.
-  * `s1_calibration_cdse.py`: Automated retrieval and calibration from CDSE API.
-  * `s1_coregistration.py`: Multi-temporal coregistration using ESA SNAP GPT (`CreateStack`).
-  * `s1_stack_clip.py`: Multi-temporal speckle filtering, Range Doppler terrain correction using Copernicus 30 m DEM, GDAL BigTIFF stacking, and GISCO NUTS2 regional boundary clipping in `EPSG:3857`.
+  * `s1_python_processor.py`: Standalone Pure Python Sentinel-1 SAR calibration, 2D thermal & border noise removal, Range-Doppler terrain correction (Copernicus 30 m Global DEM), multi-temporal Quegan speckle filter, and BigTIFF stacker.
+  * `s1_calibration_cog.py`: High-speed ingestion and calibration from local CreoDIAS Cloud-Optimized GeoTIFF (`.SAFE-COG`) repository.
+  * `s1_calibration_creodias.py`: Fast ingestion and calibration from local CreoDIAS `.SAFE` archives (`/eodata/Sentinel-1/SAR/IW_GRDH_1S`).
+  * `s1_calibration_cdse.py`: Automated scene discovery, download, and calibration from the Copernicus CDSE OData API.
+  * `s1_coregistration.py`: Multi-temporal coregistration (Pure Python grid alignment & ESA SNAP `CreateStack`).
+  * `s1_stack_clip.py`: Multi-temporal Quegan despeckling, Range-Doppler terrain correction using Copernicus 30 m DEM, GDAL BigTIFF stacking, and GISCO NUTS2 regional boundary clipping in `EPSG:3857`.
 
 ---
 
@@ -639,36 +645,36 @@ This section provides an exhaustive, beginner-friendly, end-to-end operational g
 ### Phase 1: Sentinel-1 SAR preprocessing (`run_s1_preprocessor.py`)
 
 #### What happens behind the scenes:
-1. **Stage 1 (Radiometric Calibration & Slice Assembly)**:
-   - Queries Copernicus CDSE API (or local CreoDIAS COG storage) for all Sentinel-1 GRDH acquisitions covering the target track and dates.
-   - Automatically downloads precise orbit files (POEORB) for 5 cm satellite positioning accuracy.
-   - Performs thermal noise removal (TNR) and border noise removal (BNR).
-   - Calibrates raw digital numbers to physical radar backscatter (Sigma0).
-   - Stitches along-track daily slices into continuous orbit swaths (`_temp_processing/1_calibrated/`).
+1. **Stage 1 (Radiometric Calibration, Orthorectification & Slice Assembly)**:
+   - Supports **two data ingestion pathways**: direct reading from local CreoDIAS storage (`--source creodias` / `--source cog`) or automated downloading from the Copernicus Data Space Ecosystem OData API (`--source cdse`).
+   - Performs 2D thermal noise removal (TNR), GRD border noise removal (BNR), and radiometric calibration from raw digital numbers ($\text{DN}$) to physical linear radar cross-section ($\sigma^0$).
+   - In **Pure Python mode (`--engine python`, default)**, orthorectifies each slice using exact Range-Doppler foreshortening equations with the **Copernicus 30 m Global DEM** directly onto a locked 10.0 m `EPSG:3857` grid and stitches daily slices into `slice_assembly/{YYYYMMDD}.tif` without requiring ESA SNAP.
 2. **Stage 2 (Multi-Temporal Coregistration)**:
-   - Launches ESA SNAP Graph Processing Tool (GPT).
-   - Selects an optimal mid-season master scene and aligns all multi-temporal slave dates with sub-pixel cross-correlation, assembling a coregistered multi-temporal stack (`_temp_processing/2_wrapped_stack/`).
-3. **Stage 3 (Terrain Correction, Stacking & NUTS2 Clipping)**:
-   - Orthorectifies radar geometry using the Copernicus 30 m DEM (Range Doppler terrain correction).
-   - Converts backscatter to decibels: `dB = 10 * log10(Sigma0)`.
-   - Resamples and clips to the country NUTS2 administrative boundary in `EPSG:3857` at an exact 10.0 m pixel resolution.
-   - Writes the final multi-temporal dual-polarization BigTIFF (`1_input_stacks/`) and generates 6 multi-scale pyramid overview layers (`.ovr`).
+   - In **Pure Python mode (`--engine python`)**, aligns all daily orthorectified slices onto the master 10.0 m `EPSG:3857` grid and writes `wrapped/python_stack_manifest.json`.
+   - In **ESA SNAP mode (`--engine snap`)**, runs SNAP `CreateStack` sub-pixel cross-correlation and Range-Doppler terrain correction with the Copernicus 30 m Global DEM (`BILINEAR_INTERPOLATION`).
+3. **Stage 3 (Multi-Temporal Despeckling, Stacking & NUTS2 Clipping)**:
+   - Applies the vectorized **Multi-Temporal Quegan Speckle Filter** in linear power domain (`--filter_window 7`), suppressing granular radar speckle while preserving 10 m field edges.
+   - Optionally interpolates the SAR time series onto 14 standardized regional agricultural DOYs (`--temporal_mode doy`) matching Sentinel-2.
+   - Converts backscatter to decibels (`dB = 10 * log10(Sigma0)`), clips to the country NUTS2 administrative boundary in `EPSG:3857` at 10.0 m resolution, and writes the final multi-temporal dual-polarization BigTIFF (`1_input_stacks/`) with 6 pyramid overview layers (`.ovr`).
 
 #### How to execute:
-```powershell
-# Recommended: Full automated run for Portugal (processing all national orbits sequentially):
-python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PT -s 2024-10-15 -e 2025-09-15 --stage A
+```bash
+# 1. Pure Python full automated run from local CreoDIAS archive (no ESA SNAP required):
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PT --source creodias --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 4
 
-# Process a single orbit track:
-python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 -s 2024-10-15 -e 2025-09-15 --stage A
+# 2. Pure Python full automated run downloading from Copernicus CDSE API:
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PT --source cdse --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A --threads 4
 
-# Force downloading directly from Copernicus Data Space (CDSE API):
-python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PT --source cdse -s 2024-10-15 -e 2025-09-15 --stage A
+# 3. Process a single orbit track in Pure Python (e.g. Portugal orbit 52):
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --source creodias --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
 
-# Exclude winter freeze period (December 1 to February 14) - recommended for Central/Northern Europe:
-python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PL -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
+# 4. Exclude winter freeze period (December 1 to February 14) for Poland:
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --country PL --source creodias --engine python -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
 
-# Interactive wizard mode (guides you step-by-step):
+# 5. Legacy ESA SNAP GPT engine execution:
+python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py --track PT/orbit_52 --source cog --engine snap -s 2024-10-15 -e 2025-09-15 --exclude_winter --stage A
+
+# 6. Interactive wizard mode (guides you step-by-step):
 python 1_Sentinel-1_preprocessor/run_s1_preprocessor.py
 ```
 
@@ -885,11 +891,12 @@ AIML_CropMapper_Cloud/
 │   ├── config_s1.json                   # Active S1 config (CDSE credentials, SNAP paths)
 │   ├── config_s1.example.json           # Template S1 config
 │   ├── modules/                         # Core S1 processing modules
+│   │   ├── s1_python_processor.py       # Pure Python SAR engine (no ESA SNAP required)
 │   │   ├── s1_calibration_cog.py        # CreoDIAS local COG calibration
 │   │   ├── s1_calibration_creodias.py   # CreoDIAS local SAFE calibration
 │   │   ├── s1_calibration_cdse.py       # CDSE API GRDH calibration
-│   │   ├── s1_coregistration.py         # SNAP multi-temporal coregistration
-│   │   └── s1_stack_clip.py             # Time-series stacking & NUTS2 clipping
+│   │   ├── s1_coregistration.py         # Multi-temporal coregistration (Python & SNAP)
+│   │   └── s1_stack_clip.py             # Quegan despeckling, stacking & NUTS2 clipping
 │   └── Archive_scripts/                 # Frozen historical archive (read-only)
 ├── 1a_Sentinel-2_preprocessor/          # Sentinel-2 optical pipeline
 │   ├── run_s2_preprocessor.py           # Unified S2 CLI & interactive wizard
