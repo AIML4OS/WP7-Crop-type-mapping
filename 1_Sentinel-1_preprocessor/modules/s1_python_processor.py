@@ -709,8 +709,8 @@ class S1SliceProduct:
         interp_vals = self._interp_linear(pts)
         nan_mask = np.isnan(interp_vals[:, 0])
         if np.all(nan_mask):
-            interp_vals = self._interp_nearest(pts)
-        elif np.any(nan_mask):
+            return None, None, None
+        if np.any(nan_mask):
             interp_vals[nan_mask] = self._interp_nearest(pts[nan_mask])
 
         p_coarse = interp_vals[:, 0].reshape(ny_c, nx_c).astype(np.float32)
@@ -750,8 +750,8 @@ class S1SliceProduct:
         in_bounds = (
             (p_map >= -0.5)
             & (p_map <= self.num_samples - 0.5)
-            & (l_map >= -0.5)
-            & (l_map <= self.num_lines - 0.5)
+            & (l_map >= -1.0)
+            & (l_map <= float(self.num_lines))
         )
         if not np.any(in_bounds):
             return None, None, None

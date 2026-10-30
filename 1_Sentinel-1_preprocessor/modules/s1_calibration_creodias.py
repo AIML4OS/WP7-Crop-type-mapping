@@ -588,7 +588,8 @@ class LocalSentinel1Finder:
     def find_products_by_orbit(self, orbit_num: int, target_geom: ogr.Geometry,
                                start_date: datetime.date, end_date: datetime.date,
                                working_dir: pathlib.Path = None, country_code: str = None,
-                               pass_direction: str = None, exclude_winter: bool = False):
+                               pass_direction: str = None, exclude_winter: bool = False,
+                               overwrite: bool = False):
         """Finds Sentinel-1 SAFE directories for a given relative orbit that intersect the country's geometry."""
         first_orbit_match_date = None
         current_date = start_date
@@ -616,7 +617,7 @@ class LocalSentinel1Finder:
                 day_products = []
 
                 # --- CHECK IF FINAL SLICED PRODUCT ALREADY EXISTS ---
-                if working_dir and country_code:
+                if not overwrite and working_dir and country_code:
                     date_str = current_date.strftime("%Y%m%d")
                     final_output_dir = working_dir / country_code / f"orbit_{orbit_num}" / "slice_assembly"
                     if safe_is_dir(final_output_dir):
@@ -929,7 +930,8 @@ def process_orbit(
         f"Range: {start} to {end}, Exclude Winter: {exclude_winter}) ---"
     )
     for date_obj, found_safes in finder.find_products_by_orbit(
-        orbit, country_geom, start, end, working_dir=work_dir, country_code=country_code, exclude_winter=exclude_winter
+        orbit, country_geom, start, end, working_dir=work_dir, country_code=country_code, exclude_winter=exclude_winter,
+        overwrite=overwrite
     ):
         date_str = date_obj.strftime("%Y%m%d")
         logging.info(f"Processing {len(found_safes)} products for date {date_obj}")
