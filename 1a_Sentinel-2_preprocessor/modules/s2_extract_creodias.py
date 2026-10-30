@@ -35,8 +35,19 @@ from osgeo import gdal, ogr, osr
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
 AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files")))
-SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
-_DEFAULT_S2_REPO = "/eodata/Sentinel-2/MSI/L2A" if (os.name != "nt" or Path("/eodata").exists()) else r"Y:\Sentinel-2\MSI\L2A"
+def safe_exists(p) -> bool:
+    """Safely check if path exists, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
+    if p is None:
+        return False
+    try:
+        return Path(p).exists()
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+
+_DEFAULT_S2_REPO = "/eodata/Sentinel-2/MSI/L2A" if (os.name != "nt" or safe_exists("/eodata")) else r"Y:\Sentinel-2\MSI\L2A"
 S2_REPO_PATH = Path(os.environ.get("S2_REPO_PATH", _DEFAULT_S2_REPO))
 
 # Auto-load from JSON configuration files

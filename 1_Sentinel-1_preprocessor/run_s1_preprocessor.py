@@ -138,6 +138,30 @@ COUNTRY_ORBITS = {
 }
 
 
+def safe_exists(p) -> bool:
+    """Safely check if path exists, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
+    if p is None:
+        return False
+    try:
+        return Path(p).exists()
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+
+def safe_is_dir(p) -> bool:
+    """Safely check if path is a directory, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
+    if p is None:
+        return False
+    try:
+        return Path(p).is_dir()
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+
 def detect_s1_source() -> str:
     """Auto-detects whether COG, CREODIAS local mount, or CDSE API should be used."""
     cog_candidates = [
@@ -145,14 +169,14 @@ def detect_s1_source() -> str:
         Path(r"Y:\Sentinel-1\SAR\IW_GRDH_1S-COG"),
     ]
     for p in cog_candidates:
-        if p.exists():
+        if safe_is_dir(p):
             return "cog"
 
     local_repo = Path(
         os.environ.get("S1_REPO_PATH", _PATHS.get("s1_repo_path", "/eodata/Sentinel-1/SAR/IW_GRDH_1S"))
     )
     eodata_path = Path("/eodata/Sentinel-1")
-    if local_repo.exists() or eodata_path.exists():
+    if safe_is_dir(local_repo) or safe_is_dir(eodata_path):
         return "creodias"
     return "cdse"
 
@@ -285,12 +309,18 @@ class Sentinel1Pipeline:
 
             if self.source == "cog":
                 calib_cog_mod = importlib.import_module("s1_calibration_cog")
+                cog_repo = str(
+                    Path(os.environ.get("S1_COG_REPO_PATH", "/eodata/Sentinel-1/SAR/IW_GRDH_1S-COG"))
+                    if (os.name != "nt" or safe_exists("/eodata"))
+                    else Path(r"Y:\Sentinel-1\SAR\IW_GRDH_1S-COG")
+                )
                 calib_cog_mod.process_orbit_cog(
                     country=self.country,
                     orbit=orb,
                     start_date=self.start_date,
                     end_date=self.end_date,
                     exclude_winter=self.exclude_winter,
+                    source_repo=cog_repo,
                     max_workers=self.threads,
                     engine=self.engine,
                     overwrite=self.overwrite,
@@ -330,6 +360,15 @@ class Sentinel1Pipeline:
         coreg_mod = importlib.import_module("s1_coregistration")
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
+            slice_dir = BASE_DIR / self.country / f"orbit_{orb}" / "slice_assembly"
+            tifs = [f for f in slice_dir.glob("*.tif") if not f.name.endswith(".tmp")] if safe_is_dir(slice_dir) else []
+            dims = list(slice_dir.glob("*.dim")) if safe_is_dir(slice_dir) else []
+            if not tifs and not dims:
+                logging.warning(
+                    f"[{self.country}/orbit_{orb}] No daily slice assembly outputs found in {slice_dir}. "
+                    f"Skipping Stage 2 Coregistration for this orbit."
+                )
+                continue
             coreg_mod.process_orbit_coregistration(
                 country=self.country,
                 orbit=orb,
@@ -350,6 +389,17 @@ class Sentinel1Pipeline:
         stack_mod = importlib.import_module("s1_stack_clip")
         orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
         for orb in orbits_to_run:
+            track_dir = BASE_DIR / self.country / f"orbit_{orb}"
+            wrapped_dir = track_dir / "wrapped"
+            has_wrapped = safe_is_dir(wrapped_dir) and (
+                any(wrapped_dir.glob('*.dim')) or (wrapped_dir / "python_stack_manifest.json").exists()
+            )
+            if not has_wrapped:
+                logging.warning(
+                    f"[{self.country}/orbit_{orb}] No coregistered stack outputs found in {wrapped_dir}. "
+                    f"Skipping Stage 3 Despeckling & Stacking for this orbit."
+                )
+                continue
             stack_mod.process_orbit_stack_and_clip(
                 country=self.country,
                 orbit=orb,

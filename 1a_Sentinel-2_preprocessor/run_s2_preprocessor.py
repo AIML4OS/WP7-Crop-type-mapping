@@ -142,8 +142,11 @@ def detect_s2_source() -> str:
     """Auto-detects whether CREODIAS local mount is available or CDSE API should be used."""
     local_repo = os.environ.get("S2_REPO_PATH", r"Y:\Sentinel-2\MSI\L2A")
     eodata_path = Path("/eodata/Sentinel-2")
-    if Path(local_repo).exists() or eodata_path.exists():
-        return "creodias"
+    try:
+        if (Path(local_repo).is_dir() if local_repo else False) or eodata_path.is_dir():
+            return "creodias"
+    except OSError:
+        pass
     return "cdse"
 
 

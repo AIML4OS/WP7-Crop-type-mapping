@@ -517,6 +517,57 @@ class CDSECountryOrbitOptimizer:
 
 # ================= LOGIC: CDSE FINDER / CACHING DOWNLOADER =================
 
+def safe_exists(p) -> bool:
+    """Safely check if path exists, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
+    if p is None:
+        return False
+    try:
+        return pathlib.Path(p).exists()
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+
+def safe_is_dir(p) -> bool:
+    """Safely check if path is a directory, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
+    if p is None:
+        return False
+    try:
+        return pathlib.Path(p).is_dir()
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+
+def safe_file_size(p) -> int:
+    """Safely get file size in bytes, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
+    if p is None:
+        return 0
+    try:
+        return pathlib.Path(p).stat().st_size
+    except OSError:
+        return 0
+    except Exception:
+        return 0
+
+
+def _is_valid_eodata_safe(safe_dir: pathlib.Path) -> bool:
+    """Verify that a candidate /eodata SAFE folder exists, is a directory, and has an accessible manifest."""
+    try:
+        if not safe_is_dir(safe_dir):
+            return False
+        # Manifest check confirms directory is actually accessible and not an unreadable FUSE mount error
+        manifest_std = safe_dir / "manifest.safe"
+        manifest_upper = safe_dir / "manifest.SAFE"
+        return safe_exists(manifest_std) or safe_exists(manifest_upper)
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+
 class CDSESentinel1Finder:
     def __init__(self, token_manager, download_dir: pathlib.Path):
         self.token_manager = token_manager
@@ -583,15 +634,19 @@ class CDSESentinel1Finder:
             if working_dir and country_code:
                 date_str_formatted = prod_date.strftime("%Y%m%d")
                 final_output_dir = working_dir / country_code / f"orbit_{orbit_num}" / "slice_assembly"
-                if final_output_dir.exists():
+                if safe_is_dir(final_output_dir):
                     existing_dims = [
                         f for f in final_output_dir.glob(f"{date_str_formatted}_{country_code}_orbit_{orbit_num}_*.dim")
-                        if f.with_suffix('.data').is_dir()
+                        if safe_is_dir(f.with_suffix('.data'))
                     ]
                     existing_tifs = [
                         f for f in final_output_dir.glob(f"{date_str_formatted}_{country_code}_orbit_{orbit_num}_*.tif")
-                        if f.stat().st_size > 1024
+                        if safe_file_size(f) > 1024
                     ]
+                    # Also check pure Python Stage 1 output format (date_str.tif)
+                    py_tif = final_output_dir / f"{date_str_formatted}.tif"
+                    if safe_file_size(py_tif) > 1024:
+                        existing_tifs.append(py_tif)
                     existing_finals = existing_dims + existing_tifs
                     if existing_finals:
                         logging.info(f"Skipping download/processing for {date_str_formatted}: Final output already exists ({existing_finals[0].name})")
@@ -611,7 +666,7 @@ class CDSESentinel1Finder:
                     pathlib.Path(f"/eodata/Sentinel-1/SAR/IW_GRDH_1S/{prod_date.year:04d}/{prod_date.month:02d}/{prod_date.day:02d}") / safe_folder_name,
                     pathlib.Path(f"/eodata/Sentinel-1/SAR/IW_GRDH_1S-COG/{prod_date.year:04d}/{prod_date.month:02d}/{prod_date.day:02d}") / safe_folder_name.replace(".SAFE", "_COG.SAFE"),
                 ]
-                eodata_hit = next((ep for ep in eodata_cand_dirs if ep.exists()), None)
+                eodata_hit = next((ep for ep in eodata_cand_dirs if _is_valid_eodata_safe(ep)), None)
                 if eodata_hit is not None:
                     logging.info(f"Using mounted CDSE /eodata SAFE folder directly: {eodata_hit}")
                     local_safe_paths.append(eodata_hit)
@@ -619,8 +674,12 @@ class CDSESentinel1Finder:
 
                 local_safe_path = self.download_dir / safe_folder_name
                 
-                # Check if already downloaded and extracted
-                if local_safe_path.exists() and any(local_safe_path.iterdir()):
+                # Check if already downloaded and extracted (verify manifest exists and is complete)
+                has_cached_safe = safe_is_dir(local_safe_path) and (
+                    safe_exists(local_safe_path / "manifest.safe") or safe_exists(local_safe_path / "manifest.SAFE")
+                )
+
+                if has_cached_safe:
                     logging.info(f"Using cached SAFE folder: {local_safe_path}")
                     local_safe_paths.append(local_safe_path)
                 else:
@@ -632,15 +691,15 @@ class CDSESentinel1Finder:
                         # Extract zip
                         extract_zip(zip_path, self.download_dir)
                         # Delete zip
-                        if zip_path.exists():
+                        if safe_exists(zip_path):
                             zip_path.unlink()
                         local_safe_paths.append(local_safe_path)
                     except Exception as ex:
                         logging.error(f"Failed to download/extract {p_name}: {ex}")
-                        if zip_path.exists():
+                        if safe_exists(zip_path):
                             zip_path.unlink()
-                        if local_safe_path.exists():
-                            shutil.rmtree(local_safe_path)
+                        if safe_exists(local_safe_path):
+                            shutil.rmtree(local_safe_path, ignore_errors=True)
                         continue
 
             if local_safe_paths:
@@ -880,7 +939,7 @@ def process_orbit_cdse(
     roi_wkt = f"POLYGON (({env[0]} {env[2]}, {env[1]} {env[2]}, {env[1]} {env[3]}, {env[0]} {env[3]}, {env[0]} {env[2]}))"
 
     use_python = str(engine).lower() == "python" or (
-        str(engine).lower() == "auto" and not pathlib.Path(GPT_EXE).exists()
+        str(engine).lower() == "auto" and not safe_exists(GPT_EXE)
     )
     if use_python:
         try:

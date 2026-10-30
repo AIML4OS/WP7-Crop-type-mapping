@@ -25,9 +25,66 @@ GPT_EXE = os.environ.get("SNAP_GPT_EXE", r"D:/Program Files/esa-snap/bin/gpt.exe
 # Path to SNAP AuxData
 AUXDATA_PATH = os.environ.get("SNAP_AUXDATA_PATH", r"C:/Users/Administrator/.snap/auxdata")
 
+
+def safe_exists(p) -> bool:
+    """Safely check if path exists, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
+    if p is None:
+        return False
+    try:
+        return pathlib.Path(p).exists()
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+
+def safe_is_dir(p) -> bool:
+    """Safely check if path is a directory, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
+    if p is None:
+        return False
+    try:
+        return pathlib.Path(p).is_dir()
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+
+def safe_file_size(p) -> int:
+    """Safely get file size in bytes, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
+    if p is None:
+        return 0
+    try:
+        return pathlib.Path(p).stat().st_size
+    except OSError:
+        return 0
+    except Exception:
+        return 0
+
+
+def safe_list_safes(day_path: pathlib.Path, max_retries: int = 2) -> list[pathlib.Path]:
+    """Safely and efficiently list *.SAFE directories in day_path, handling FUSE/s3fs I/O errors gracefully."""
+    if not safe_is_dir(day_path):
+        return []
+    for attempt in range(max_retries + 1):
+        try:
+            entries = os.listdir(day_path)
+            return [day_path / name for name in entries if name.endswith(".SAFE")]
+        except OSError as e:
+            if attempt < max_retries:
+                time.sleep(0.3)
+                continue
+            logging.warning(f"Could not read directory {day_path} (FUSE/s3fs I/O error or unavailable): {e}")
+            return []
+        except Exception:
+            return []
+    return []
+
+
+
 # Repository where raw .SAFE data is stored
-_DEFAULT_S1_COG_REPO = "/eodata/Sentinel-1/SAR/IW_GRDH_1S-COG" if (os.name != "nt" or pathlib.Path("/eodata").exists()) else r"Y:\Sentinel-1\SAR\IW_GRDH_1S-COG"
-LOCAL_REPO_PATH = os.environ.get("S1_REPO_PATH", _DEFAULT_S1_COG_REPO)
+_DEFAULT_S1_COG_REPO = "/eodata/Sentinel-1/SAR/IW_GRDH_1S-COG" if (os.name != "nt" or safe_exists("/eodata")) else r"Y:\Sentinel-1\SAR\IW_GRDH_1S-COG"
+LOCAL_REPO_PATH = os.environ.get("S1_COG_REPO_PATH", _DEFAULT_S1_COG_REPO)
 # Directory where processing results (calibrated/sliced) will be saved
 WORKING_DIR = os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs"))
 AUX_DIR = os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files"))
@@ -337,8 +394,9 @@ class CountryOrbitOptimizer:
 
         while current_date < end_search_date:
             day_path = self.repo_path / str(current_date.year) / f"{current_date.month:02d}" / f"{current_date.day:02d}"
-            if day_path.exists() and any(day_path.iterdir()):
-                for safe_dir in day_path.glob("*.SAFE"):
+            safe_dirs = safe_list_safes(day_path)
+            for safe_dir in safe_dirs:
+                try:
                     orbit_num = self.finder._get_relative_orbit(safe_dir)
                     if orbit_num is None:
                         continue
@@ -360,6 +418,9 @@ class CountryOrbitOptimizer:
                             discovered_dsc[orbit_num].append(footprint)
                         else:
                             discovered_asc[orbit_num].append(footprint)
+                except Exception as ex:
+                    logging.warning(f"Error checking candidate SAFE {safe_dir.name}: {ex}")
+                    continue
 
             current_date += datetime.timedelta(days=1)
 
@@ -418,16 +479,22 @@ class LocalSentinel1Finder:
         self._cache_content = None
         
         manifest = safe_path / "manifest.safe"
-        try:
-            if not manifest.exists():
-                manifest = safe_path / "manifest.SAFE"
-            if manifest.exists():
-                with open(manifest, 'r', encoding='utf-8') as f:
-                    self._cache_content = f.read()
-            else:
-                logging.warning(f"Manifest not found for {safe_path.name}")
-        except Exception as e:
-            logging.error(f"SKIP: Disk I/O Error reading manifest for {safe_path.name}: {e}")
+        for attempt in range(2):
+            try:
+                if not safe_exists(manifest):
+                    manifest = safe_path / "manifest.SAFE"
+                if safe_exists(manifest):
+                    with open(manifest, 'r', encoding='utf-8') as f:
+                        self._cache_content = f.read()
+                    break
+                else:
+                    logging.warning(f"Manifest not found for {safe_path.name}")
+                    break
+            except Exception as e:
+                if attempt == 0:
+                    time.sleep(0.3)
+                    continue
+                logging.error(f"SKIP: Disk I/O Error reading manifest for {safe_path.name}: {e}")
             
         return self._cache_content
 
@@ -474,8 +541,12 @@ class LocalSentinel1Finder:
                 abs_orbit = int(parts[6])
                 if platform == 'S1A':
                     return ((abs_orbit - 73) % 175) + 1
-                elif platform == 'S1B' or platform == 'S1C' or platform == 'S1D':
+                elif platform == 'S1B':
                     return ((abs_orbit - 27) % 175) + 1
+                elif platform == 'S1C':
+                    return ((abs_orbit - 172) % 175) + 1
+                elif platform == 'S1D':
+                    return ((abs_orbit - 42) % 175) + 1
             except ValueError:
                 pass
         return None
@@ -547,10 +618,16 @@ class LocalSentinel1Finder:
                 if working_dir and country_code:
                     date_str = current_date.strftime("%Y%m%d")
                     final_output_dir = working_dir / country_code / f"orbit_{orbit_num}" / "slice_assembly"
-                    if final_output_dir.exists():
+                    if safe_is_dir(final_output_dir):
                         # We use country_code and orbit_num in the final dim name
-                        existing_finals = [f for f in final_output_dir.glob(f"{date_str}_{country_code}_orbit_{orbit_num}_*.dim") if
-                                           f.with_suffix('.data').is_dir()]
+                        existing_dims = [f for f in final_output_dir.glob(f"{date_str}_{country_code}_orbit_{orbit_num}_*.dim") if
+                                           safe_is_dir(f.with_suffix('.data'))]
+                        existing_tifs = [f for f in final_output_dir.glob(f"{date_str}_{country_code}_orbit_{orbit_num}_*.tif") if
+                                           safe_file_size(f) > 1024]
+                        py_tif = final_output_dir / f"{date_str}.tif"
+                        if safe_file_size(py_tif) > 1024:
+                            existing_tifs.append(py_tif)
+                        existing_finals = existing_dims + existing_tifs
                         if existing_finals:
                             logging.info(
                                 f"Skipping search for {date_str}: Final output already exists ({existing_finals[0].name})")
@@ -561,36 +638,37 @@ class LocalSentinel1Finder:
                 day_path = self.repo_path / str(
                     current_date.year) / f"{current_date.month:02d}" / f"{current_date.day:02d}"
 
-                try:
-                    if day_path.exists() and any(day_path.iterdir()):
-                        for safe_dir in day_path.glob("*.SAFE"):
-                            # 1. Check Orbit (Fast filename parse first to avoid slow disk read)
-                            fast_orbit = self._estimate_relative_orbit_from_name(safe_dir.name)
-                            if fast_orbit is not None:
-                                if fast_orbit != orbit_num:
-                                    continue
-                            else:
-                                parsed_orbit = self._get_relative_orbit(safe_dir)
-                                if parsed_orbit != orbit_num:
-                                    continue
-
-                            # 2. Check Pass Direction
-                            if pass_direction:
-                                parsed_pass = self._get_pass_direction(safe_dir)
-                                if parsed_pass != pass_direction:
-                                    continue
-
-                            # 3. Check Geometry
-                            prod_geom = self._get_safe_footprint(safe_dir)
-                            if not prod_geom:
-                                logging.warning(f"   [SKIP] Geometry parse failed: {safe_dir.name}")
+                safe_dirs = safe_list_safes(day_path)
+                for safe_dir in safe_dirs:
+                    try:
+                        # 1. Check Orbit (Fast filename parse first to avoid slow disk read)
+                        fast_orbit = self._estimate_relative_orbit_from_name(safe_dir.name)
+                        if fast_orbit is not None:
+                            if fast_orbit != orbit_num:
+                                continue
+                        else:
+                            parsed_orbit = self._get_relative_orbit(safe_dir)
+                            if parsed_orbit != orbit_num:
                                 continue
 
-                            if prod_geom.Intersects(target_geom):
-                                logging.info(f"   -> MATCH: {safe_dir.name}")
-                                day_products.append(safe_dir)
-                except OSError as e:
-                    logging.error(f"SKIP DATE {current_date}: I/O Error accessing folder {day_path}: {e}")
+                        # 2. Check Pass Direction
+                        if pass_direction:
+                            parsed_pass = self._get_pass_direction(safe_dir)
+                            if parsed_pass != pass_direction:
+                                continue
+
+                        # 3. Check Geometry
+                        prod_geom = self._get_safe_footprint(safe_dir)
+                        if not prod_geom:
+                            logging.warning(f"   [SKIP] Geometry parse failed: {safe_dir.name}")
+                            continue
+
+                        if prod_geom.Intersects(target_geom):
+                            logging.info(f"   -> MATCH: {safe_dir.name}")
+                            day_products.append(safe_dir)
+                    except Exception as ex:
+                        logging.warning(f"Error inspecting product {safe_dir.name}: {ex}")
+                        continue
 
                 if day_products:
                     # If this is the first find, set the base date for the 6-day cycle.
@@ -836,7 +914,7 @@ def process_orbit_cog(
     roi_wkt = f"POLYGON (({env[0]} {env[2]}, {env[1]} {env[2]}, {env[1]} {env[3]}, {env[0]} {env[3]}, {env[0]} {env[2]}))"
 
     use_python = str(engine).lower() == "python" or (
-        str(engine).lower() == "auto" and not pathlib.Path(GPT_EXE).exists()
+        str(engine).lower() == "auto" and not safe_exists(GPT_EXE)
     )
     if use_python:
         try:

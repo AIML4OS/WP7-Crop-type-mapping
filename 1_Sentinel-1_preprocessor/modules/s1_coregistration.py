@@ -19,6 +19,7 @@ from datetime import datetime
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 GPT_EXE = os.environ.get("SNAP_GPT_EXE", r"D:/Program Files/esa-snap/bin/gpt.exe")
 BASE_DIR = os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs"))
+WORKING_DIR = BASE_DIR
 AUXDATA_PATH = os.environ.get("SNAP_AUXDATA_PATH", r"C:/Users/Administrator/.snap/auxdata")
 
 # Correct EPSG:3857 WKT for SNAP (From your old script)
