@@ -237,7 +237,8 @@ def stack_and_clip(track: str):
             creationOptions=creation_options,
             cutlineDSName=str(temp_shp),
             cropToCutline=True,
-            dstNodata=0,
+            srcNodata=0.0,
+            dstNodata=0.0,
             dstSRS='EPSG:3857',
             multithread=True,
             callback=make_progress(f"Clipping {region}")

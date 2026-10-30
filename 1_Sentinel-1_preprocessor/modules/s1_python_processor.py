@@ -327,12 +327,17 @@ class CopernicusDEMManager:
                 height=height,
                 resampleAlg=gdal.GRA_Bilinear,
                 outputType=gdal.GDT_Float32,
-                dstNodata=0.0,
+                dstNodata=-9999.0,
             )
             if mem_ds is None:
                 return None
             arr = mem_ds.GetRasterBand(1).ReadAsArray()
             mem_ds = None
+            if arr is not None:
+                # Replace any out-of-bounds or void NoData pixels (-9999 or NaN) with 0.0m (sea level)
+                void_mask = (arr <= -9990.0) | np.isnan(arr)
+                if np.any(void_mask):
+                    arr[void_mask] = 0.0
             return arr
         except Exception as e:
             logging.warning(f"DEM warp failed: {e}")
