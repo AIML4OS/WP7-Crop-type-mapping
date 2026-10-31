@@ -23,6 +23,8 @@ import re
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -298,30 +300,74 @@ def extract_tile_and_date_from_safe_name(safe_name: str) -> tuple:
     return tile, dt
 
 
+def _safe_listdir(dir_path: Path, retries: int = 3) -> List[str]:
+    """Safely list directory entries on FUSE/s3fs mounts with retries, avoiding per-entry stat calls."""
+    for attempt in range(retries):
+        try:
+            return os.listdir(str(dir_path))
+        except FileNotFoundError:
+            return []
+        except OSError:
+            if attempt < retries - 1:
+                time.sleep(0.4 * (attempt + 1))
+    return []
+
+
+def _resolve_safe_band_paths(safe_dir: Path) -> Dict[str, Path]:
+    """
+    Resolves source JP2/TIF paths for all 10 target S2 bands using at most 3 os.listdir calls
+    (GRANULE, R10m, R20m) to prevent FUSE/s3fs metadata throttling.
+    """
+    band_map: Dict[str, Path] = {}
+    g_dir = safe_dir / 'GRANULE'
+    granules = [g for g in _safe_listdir(g_dir) if not g.startswith('.')]
+    if not granules:
+        return band_map
+
+    for g_name in granules:
+        img_data_dir = g_dir / g_name / 'IMG_DATA'
+        r10m_dir = img_data_dir / 'R10m'
+        r20m_dir = img_data_dir / 'R20m'
+
+        r20m_entries = _safe_listdir(r20m_dir)
+        r10m_entries = _safe_listdir(r10m_dir)
+        if not r20m_entries and not r10m_entries:
+            # Flat IMG_DATA fallback
+            flat_entries = _safe_listdir(img_data_dir)
+            for band in S2_BANDS_20M:
+                matches = [f for f in flat_entries if f"_{band}" in f and (f.endswith('.jp2') or f.endswith('.tif'))]
+                if matches:
+                    band_map[band] = img_data_dir / matches[0]
+            if band_map:
+                return band_map
+            continue
+
+        for band in S2_BANDS_20M:
+            # Prefer native 10m resolution from R10m for B02, B03, B04 when available
+            if band in ('B02', 'B03', 'B04') and r10m_entries:
+                m10 = [f for f in r10m_entries if f"_{band}_10m." in f and (f.endswith('.jp2') or f.endswith('.tif'))]
+                if not m10:
+                    m10 = [f for f in r10m_entries if f"_{band}" in f and (f.endswith('.jp2') or f.endswith('.tif'))]
+                if m10:
+                    band_map[band] = r10m_dir / m10[0]
+                    continue
+
+            if r20m_entries:
+                m20 = [f for f in r20m_entries if f"_{band}_20m." in f and (f.endswith('.jp2') or f.endswith('.tif'))]
+                if not m20:
+                    m20 = [f for f in r20m_entries if f"_{band}" in f and (f.endswith('.jp2') or f.endswith('.tif'))]
+                if m20:
+                    band_map[band] = r20m_dir / m20[0]
+
+        if 'B02' in band_map:
+            return band_map
+
+    return band_map
+
+
 def find_b02_path_in_safe(safe_dir: Path) -> Optional[Path]:
-    try:
-        g_dir = safe_dir / 'GRANULE'
-        if not g_dir.exists():
-            return None
-        for granule in g_dir.iterdir():
-            if granule.is_dir():
-                r20m_dir = granule / 'IMG_DATA' / 'R20m'
-                if r20m_dir.exists():
-                    b02_files = list(r20m_dir.glob("*_B02_20m.jp2"))
-                    if b02_files:
-                        return b02_files[0]
-                    b02_tif = list(r20m_dir.glob("*_B02_20m.tif"))
-                    if b02_tif:
-                        return b02_tif[0]
-                r10m_dir = granule / 'IMG_DATA' / 'R10m'
-                if r10m_dir.exists():
-                    b02_files = list(r10m_dir.glob("*_B02_10m.jp2")) + list(r10m_dir.glob("*_B02*.jp2"))
-                    if b02_files:
-                        return b02_files[0]
-    except Exception as e:
-        logging.debug(f"Could not inspect granules in {safe_dir.name}: {e}")
-        return None
-    return None
+    band_map = _resolve_safe_band_paths(safe_dir)
+    return band_map.get('B02')
 
 
 def detect_boa_add_offset(safe_dir: Path) -> int:
@@ -350,61 +396,39 @@ def detect_boa_add_offset(safe_dir: Path) -> int:
 
 def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
     try:
-        output_dest_dir.mkdir(parents=True, exist_ok=True)
-
         # Fast local check: if all 10 bands already exist locally, skip touching the network drive completely
-        all_bands_exist = True
-        for band in S2_BANDS_20M:
-            dst_tif = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tif"
-            if not (dst_tif.exists() and dst_tif.stat().st_size > 1024):
-                all_bands_exist = False
-                break
-        if all_bands_exist:
-            return True
+        if output_dest_dir.exists():
+            all_bands_exist = True
+            for band in S2_BANDS_20M:
+                dst_tif = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tif"
+                if not (dst_tif.exists() and dst_tif.stat().st_size > 1024):
+                    all_bands_exist = False
+                    break
+            if all_bands_exist:
+                return True
 
-        b02_file = find_b02_path_in_safe(safe_dir)
-        if not b02_file or not b02_file.exists():
+        band_map = _resolve_safe_band_paths(safe_dir)
+        if 'B02' not in band_map:
             return False
 
+        output_dest_dir.mkdir(parents=True, exist_ok=True)
         boa_offset = detect_boa_add_offset(safe_dir)
         success = True
-        b02_str = str(b02_file)
-        img_data_dir = b02_file.parent.parent if b02_file.parent.name in ('R20m', 'R10m') else b02_file.parent
-        r10m_dir = img_data_dir / 'R10m'
-        r20m_dir = img_data_dir / 'R20m'
 
         for band in S2_BANDS_20M:
             band_dst_tif = output_dest_dir / f"{safe_dir.stem}_{band}_20m.tif"
             if band_dst_tif.exists() and band_dst_tif.stat().st_size > 1024:
                 continue
 
-            band_src = None
-            # Prefer native 10m resolution from R10m for B02, B03, B04 when available
-            if band in ('B02', 'B03', 'B04') and r10m_dir.exists():
-                cands_10m = list(r10m_dir.glob(f"*_{band}_10m.jp2")) + list(r10m_dir.glob(f"*_{band}_10m.tif"))
-                if cands_10m:
-                    band_src = cands_10m[0]
-
-            if band_src is None or not band_src.exists():
-                band_src = Path(b02_str.replace('_B02_20m', f'_{band}_20m').replace('_B02_10m', f'_{band}_20m'))
-            if not band_src.exists():
-                band_src = Path(b02_str.replace('B02', band))
-            if not band_src.exists():
-                try:
-                    search_dir = r20m_dir if r20m_dir.exists() else b02_file.parent
-                    candidates = list(search_dir.glob(f"*_{band}_20m.jp2"))
-                    if not candidates:
-                        candidates = list(search_dir.glob(f"*{band}*.jp2"))
-                    if candidates:
-                        band_src = candidates[0]
-                    else:
-                        continue
-                except Exception:
-                    continue
+            band_src = band_map.get(band)
+            if band_src is None:
+                success = False
+                continue
 
             try:
                 ds = gdal.Open(str(band_src))
                 if ds is None:
+                    success = False
                     continue
                 if band != 'SCL' and boa_offset != 0:
                     # Harmonize ESA Processing Baseline 04.00+/05.xx BOA_ADD_OFFSET (-1000 DN)
@@ -414,7 +438,7 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
                         drv = gdal.GetDriverByName('GTiff')
                         out_ds = drv.Create(
                             str(band_dst_tif), ds.RasterXSize, ds.RasterYSize, 1, gdal.GDT_UInt16,
-                            options=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS']
+                            options=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=2']
                         )
                         out_ds.SetGeoTransform(ds.GetGeoTransform())
                         out_ds.SetProjection(ds.GetProjection())
@@ -425,7 +449,7 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
                         out_ds = None
                     ds = None
                 else:
-                    options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=ALL_CPUS'])
+                    options = gdal.TranslateOptions(creationOptions=['COMPRESS=LZW', 'TILED=YES', 'BIGTIFF=IF_SAFER', 'NUM_THREADS=2'])
                     out_ds = gdal.Translate(str(band_dst_tif), ds, options=options)
                     if out_ds is not None and band != 'SCL':
                         out_ds.SetMetadataItem("BOA_OFFSET_CORRECTED", "1")
@@ -436,19 +460,121 @@ def convert_safe_to_geotiff(safe_dir: Path, output_dest_dir: Path) -> bool:
             except Exception as e:
                 logging.debug(f"Failed converting band {band_src.name}: {e}")
                 if band_dst_tif.exists():
-                    try: band_dst_tif.unlink()
-                    except: pass
+                    try:
+                        band_dst_tif.unlink()
+                    except Exception:
+                        pass
                 success = False
 
-        if not any(output_dest_dir.glob("*.tif")):
+        if output_dest_dir.exists() and not any(output_dest_dir.glob("*.tif")):
             try:
                 output_dest_dir.rmdir()
+                if output_dest_dir.parent.exists() and not any(output_dest_dir.parent.iterdir()):
+                    output_dest_dir.parent.rmdir()
             except Exception:
                 pass
         return success
     except Exception as e:
         logging.warning(f"Error converting scene {safe_dir.name}: {e}")
         return False
+
+
+def _query_cdse_odata_s2_scenes(
+    repo_path: Path,
+    start_date: datetime.date,
+    end_date: datetime.date,
+    target_tiles: Optional[List[str]] = None,
+    max_cloud_cover: float = 80.0
+) -> Optional[List[Dict]]:
+    """
+    Fast pre-lookup of Sentinel-2 L2A scenes via the Copernicus Data Space (CDSE) OData Catalog API.
+    Bypasses slow FUSE/s3fs directory scanning across 25,000+ global daily scenes on /eodata.
+    """
+    try:
+        start_str = start_date.strftime("%Y-%m-%dT00:00:00.000Z")
+        end_str = end_date.strftime("%Y-%m-%dT23:59:59.999Z")
+
+        filter_parts = [
+            "Collection/Name eq 'SENTINEL-2'",
+            "contains(Name,'MSIL2A')",
+            f"ContentDate/Start ge {start_str}",
+            f"ContentDate/Start le {end_str}",
+            f"Attributes/OData.CSC.DoubleAttribute/any(att:att/Name eq 'cloudCover' and att/OData.CSC.DoubleAttribute/Value le {float(max_cloud_cover):.2f})"
+        ]
+
+        if target_tiles:
+            clean_tiles = sorted(set(t.upper().lstrip('T') for t in target_tiles))
+            tile_clauses = [f"contains(Name,'_T{t}_')" for t in clean_tiles]
+            filter_parts.append("(" + " or ".join(tile_clauses) + ")")
+
+        flt = " and ".join(filter_parts)
+        next_url = (
+            f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
+            f"$filter={urllib.parse.quote(flt)}&$expand=Attributes&$top=1000&$orderby=ContentDate/Start%20asc"
+        )
+
+        raw_items = []
+        while next_url:
+            req = urllib.request.Request(next_url, headers={"User-Agent": "AIML-CropMapper/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            raw_items.extend(data.get("value", []))
+            next_url = data.get("@odata.nextLink")
+
+        # Deduplicate reprocessed versions of the exact same (tile, sensing_timestamp, orbit), keeping latest baseline/processing date
+        dedup_map: Dict[Tuple[str, str, str], Dict] = {}
+        repo_is_eodata = str(repo_path).startswith("/eodata")
+
+        for item in raw_items:
+            name = item.get("Name", "")
+            if not name:
+                continue
+            if not name.endswith(".SAFE"):
+                name = f"{name}.SAFE"
+
+            tile_name, acq_date = extract_tile_and_date_from_safe_name(name)
+            if not (start_date <= acq_date <= end_date):
+                continue
+
+            cloud_pct = 0.0
+            for att in item.get("Attributes", []):
+                if att.get("Name") == "cloudCover" and att.get("Value") is not None:
+                    try:
+                        cloud_pct = float(att["Value"])
+                    except (ValueError, TypeError):
+                        pass
+                    break
+
+            if cloud_pct > max_cloud_cover:
+                continue
+
+            s3_path = item.get("S3Path", "")
+            if repo_is_eodata and s3_path and s3_path.startswith("/eodata/"):
+                safe_path = Path(s3_path)
+            else:
+                safe_path = repo_path / f"{acq_date.year}" / f"{acq_date.month:02d}" / f"{acq_date.day:02d}" / name
+
+            m_sense = re.search(r'_(20\d{6}T\d{6})_', name)
+            m_orb = re.search(r'_(R\d{3})_', name)
+            sense_key = m_sense.group(1) if m_sense else str(acq_date)
+            orb_key = m_orb.group(1) if m_orb else "R000"
+            dedup_key = (tile_name, sense_key, orb_key)
+
+            if dedup_key not in dedup_map or name > dedup_map[dedup_key]['title']:
+                dedup_map[dedup_key] = {
+                    'title': name,
+                    'safe_path': safe_path,
+                    'tile': tile_name,
+                    'date': acq_date,
+                    'cloud_cover': cloud_pct
+                }
+
+        matched = list(dedup_map.values())
+        matched.sort(key=lambda x: (x['date'], x['tile'], x['title']))
+        return matched
+    except Exception as e:
+        logging.warning(f"CDSE OData catalog pre-lookup failed ({e}); falling back to directory scan.")
+        return None
 
 
 def scan_creodias_for_dates(
@@ -458,7 +584,7 @@ def scan_creodias_for_dates(
     target_tiles: Optional[List[str]] = None,
     max_cloud_cover: float = 80.0
 ) -> List[Dict]:
-    tiles_key = tuple(sorted(set(t.upper().replace('T', '') for t in target_tiles))) if target_tiles else None
+    tiles_key = tuple(sorted(set(t.upper().lstrip('T') for t in target_tiles))) if target_tiles else None
     cache_key = (str(repo_path), str(start_date), str(end_date), tiles_key, max_cloud_cover)
     if cache_key in _GLOBAL_SCAN_CACHE:
         cached_all = _GLOBAL_SCAN_CACHE[cache_key]
@@ -467,11 +593,24 @@ def scan_creodias_for_dates(
 
     logging.info(f"Scanning CREODIAS repository ({repo_path}) for dates {start_date} to {end_date} (Target MGRS tiles: {len(target_tiles) if target_tiles else 'ALL'})...")
     matched = []
-    if not repo_path.exists():
+    if not safe_exists(repo_path):
         logging.error(f"CREODIAS S2 path not found: {repo_path}")
         return matched
 
-    target_tile_tags = [f"_T{t.upper().replace('T', '')}_" for t in target_tiles] if target_tiles else None
+    # Fast OData catalog lookup (avoids scanning 25,000+ global daily folders over s3fs/FUSE)
+    odata_matched = _query_cdse_odata_s2_scenes(
+        repo_path=repo_path,
+        start_date=start_date,
+        end_date=end_date,
+        target_tiles=target_tiles,
+        max_cloud_cover=max_cloud_cover
+    )
+    if odata_matched is not None and len(odata_matched) > 0:
+        _GLOBAL_SCAN_CACHE[cache_key] = list(odata_matched)
+        logging.info(f"Found {len(odata_matched)} matching S2 SAFE scenes in CREODIAS repo via OData catalog.")
+        return odata_matched
+
+    target_tile_tags = [f"_T{t.upper().lstrip('T')}_" for t in target_tiles] if target_tiles else None
 
     curr_date = start_date
     checked = set()
@@ -615,12 +754,16 @@ def process_orbit_creodias_s2(
     scenes_to_process = []
     for sc in all_scenes:
         tile_upper = sc['tile'].upper()
+        stem_name = sc['title'][:-5] if sc['title'].endswith('.SAFE') else sc['title']
         dest_prod_tif_dir = dest_track_s2 / f"{tile_upper}_tif" / sc['title']
-        check_b02 = dest_prod_tif_dir / f"{sc['title']}_B02_20m.tif"
-        if not (check_b02.exists() and check_b02.stat().st_size > 1024):
+        check_b02_stem = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
+        check_b02_full = dest_prod_tif_dir / f"{sc['title']}_B02_20m.tif"
+        if not ((check_b02_stem.exists() and check_b02_stem.stat().st_size > 1024) or (check_b02_full.exists() and check_b02_full.stat().st_size > 1024)):
             # Also check fallback shared directory
-            shared_check = BASE_DIR / country_code / "S2" / f"{tile_upper}_tif" / sc['title'] / f"{sc['title']}_B02_20m.tif"
-            if not (shared_check.exists() and shared_check.stat().st_size > 1024):
+            shared_dir = BASE_DIR / country_code / "S2" / f"{tile_upper}_tif" / sc['title']
+            shared_check_stem = shared_dir / f"{stem_name}_B02_20m.tif"
+            shared_check_full = shared_dir / f"{sc['title']}_B02_20m.tif"
+            if not ((shared_check_stem.exists() and shared_check_stem.stat().st_size > 1024) or (shared_check_full.exists() and shared_check_full.stat().st_size > 1024)):
                 scenes_to_process.append(sc)
 
     total_scenes = len(scenes_to_process)
@@ -631,27 +774,31 @@ def process_orbit_creodias_s2(
         return
 
     converted_count = 0
+    success_count = 0
     lock = threading.Lock()
 
     def _worker_convert_creodias(sc: dict):
-        nonlocal converted_count
+        nonlocal converted_count, success_count
+        ok = False
         try:
             tile_upper = sc['tile'].upper()
             out_tile_dir = dest_track_s2 / f"{tile_upper}_tif" / sc['title']
-            convert_safe_to_geotiff(sc['safe_path'], out_tile_dir)
+            ok = convert_safe_to_geotiff(sc['safe_path'], out_tile_dir)
         except Exception as e:
             logging.debug(f"Skipping damaged scene {sc.get('title')}: {e}")
         finally:
             with lock:
                 converted_count += 1
+                if ok:
+                    success_count += 1
                 if converted_count % 10 == 0 or converted_count == total_scenes:
                     pct = (converted_count / total_scenes) * 100.0
-                    logging.info(f"  [CREODIAS CONVERSION] {converted_count}/{total_scenes} products completed ({pct:.1f}%)")
+                    logging.info(f"  [CREODIAS CONVERSION] {converted_count}/{total_scenes} products processed ({pct:.1f}%) | Succeeded: {success_count}")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         list(executor.map(_worker_convert_creodias, scenes_to_process))
 
-    logging.info(f"SUCCESS: Sentinel-2 extraction & conversion completed for track {track_name}!")
+    logging.info(f"SUCCESS: Sentinel-2 extraction & conversion completed for track {track_name}! ({success_count}/{total_scenes} succeeded)")
 
 
 def process_country_creodias_s2(
@@ -681,9 +828,11 @@ def process_country_creodias_s2(
     scenes_to_process = []
     for sc in all_scenes:
         tile_upper = sc['tile'].upper()
+        stem_name = sc['title'][:-5] if sc['title'].endswith('.SAFE') else sc['title']
         dest_prod_tif_dir = dest_country_s2 / f"{tile_upper}_tif" / sc['title']
-        check_b02 = dest_prod_tif_dir / f"{sc['title']}_B02_20m.tif"
-        if not (check_b02.exists() and check_b02.stat().st_size > 1024):
+        check_b02_stem = dest_prod_tif_dir / f"{stem_name}_B02_20m.tif"
+        check_b02_full = dest_prod_tif_dir / f"{sc['title']}_B02_20m.tif"
+        if not ((check_b02_stem.exists() and check_b02_stem.stat().st_size > 1024) or (check_b02_full.exists() and check_b02_full.stat().st_size > 1024)):
             scenes_to_process.append(sc)
 
     total_scenes = len(scenes_to_process)
@@ -694,27 +843,31 @@ def process_country_creodias_s2(
         return
 
     converted_count = 0
+    success_count = 0
     lock = threading.Lock()
 
     def _worker_convert_creodias(sc: dict):
-        nonlocal converted_count
+        nonlocal converted_count, success_count
+        ok = False
         try:
             tile_upper = sc['tile'].upper()
             out_tile_dir = dest_country_s2 / f"{tile_upper}_tif" / sc['title']
-            convert_safe_to_geotiff(sc['safe_path'], out_tile_dir)
+            ok = convert_safe_to_geotiff(sc['safe_path'], out_tile_dir)
         except Exception as e:
             logging.debug(f"Skipping damaged scene {sc.get('title')}: {e}")
         finally:
             with lock:
                 converted_count += 1
+                if ok:
+                    success_count += 1
                 if converted_count % 10 == 0 or converted_count == total_scenes:
                     pct = (converted_count / total_scenes) * 100.0
-                    logging.info(f"  [CREODIAS CONVERSION] {converted_count}/{total_scenes} products completed ({pct:.1f}%)")
+                    logging.info(f"  [CREODIAS CONVERSION] {converted_count}/{total_scenes} products processed ({pct:.1f}%) | Succeeded: {success_count}")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         list(executor.map(_worker_convert_creodias, scenes_to_process))
 
-    logging.info(f"SUCCESS: Sentinel-2 extraction & conversion completed for country {country_code}!\n")
+    logging.info(f"SUCCESS: Sentinel-2 extraction & conversion completed for country {country_code}! ({success_count}/{total_scenes} succeeded)\n")
 
 
 def main():

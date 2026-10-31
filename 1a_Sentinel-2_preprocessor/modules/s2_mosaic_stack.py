@@ -144,6 +144,7 @@ def get_country_shapefile(country_code: str) -> Optional[Path]:
 def get_s1_raster_reference(track_dir: Path) -> Optional[Dict]:
     candidate_dirs = [
         track_dir / "1_input_stacks",
+        track_dir / "wrapped",
         track_dir,
         track_dir / "processed_raster",
         Path(r"D:/AIML_CropMapper_Cloud/workingDir") / track_dir.relative_to(BASE_DIR) / "1_input_stacks" if BASE_DIR in track_dir.parents else None,
@@ -152,10 +153,17 @@ def get_s1_raster_reference(track_dir: Path) -> Optional[Dict]:
     ]
     if track_dir.exists():
         candidate_dirs.extend(list(track_dir.glob("orbit_*/1_input_stacks")))
+        candidate_dirs.extend(list(track_dir.glob("orbit_*/wrapped")))
         candidate_dirs.extend(list(track_dir.glob("orbit_*")))
     for proc_dir in candidate_dirs:
         if proc_dir and proc_dir.exists():
-            s1_tifs = list(proc_dir.glob("*_VH_VV*.tif")) + list(proc_dir.glob("*Sigma0*.tif")) + list(proc_dir.glob("S1_*_stack*.tif"))
+            s1_tifs = (
+                list(proc_dir.glob("*_VH_VV*.tif")) +
+                list(proc_dir.glob("*_VH_VV*.tif.tmp")) +
+                list(proc_dir.glob("*Sigma0*.tif")) +
+                list(proc_dir.glob("S1_*_stack*.tif")) +
+                list(proc_dir.glob("_nuts_mask.tif"))
+            )
             if s1_tifs:
                 ds = gdal.Open(str(s1_tifs[0]))
                 if ds:
