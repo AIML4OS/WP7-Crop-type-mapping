@@ -6,6 +6,7 @@ import sys
 import re
 import subprocess
 import shutil
+import time
 from collections import defaultdict
 from osgeo import ogr, osr
 
@@ -64,20 +65,34 @@ def safe_file_size(p) -> int:
 
 def safe_list_safes(day_path: pathlib.Path, max_retries: int = 2) -> list[pathlib.Path]:
     """Safely and efficiently list *.SAFE directories in day_path, handling FUSE/s3fs I/O errors gracefully."""
-    if not safe_is_dir(day_path):
-        return []
-    for attempt in range(max_retries + 1):
-        try:
-            entries = os.listdir(day_path)
-            return [day_path / name for name in entries if name.endswith(".SAFE")]
-        except OSError as e:
-            if attempt < max_retries:
-                time.sleep(0.3)
-                continue
-            logging.warning(f"Could not read directory {day_path} (FUSE/s3fs I/O error or unavailable): {e}")
-            return []
-        except Exception:
-            return []
+    candidates = [day_path]
+    day_str = str(day_path)
+    if "IW_GRDH_1S-COG" in day_str:
+        candidates.append(pathlib.Path(day_str.replace("IW_GRDH_1S-COG", "IW_GRDH_1S")))
+    elif "IW_GRDH_1S" in day_str:
+        candidates.append(pathlib.Path(day_str.replace("IW_GRDH_1S", "IW_GRDH_1S-COG")))
+
+    last_err = None
+    for cand in candidates:
+        for attempt in range(max_retries + 1):
+            try:
+                entries = os.listdir(cand)
+                safes = [cand / name for name in entries if name.endswith(".SAFE")]
+                if safes or cand == day_path:
+                    return safes
+            except FileNotFoundError as e:
+                last_err = e
+                break
+            except OSError as e:
+                last_err = e
+                if attempt < max_retries:
+                    time.sleep(0.3)
+                    continue
+                break
+            except Exception:
+                break
+    if last_err is not None:
+        logging.warning(f"Could not read directory {day_path} (FUSE/s3fs I/O error or unavailable): {last_err}")
     return []
 
 
@@ -544,20 +559,21 @@ class LocalSentinel1Finder:
                 elif platform == 'S1B':
                     return ((abs_orbit - 27) % 175) + 1
                 elif platform == 'S1C':
-                    return ((abs_orbit - 172) % 175) + 1
+                    # ESA June 2026 orbital re-phasing maneuver (2026-06-09 to 2026-06-23)
+                    # moved S1C into the S1D plane, shifting its relative orbit offset from 172 to 99.
+                    if abs_orbit <= 8010:
+                        return ((abs_orbit - 172) % 175) + 1
+                    elif abs_orbit >= 8240:
+                        return ((abs_orbit - 99) % 175) + 1
+                    return None
                 elif platform == 'S1D':
                     return ((abs_orbit - 42) % 175) + 1
             except ValueError:
                 pass
         return None
 
-    def _get_relative_orbit(self, safe_path: pathlib.Path):
-        """Reads manifest.safe to find the relative orbit number (with fast filename-based fallback)."""
-        # Fast path: check filename estimation first
-        estimated = self._estimate_relative_orbit_from_name(safe_path.name)
-        if estimated is not None:
-            return estimated
-
+    def _get_relative_orbit_from_manifest(self, safe_path: pathlib.Path):
+        """Reads manifest.safe directly to extract the authoritative relativeOrbitNumber."""
         try:
             content = self._read_manifest(safe_path)
             if not content:
@@ -569,6 +585,13 @@ class LocalSentinel1Finder:
         except Exception as e:
             logging.warning(f"Failed to parse relative orbit for {safe_path.name}: {e}")
         return None
+
+    def _get_relative_orbit(self, safe_path: pathlib.Path):
+        """Reads manifest.safe to find the relative orbit number (with fast filename-based pre-check)."""
+        estimated = self._estimate_relative_orbit_from_name(safe_path.name)
+        if estimated is not None:
+            return estimated
+        return self._get_relative_orbit_from_manifest(safe_path)
 
     def _get_pass_direction(self, safe_path: pathlib.Path):
         """Reads manifest.safe to find the pass direction (ASCENDING or DESCENDING)."""
@@ -584,14 +607,116 @@ class LocalSentinel1Finder:
             logging.warning(f"Failed to parse pass direction for {safe_path.name}: {e}")
         return None
 
+    def _query_odata_orbit_products(
+        self,
+        orbit_num: int,
+        target_geom: ogr.Geometry,
+        start_date: datetime.date,
+        end_date: datetime.date,
+        pass_direction: str = None,
+    ):
+        """
+        Query the CDSE OData catalog for exact S3Path locations of Sentinel-1 slices
+        matching orbit_num and target_geom envelope. Avoids calling os.listdir on
+        1,000-entry s3fs /eodata directories (which triggers s3fs readdir_multi_head
+        I/O errors). Returns None if the OData API is unreachable.
+        """
+        if not str(self.repo_path).startswith("/eodata"):
+            return None
+        try:
+            import json
+            import urllib.parse
+            import urllib.request
+
+            min_lon, max_lon, min_lat, max_lat = target_geom.GetEnvelope()
+            bbox_wkt = (
+                f"POLYGON(({min_lon:.4f} {min_lat:.4f},{max_lon:.4f} {min_lat:.4f},"
+                f"{max_lon:.4f} {max_lat:.4f},{min_lon:.4f} {max_lat:.4f},{min_lon:.4f} {min_lat:.4f}))"
+            )
+            filter_parts = [
+                "Collection/Name eq 'SENTINEL-1'",
+                "contains(Name,'IW_GRDH_1S')",
+                f"Attributes/OData.CSC.IntegerAttribute/any(att:att/Name eq 'relativeOrbitNumber' and att/Value eq {int(orbit_num)})",
+                f"OData.CSC.Intersects(area=geography'SRID=4326;{bbox_wkt}')",
+                f"ContentDate/Start ge {start_date.isoformat()}T00:00:00.000Z",
+                f"ContentDate/Start le {end_date.isoformat()}T23:59:59.999Z",
+            ]
+            if pass_direction:
+                filter_parts.append(
+                    f"Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'orbitDirection' and att/Value eq '{pass_direction.upper()}')"
+                )
+            filter_str = " and ".join(filter_parts)
+
+            by_date_slice = defaultdict(lambda: defaultdict(dict))
+            skip = 0
+            while True:
+                params = urllib.parse.urlencode(
+                    {
+                        "$filter": filter_str,
+                        "$top": 1000,
+                        "$skip": skip,
+                        "$orderby": "ContentDate/Start asc",
+                    }
+                )
+                url = f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products?{params}"
+                req = urllib.request.Request(url, headers={"User-Agent": "AIML-CropMapper/3.0"})
+                with urllib.request.urlopen(req, timeout=25) as resp:
+                    items = json.loads(resp.read().decode("utf-8")).get("value", [])
+                for item in items:
+                    name = item.get("Name", "")
+                    s3p = item.get("S3Path", "")
+                    if not name.endswith(".SAFE") or not s3p.startswith("/eodata"):
+                        continue
+                    parts = name.split("_")
+                    if len(parts) < 7:
+                        continue
+                    d_str = parts[4][:8]
+                    slice_key = f"{parts[0]}_{parts[4]}_{parts[5]}_{parts[6]}"
+                    dt = datetime.date(int(d_str[:4]), int(d_str[4:6]), int(d_str[6:8]))
+                    kind = "cog" if "_COG" in name else "std"
+                    by_date_slice[dt][slice_key][kind] = pathlib.Path(s3p)
+                if len(items) < 1000:
+                    break
+                skip += 1000
+            return by_date_slice
+        except Exception as e:
+            logging.debug(f"CDSE OData catalog pre-lookup unavailable, falling back to directory scan: {e}")
+            return None
+
+    def _resolve_odata_date_safes(self, slices_dict: dict) -> list[pathlib.Path]:
+        """Resolve exact SAFE directories on /eodata for a single date, preferring COG or STD based on repo_path."""
+        prefer_cog = "COG" in str(self.repo_path)
+        order = ("cog", "std") if prefer_cog else ("std", "cog")
+        chosen = []
+        for _slice_key, kinds in sorted(slices_dict.items()):
+            picked = None
+            for k in order:
+                cand = kinds.get(k)
+                if cand is not None and (safe_exists(cand / "manifest.safe") or safe_exists(cand / "manifest.SAFE")):
+                    picked = cand
+                    break
+            if picked is None:
+                picked = kinds.get(order[0]) or kinds.get(order[1])
+            if picked is not None:
+                chosen.append(picked)
+        return chosen
+
     def find_products_by_orbit(self, orbit_num: int, target_geom: ogr.Geometry,
                                start_date: datetime.date, end_date: datetime.date,
                                working_dir: pathlib.Path = None, country_code: str = None,
                                pass_direction: str = None, exclude_winter: bool = False,
                                overwrite: bool = False):
         """Finds Sentinel-1 SAFE directories for a given relative orbit that intersect the country's geometry."""
-        first_orbit_match_date = None
+        last_orbit_match_date = None
+        scan_next_day = False
         current_date = start_date
+        odata_by_date = self._query_odata_orbit_products(
+            orbit_num=orbit_num,
+            target_geom=target_geom,
+            start_date=start_date,
+            end_date=end_date,
+            pass_direction=pass_direction,
+        )
 
         while current_date <= end_date:
             if exclude_winter:
@@ -604,12 +729,25 @@ class LocalSentinel1Finder:
                     continue
 
             should_scan = False
-            if first_orbit_match_date is None:
-                # Scan until first match
+            if odata_by_date is not None:
+                if current_date in odata_by_date:
+                    # Skip 1-day-apart S1D commissioning duplicates prior to the June 2026 constellation handover
+                    if (
+                        last_orbit_match_date is not None
+                        and (current_date - last_orbit_match_date).days == 1
+                        and current_date < datetime.date(2026, 6, 10)
+                    ):
+                        should_scan = False
+                    else:
+                        should_scan = True
+            elif last_orbit_match_date is None or scan_next_day:
                 should_scan = True
             else:
-                # After first match, only scan on the 6-day cycle
-                if (current_date - first_orbit_match_date).days % 6 == 0:
+                days_since_match = (current_date - last_orbit_match_date).days
+                if days_since_match % 6 == 0:
+                    should_scan = True
+                elif current_date >= datetime.date(2026, 6, 10) and (days_since_match % 6 in (1, 5)):
+                    # Handle June 2026 S1A -> S1C/S1D +1 day constellation plane handover
                     should_scan = True
 
             if should_scan:
@@ -632,25 +770,36 @@ class LocalSentinel1Finder:
                         if existing_finals:
                             logging.info(
                                 f"Skipping search for {date_str}: Final output already exists ({existing_finals[0].name})")
+                            if last_orbit_match_date is None:
+                                logging.info(
+                                    f"   First orbit match for orbit {orbit_num} found on {current_date} (existing output). Switching to 6-day scan cycle.")
+                            last_orbit_match_date = current_date
+                            scan_next_day = False
                             current_date += datetime.timedelta(days=1)
                             continue
                 # ----------------------------------------------------
 
-                day_path = self.repo_path / str(
-                    current_date.year) / f"{current_date.month:02d}" / f"{current_date.day:02d}"
+                if odata_by_date is not None:
+                    slices_for_day = odata_by_date.get(current_date)
+                    safe_dirs = self._resolve_odata_date_safes(slices_for_day) if slices_for_day else []
+                else:
+                    day_path = self.repo_path / str(
+                        current_date.year) / f"{current_date.month:02d}" / f"{current_date.day:02d}"
+                    safe_dirs = safe_list_safes(day_path)
 
-                safe_dirs = safe_list_safes(day_path)
                 for safe_dir in safe_dirs:
                     try:
                         # 1. Check Orbit (Fast filename parse first to avoid slow disk read)
                         fast_orbit = self._estimate_relative_orbit_from_name(safe_dir.name)
-                        if fast_orbit is not None:
-                            if fast_orbit != orbit_num:
-                                continue
-                        else:
-                            parsed_orbit = self._get_relative_orbit(safe_dir)
-                            if parsed_orbit != orbit_num:
-                                continue
+                        if fast_orbit is not None and fast_orbit != orbit_num:
+                            continue
+
+                        # Always verify authoritative orbit from manifest (cached for footprint below)
+                        manifest_orbit = self._get_relative_orbit_from_manifest(safe_dir)
+                        if manifest_orbit is not None and manifest_orbit != orbit_num:
+                            continue
+                        if fast_orbit is None and manifest_orbit is None:
+                            continue
 
                         # 2. Check Pass Direction
                         if pass_direction:
@@ -673,12 +822,19 @@ class LocalSentinel1Finder:
 
                 if day_products:
                     # If this is the first find, set the base date for the 6-day cycle.
-                    if first_orbit_match_date is None:
+                    if last_orbit_match_date is None:
                         logging.info(
                             f"   First orbit match for orbit {orbit_num} found on {current_date}. Switching to 6-day scan cycle.")
-                        first_orbit_match_date = current_date
+                    last_orbit_match_date = current_date
+                    scan_next_day = False
 
                     yield current_date, day_products
+                else:
+                    # If a scheduled 6-day step yielded no match, also check +1 day (e.g. constellation shift)
+                    scan_next_day = (
+                        last_orbit_match_date is not None
+                        and (current_date - last_orbit_match_date).days % 6 == 0
+                    )
 
             current_date += datetime.timedelta(days=1)
 
