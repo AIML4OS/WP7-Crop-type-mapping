@@ -615,13 +615,37 @@ class CDSESentinel1Finder:
         products = res.json().get("value", [])
         logging.info(f"Found {len(products)} products in CDSE for orbit {orbit_num}.")
 
-        # Group products by acquisition date (UTC date)
+        # Group products by acquisition date (UTC date) and compute reference coverage
         date_groups = defaultdict(list)
+        date_cov_areas = {}
+        ref_cov_area = 0.0
         for p in products:
             start_time_str = p["ContentDate"]["Start"]
             date_str = start_time_str.split("T")[0]
             prod_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
             date_groups[prod_date].append(p)
+
+        for prod_date, p_list in date_groups.items():
+            day_union = None
+            for p in p_list:
+                fp_str = p.get("Footprint", "") or ""
+                if "POLYGON" in fp_str:
+                    try:
+                        wkt = fp_str.split(";", 1)[-1].rstrip("'")
+                        g = ogr.CreateGeometryFromWkt(wkt)
+                        if g is not None and g.Intersects(target_geom):
+                            day_union = g.Clone() if day_union is None else day_union.Union(g)
+                    except Exception:
+                        pass
+            if day_union is not None:
+                try:
+                    inter = day_union.Intersection(target_geom)
+                    if inter is not None:
+                        cov = inter.GetArea()
+                        date_cov_areas[prod_date] = cov
+                        ref_cov_area = max(ref_cov_area, cov)
+                except Exception:
+                    pass
 
         # Iterate through the dates in chronological order
         for prod_date in sorted(date_groups.keys()):
@@ -630,6 +654,42 @@ class CDSESentinel1Finder:
                 if m == 12 or m == 1 or (m == 2 and d <= 14):
                     logging.info(f"Skipping winter date: {prod_date} (exclude_winter=True)")
                     continue
+
+            # Check pass completeness (no missing middle slice / >= 85% reference swath coverage)
+            parsed_times = []
+            for p in date_groups[prod_date]:
+                parts = p.get("Name", "").split("_")
+                if len(parts) >= 7:
+                    try:
+                        t_start = datetime.datetime.strptime(parts[4], "%Y%m%dT%H%M%S")
+                        t_stop = datetime.datetime.strptime(parts[5], "%Y%m%dT%H%M%S")
+                        parsed_times.append((t_start, t_stop, p.get("Name", "")))
+                    except ValueError:
+                        pass
+            parsed_times.sort(key=lambda x: x[0])
+            has_mid_gap = False
+            for i in range(len(parsed_times) - 1):
+                prev_start, prev_stop, prev_name = parsed_times[i]
+                curr_start, curr_stop, curr_name = parsed_times[i + 1]
+                gap_sec = (curr_start - prev_stop).total_seconds()
+                if 5.0 < gap_sec < 600.0:
+                    logging.warning(
+                        f"   [SKIP DATE {prod_date}] Incomplete pass: missing middle slice detected "
+                        f"({gap_sec:.0f}s gap between {prev_name} and {curr_name})."
+                    )
+                    has_mid_gap = True
+                    break
+            if has_mid_gap:
+                continue
+
+            day_cov = date_cov_areas.get(prod_date, 0.0)
+            if ref_cov_area > 0.0 and day_cov > 0.0 and day_cov < 0.85 * ref_cov_area:
+                pct = (day_cov / ref_cov_area) * 100.0
+                logging.warning(
+                    f"   [SKIP DATE {prod_date}] Incomplete pass: daily slices cover only {pct:.1f}% "
+                    f"of expected orbit swath over AOI (< 85% threshold; missing slice)."
+                )
+                continue
 
             if working_dir and country_code:
                 date_str_formatted = prod_date.strftime("%Y%m%d")

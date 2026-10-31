@@ -675,6 +675,15 @@ class LocalSentinel1Finder:
                     dt = datetime.date(int(d_str[:4]), int(d_str[4:6]), int(d_str[6:8]))
                     kind = "cog" if "_COG" in name else "std"
                     by_date_slice[dt][slice_key][kind] = pathlib.Path(s3p)
+                    fp_str = item.get("Footprint", "") or ""
+                    if "POLYGON" in fp_str and "geom" not in by_date_slice[dt][slice_key]:
+                        try:
+                            wkt = fp_str.split(";", 1)[-1].rstrip("'")
+                            g = ogr.CreateGeometryFromWkt(wkt)
+                            if g is not None:
+                                by_date_slice[dt][slice_key]["geom"] = g
+                        except Exception:
+                            pass
                 if len(items) < 1000:
                     break
                 skip += 1000
@@ -682,6 +691,87 @@ class LocalSentinel1Finder:
         except Exception as e:
             logging.debug(f"CDSE OData catalog pre-lookup unavailable, falling back to directory scan: {e}")
             return None
+
+    def _compute_odata_ref_coverage(self, odata_by_date: dict, target_geom: ogr.Geometry) -> float:
+        """Compute reference (maximum) daily swath intersection area with target_geom from OData footprints."""
+        if not odata_by_date or target_geom is None:
+            return 0.0
+        max_cov = 0.0
+        for _dt, slices_dict in odata_by_date.items():
+            day_union = None
+            for _skey, kinds in slices_dict.items():
+                g = kinds.get("geom")
+                if g is not None and g.Intersects(target_geom):
+                    day_union = g.Clone() if day_union is None else day_union.Union(g)
+            if day_union is not None:
+                try:
+                    inter = day_union.Intersection(target_geom)
+                    if inter is not None:
+                        max_cov = max(max_cov, inter.GetArea())
+                except Exception:
+                    pass
+        return max_cov
+
+    def _validate_daily_pass_completeness(
+        self,
+        current_date: datetime.date,
+        day_products: list[pathlib.Path],
+        day_footprints: list[ogr.Geometry],
+        target_geom: ogr.Geometry,
+        ref_cov_area: float,
+        min_cov_ratio: float = 0.85,
+    ) -> tuple[bool, float]:
+        """
+        Verify that the matched slices for current_date form a contiguous, complete pass:
+        1. No missing middle slice (no time gap > 5s between consecutive slices in the same pass).
+        2. Swath intersection area with target_geom is at least min_cov_ratio (85%) of the orbit's reference coverage.
+        """
+        # 1. Check time contiguity across matched slices
+        parsed_times = []
+        for p in day_products:
+            parts = p.name.split("_")
+            if len(parts) >= 7:
+                try:
+                    t_start = datetime.datetime.strptime(parts[4], "%Y%m%dT%H%M%S")
+                    t_stop = datetime.datetime.strptime(parts[5], "%Y%m%dT%H%M%S")
+                    parsed_times.append((t_start, t_stop, p.name))
+                except ValueError:
+                    pass
+        parsed_times.sort(key=lambda x: x[0])
+        for i in range(len(parsed_times) - 1):
+            prev_start, prev_stop, prev_name = parsed_times[i]
+            curr_start, curr_stop, curr_name = parsed_times[i + 1]
+            gap_sec = (curr_start - prev_stop).total_seconds()
+            if 5.0 < gap_sec < 600.0:
+                logging.warning(
+                    f"   [SKIP DATE {current_date}] Incomplete pass: missing middle slice detected "
+                    f"({gap_sec:.0f}s gap between {prev_name} and {curr_name})."
+                )
+                return False, ref_cov_area
+
+        # 2. Check spatial coverage completeness against reference orbit footprint
+        day_cov_area = 0.0
+        if day_footprints and target_geom is not None:
+            try:
+                day_union = None
+                for fp in day_footprints:
+                    day_union = fp.Clone() if day_union is None else day_union.Union(fp)
+                if day_union is not None:
+                    inter = day_union.Intersection(target_geom)
+                    if inter is not None:
+                        day_cov_area = inter.GetArea()
+            except Exception:
+                pass
+
+        if ref_cov_area > 0.0 and day_cov_area > 0.0 and day_cov_area < min_cov_ratio * ref_cov_area:
+            pct = (day_cov_area / ref_cov_area) * 100.0
+            logging.warning(
+                f"   [SKIP DATE {current_date}] Incomplete pass: daily slices cover only {pct:.1f}% "
+                f"of expected orbit swath over AOI (< {min_cov_ratio * 100:.0f}% threshold; missing slice)."
+            )
+            return False, ref_cov_area
+
+        return True, max(ref_cov_area, day_cov_area)
 
     def _resolve_odata_date_safes(self, slices_dict: dict) -> list[pathlib.Path]:
         """Resolve exact SAFE directories on /eodata for a single date, preferring COG or STD based on repo_path."""
@@ -717,6 +807,7 @@ class LocalSentinel1Finder:
             end_date=end_date,
             pass_direction=pass_direction,
         )
+        ref_cov_area = self._compute_odata_ref_coverage(odata_by_date, target_geom)
 
         while current_date <= end_date:
             if exclude_winter:
@@ -752,6 +843,7 @@ class LocalSentinel1Finder:
 
             if should_scan:
                 day_products = []
+                day_footprints = []
 
                 # --- CHECK IF FINAL SLICED PRODUCT ALREADY EXISTS ---
                 if not overwrite and working_dir and country_code:
@@ -816,6 +908,7 @@ class LocalSentinel1Finder:
                         if prod_geom.Intersects(target_geom):
                             logging.info(f"   -> MATCH: {safe_dir.name}")
                             day_products.append(safe_dir)
+                            day_footprints.append(prod_geom)
                     except Exception as ex:
                         logging.warning(f"Error inspecting product {safe_dir.name}: {ex}")
                         continue
@@ -827,6 +920,13 @@ class LocalSentinel1Finder:
                             f"   First orbit match for orbit {orbit_num} found on {current_date}. Switching to 6-day scan cycle.")
                     last_orbit_match_date = current_date
                     scan_next_day = False
+
+                    is_complete, ref_cov_area = self._validate_daily_pass_completeness(
+                        current_date, day_products, day_footprints, target_geom, ref_cov_area
+                    )
+                    if not is_complete:
+                        current_date += datetime.timedelta(days=1)
+                        continue
 
                     yield current_date, day_products
                 else:
