@@ -33,33 +33,33 @@ Execution Examples:
   python run_classifier.py
 
   # 2. SOTA multimodal pipeline (Joint Presto S1S2 + Red-Edge + Tile I/O + Uncertainty):
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --seg_mode slic --stage A
   python run_classifier.py --track PT/orbit_147 --classifier mlpxgb_presto --seg_mode lpis --stage A
 
   # 3. Full automated pipeline using Meta AI SAM deep vision segmentation:
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode sam --stage A
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --seg_mode sam --stage A
 
   # 4. Full automated pipeline using official LPIS cadastral parcel vectors:
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
 
   # 5. Pure PyTorch Deep MLP classifier:
-  python run_classifier.py --track NL/orbit_88 --classifier mlp --seg_mode slic --stage A
+  python run_classifier.py --track NL/orbit_37 --classifier mlp --seg_mode slic --stage A
 
   # 6. Pure XGBoost GBDT classifier:
-  python run_classifier.py --track NL/orbit_88 --classifier xgb --seg_mode slic --stage A
+  python run_classifier.py --track NL/orbit_37 --classifier xgb --seg_mode slic --stage A
 
   # 7. Sequential automated classification for all orbits in a country:
   python run_classifier.py --country NL --classifier mlpxgb_presto --seg_mode slic --stage A
 
   # 8. Run only individual stages:
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 1  # Multimodal footprint only
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 2  # Segmentation only
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 3  # Stratified sample split only
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 4  # Feature extraction & Presto embeddings
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 5  # Model training (MLP + XGBoost)
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 6  # Tile-based object inference & Bayesian priors
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 7  # Agricultural cropland masking
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --stage 8  # Accuracy assessment & Excel report export
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --stage 1  # Multimodal footprint only
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --stage 2  # Segmentation only
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --stage 3  # Stratified sample split only
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --stage 4  # Feature extraction & Presto embeddings
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --stage 5  # Model training (MLP + XGBoost)
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --stage 6  # Tile-based object inference & Bayesian priors
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --stage 7  # Agricultural cropland masking
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --stage 8  # Accuracy assessment & Excel report export
 
   # 9. Merge all classified orbits for a country into a seamless national map (Phase 4):
   python run_merge.py --country NL --seg_mode slic
@@ -248,7 +248,7 @@ def interactive_setup_wizard():
     selected_country = None
 
     print("\n Selection options:")
-    print("  [1] Select a specific satellite orbit track (e.g. PT/orbit_45, NL/orbit_88)")
+    print("  [1] Select a specific satellite orbit track (e.g. PT/orbit_147, NL/orbit_37)")
     print("  [2] Select an entire country to process all its orbits sequentially")
     print("  [3] Merge classified tracks into national mosaic (Phase 4)")
     mode_choice = input(" Enter choice [1-3] (default: 1): ").strip()
@@ -271,7 +271,7 @@ def interactive_setup_wizard():
         elif tr_choice:
             selected_track = tr_choice
         else:
-            selected_track = available_tracks[0] if available_tracks else "NL/orbit_88"
+            selected_track = available_tracks[0] if available_tracks else "NL/orbit_37"
 
     # Step 2: Select Segmentation Mode
     print("""
@@ -325,7 +325,7 @@ def interactive_setup_wizard():
     if selected_country and not selected_track:
         country_dir = BASE_DIR / selected_country
         if country_dir.exists():
-            orbits = [d.name for d in country_dir.glob("orbit_*") if d.is_dir()]
+            orbits = sorted([d.name for d in country_dir.glob("orbit_*") if d.is_dir()])
             for orb_name in orbits:
                 track_path = f"{selected_country}/{orb_name}"
                 run_pipeline(
@@ -425,25 +425,25 @@ Examples:
   python run_classifier.py
 
   # Multimodal Deep MLP + XGBoost + Presto (Recommended SOTA):
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode slic --stage A
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --seg_mode slic --stage A
 
   # Vision Foundation Model Segmentation (Meta AI SAM):
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode sam --stage A
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --seg_mode sam --stage A
 
   # Cadastral Parcels Segmentation (LPIS):
-  python run_classifier.py --track NL/orbit_88 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
+  python run_classifier.py --track NL/orbit_37 --classifier mlpxgb_presto --seg_mode lpis --lpis_vector path/to/parcels.gpkg --stage A
 
   # Pure PyTorch Deep MLP classifier:
-  python run_classifier.py --track NL/orbit_88 --classifier mlp --seg_mode slic --stage A
+  python run_classifier.py --track NL/orbit_37 --classifier mlp --seg_mode slic --stage A
 
   # Pure XGBoost GBDT classifier:
-  python run_classifier.py --track NL/orbit_88 --classifier xgb --seg_mode slic --stage A
+  python run_classifier.py --track NL/orbit_37 --classifier xgb --seg_mode slic --stage A
 
   # Multi-orbit National Merging (Phase 4):
   python run_merge.py --country NL --seg_mode slic
 """
     )
-    parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
+    parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_37, PL/orbit_22)")
     parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
     parser.add_argument('--stage', default=None, help="Stage to execute: 'A' (all 1-8), or single stage '1'..'8' (legacy '0'..'7' supported)")
     parser.add_argument('--classifier', default='mlpxgb_presto',

@@ -233,10 +233,14 @@ def _check_s2_needs_boa_offset_correction(ds_s2) -> bool:
         sw, sh = min(512, w), min(512, h)
         x0, y0 = max(0, (w - sw) // 2), max(0, (h - sh) // 2)
         arr = ds_s2.GetRasterBand(1).ReadAsArray(x0, y0, sw, sh)
-        if arr is not None:
-            v = arr[arr > 0]
-            if len(v) > 50 and float(np.percentile(v, 1)) >= 650.0:
-                return True
+        v = arr[arr > 0] if arr is not None else np.array([])
+        if len(v) <= 50:
+            # Fallback for orbit-clipped S2 stacks where the bounding-box center may be NoData (0)
+            arr_ov = ds_s2.GetRasterBand(1).ReadAsArray(0, 0, w, h, sw, sh)
+            if arr_ov is not None:
+                v = arr_ov[arr_ov > 0]
+        if len(v) > 50 and float(np.percentile(v, 1)) >= 650.0:
+            return True
     except Exception:
         pass
     return False
@@ -1669,8 +1673,12 @@ class ProcessingPipelineS1S2:
         for c_dir in candidate_dirs:
             if c_dir.exists():
                 for pat in patterns:
-                    matches = list(c_dir.glob(pat))
+                    matches = [
+                        f for f in c_dir.glob(pat)
+                        if f.is_file() and not f.name.endswith(".tmp.tif") and not f.name.endswith(".ovr")
+                    ]
                     if matches:
+                        matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
                         return matches[0]
         return None
 
@@ -1695,18 +1703,29 @@ class ProcessingPipelineS1S2:
         for c_dir in candidate_dirs:
             if c_dir.exists():
                 for pat in patterns:
-                    matches = [f for f in c_dir.glob(pat) if f.is_file() and not f.name.endswith(".tmp.tif") and not f.name.endswith(".ovr")]
+                    matches = [
+                        f for f in c_dir.glob(pat)
+                        if f.is_file() and not f.name.endswith(".tmp.tif") and not f.name.endswith(".ovr")
+                        and ("orbit_" not in f.name.lower() or self.sanitized_track.lower() in f.name.lower())
+                    ]
                     if matches:
+                        matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
                         return matches[0]
 
-        # Cross-orbit discovery fallback: search other orbit folders of the same country
+        # Cross-orbit discovery fallback: only accept country-wide unclipped S2 stacks (never another orbit's clipped S2 stack)
         country_dirs = [self.base_dir / self.country, Path(r"D:/AIML_CropMapper_Cloud/workingDir") / self.country]
         for c_root in country_dirs:
             if not c_root.exists():
                 continue
-            cross_candidates = list(c_root.glob("orbit_*/1_input_stacks/*S2*.tif"))
+            cross_candidates = sorted(
+                c_root.glob("orbit_*/1_input_stacks/*S2*.tif"),
+                key=lambda p: p.stat().st_mtime if p.exists() else 0,
+                reverse=True
+            )
             for cand in cross_candidates:
                 if cand.exists() and cand.stat().st_size > 100 * 1024 * 1024 and not cand.name.endswith(".tmp.tif") and not cand.name.endswith(".ovr"):
+                    if "orbit_" in cand.name.lower() and self.sanitized_track.lower() not in cand.name.lower():
+                        continue
                     try:
                         ds_c = gdal.Open(str(cand))
                         if ds_c and ds_c.RasterCount >= 126:
@@ -1755,9 +1774,12 @@ class ProcessingPipelineS1S2:
             resampleAlg=gdal.GRA_NearestNeighbour
         )
         band_descs = [ds_s2_raw.GetRasterBand(b).GetDescription() for b in range(1, ds_s2_raw.RasterCount + 1)]
+        boa_flag = ds_s2_raw.GetMetadataItem("BOA_OFFSET_CORRECTED")
         ds_s2_raw = None
         ds_vrt = gdal.Warp(str(vrt_path), str(self.s2_ras), options=warp_opts)
         if ds_vrt:
+            if boa_flag:
+                ds_vrt.SetMetadataItem("BOA_OFFSET_CORRECTED", boa_flag)
             for b, desc in enumerate(band_descs, 1):
                 if desc:
                     ds_vrt.GetRasterBand(b).SetDescription(desc)
@@ -1965,6 +1987,23 @@ class ProcessingPipelineS1S2:
             if shps: return shps[0]
         return None
 
+    def _is_artifact_stale(self, target_path: Path, dep_paths: list, expected_dims: Optional[Tuple[int, int]] = None) -> bool:
+        """Checks whether a cached intermediate file is missing, older than its inputs, or has mismatched raster dimensions."""
+        if not target_path or not target_path.exists():
+            return True
+        try:
+            t_mtime = target_path.stat().st_mtime
+            for dp in dep_paths:
+                if dp and Path(dp).exists() and Path(dp).stat().st_mtime > t_mtime + 1.0:
+                    return True
+            if expected_dims is not None and target_path.suffix.lower() in ('.tif', '.tiff', '.vrt'):
+                ds_t = gdal.Open(str(target_path), gdal.GA_ReadOnly)
+                if not ds_t or (ds_t.RasterXSize, ds_t.RasterYSize) != expected_dims:
+                    return True
+        except Exception:
+            return True
+        return False
+
     def _create_seasonal_sar_composite(self) -> Path:
         """
         Creates a high-SNR 1-channel seasonal SAR composite for SLIC superpixel segmentation.
@@ -1972,10 +2011,6 @@ class ProcessingPipelineS1S2:
         between agricultural fields is maximal and permanent cadastral boundaries are sharpest.
         Averages across multi-temporal Sentinel-1 acquisitions to eliminate radar speckle noise.
         """
-        composite_tif = self.seg_dir / f"{self.file_prefix}_sar_seasonal_composite.tif"
-        if composite_tif.exists() and composite_tif.stat().st_size > 1024:
-            return composite_tif
-
         ref_ras = self.s1_ras if (self.s1_ras and self.s1_ras.exists()) else self.s2_ras
         if not ref_ras or not ref_ras.exists():
             raise FileNotFoundError("Neither Sentinel-1 nor Sentinel-2 raster is available for segmentation composite.")
@@ -1983,6 +2018,11 @@ class ProcessingPipelineS1S2:
         ds = gdal.Open(str(ref_ras), gdal.GA_ReadOnly)
         cols = ds.RasterXSize
         rows = ds.RasterYSize
+
+        composite_tif = self.seg_dir / f"{self.file_prefix}_sar_seasonal_composite.tif"
+        if composite_tif.exists() and composite_tif.stat().st_size > 1024 and not self._is_artifact_stale(composite_tif, [ref_ras], (cols, rows)):
+            ds = None
+            return composite_tif
         nbands = ds.RasterCount
         gt = ds.GetGeoTransform()
         proj = ds.GetProjection()
@@ -2051,13 +2091,13 @@ class ProcessingPipelineS1S2:
 
     def _create_summed_composite(self, ref_ras: Path) -> Path:
         print("    [INFO] Creating high-SNR summed composite for segmentation...")
-        composite_tif = self.seg_dir / f"{self.file_prefix}_summed_composite.tif"
-        if composite_tif.exists():
-            return composite_tif
-
         ds = gdal.Open(str(ref_ras))
         cols = ds.RasterXSize
         rows = ds.RasterYSize
+        composite_tif = self.seg_dir / f"{self.file_prefix}_summed_composite.tif"
+        if composite_tif.exists() and not self._is_artifact_stale(composite_tif, [ref_ras], (cols, rows)):
+            ds = None
+            return composite_tif
         nbands = ds.RasterCount
         gt = ds.GetGeoTransform()
         proj = ds.GetProjection()
@@ -2220,14 +2260,25 @@ class ProcessingPipelineS1S2:
     # --- Stage 1: Footprint ---
     def stage_1_generate_footprint(self, force_recompute=False):
         stage = 1
-        if self.footprint_mask.exists() and self.footprint_mask.stat().st_size > 1024 and not force_recompute:
+        ref_ras = self.s1_ras if self.s1_ras else self.s2_ras
+        if not ref_ras or not ref_ras.exists():
+            raise FileNotFoundError("Neither S1 nor S2 raster found.")
+
+        ds_ref_chk = gdal.Open(str(ref_ras), gdal.GA_ReadOnly)
+        ref_dims = (ds_ref_chk.RasterXSize, ds_ref_chk.RasterYSize) if ds_ref_chk else None
+        ds_ref_chk = None
+
+        if (
+            self.footprint_mask.exists()
+            and self.footprint_mask.stat().st_size > 1024
+            and not force_recompute
+            and not self.overwrite
+            and not self._is_artifact_stale(self.footprint_mask, [self.s1_ras, self.s2_ras], ref_dims)
+        ):
             print(f"[Stage {stage}/{self.total_stages}] Footprint already exists ({self.footprint_mask.name}), skipping.")
             return
 
         print(f"[Stage {stage}/{self.total_stages}] Generating Multimodal Data Footprint (S1 SAR & S2 Optical Intersection)...")
-        ref_ras = self.s1_ras if self.s1_ras else self.s2_ras
-        if not ref_ras or not ref_ras.exists():
-            raise FileNotFoundError("Neither S1 nor S2 raster found.")
 
         ds_s1 = gdal.Open(str(self.s1_ras)) if self.s1_ras else None
         ds_s2 = self._open_s2_aligned(ds_s1) if self.s2_ras else None
@@ -2235,6 +2286,15 @@ class ProcessingPipelineS1S2:
 
         cols, rows = ref_ds.RasterXSize, ref_ds.RasterYSize
         gt, proj = ref_ds.GetGeoTransform(), ref_ds.GetProjection()
+
+        s1_check_bands = []
+        if ds_s1 and ds_s1.RasterCount > 0:
+            nb1 = ds_s1.RasterCount
+            s1_check_bands = sorted(list(set([1, max(1, nb1 // 4), max(1, nb1 // 2), max(1, (3 * nb1) // 4), nb1])))
+        s2_check_bands = []
+        if ds_s2 and ds_s2.RasterCount > 0:
+            nb2 = ds_s2.RasterCount
+            s2_check_bands = sorted(list(set([1, max(1, nb2 // 2), max(1, nb2 - 8)])))
 
         driver = gdal.GetDriverByName('GTiff')
         out_ds = driver.Create(
@@ -2254,12 +2314,20 @@ class ProcessingPipelineS1S2:
                 ysize = min(tile_size, rows - y)
 
                 mask = np.ones((ysize, xsize), dtype=bool)
-                if ds_s1:
-                    b1_s1 = safe_read_tile(ds_s1, x, y, xsize, ysize, band_idx=1)
-                    mask = mask & (b1_s1 != 0) & (b1_s1 != -9999) & (~np.isnan(b1_s1))
-                if ds_s2:
-                    b1_s2 = safe_read_tile(ds_s2, x, y, xsize, ysize, band_idx=1)
-                    mask = mask & (b1_s2 > 0) & (~np.isnan(b1_s2))
+                if ds_s1 and s1_check_bands:
+                    s1_valid_cnt = np.zeros((ysize, xsize), dtype=np.int16)
+                    for b_idx in s1_check_bands:
+                        b_s1 = safe_read_tile(ds_s1, x, y, xsize, ysize, band_idx=b_idx)
+                        s1_valid_cnt += ((b_s1 != 0) & (b_s1 != -9999) & (~np.isnan(b_s1))).astype(np.int16)
+                    min_req_s1 = 2 if len(s1_check_bands) >= 3 else 1
+                    mask = mask & (s1_valid_cnt >= min_req_s1)
+                if ds_s2 and s2_check_bands:
+                    s2_valid_cnt = np.zeros((ysize, xsize), dtype=np.int16)
+                    for b_idx in s2_check_bands:
+                        b_s2 = safe_read_tile(ds_s2, x, y, xsize, ysize, band_idx=b_idx)
+                        s2_valid_cnt += ((b_s2 > 0) & (~np.isnan(b_s2))).astype(np.int16)
+                    min_req_s2 = 2 if len(s2_check_bands) >= 3 else 1
+                    mask = mask & (s2_valid_cnt >= min_req_s2)
 
                 out_ds.GetRasterBand(1).WriteArray(mask.astype(np.uint8), x, y)
                 done_blocks += 1
@@ -2276,11 +2344,6 @@ class ProcessingPipelineS1S2:
     # --- Stage 2: Segmentation (LPIS / SAM / SLIC) ---
     def stage_2_segmentation(self, force_recompute=False):
         stage = 2
-        if self.seg_tif.exists() and not force_recompute:
-            print(f"[Stage {stage}/{self.total_stages}] Segmentation raster exists ({self.seg_tif.name}), skipping.")
-            return
-
-        print(f"[Stage {stage}/{self.total_stages}] Running Multimodal Image Segmentation ({self.seg_mode.upper()})...")
         ref_ras = self.s1_ras if self.s1_ras else self.s2_ras
         if not ref_ras or not ref_ras.exists():
             raise FileNotFoundError("Reference raster not found for segmentation.")
@@ -2288,6 +2351,18 @@ class ProcessingPipelineS1S2:
         ds = gdal.Open(str(ref_ras))
         cols, rows = ds.RasterXSize, ds.RasterYSize
         gt, proj = ds.GetGeoTransform(), ds.GetProjection()
+
+        if (
+            self.seg_tif.exists()
+            and not force_recompute
+            and not self.overwrite
+            and not self._is_artifact_stale(self.seg_tif, [self.footprint_mask, ref_ras], (cols, rows))
+        ):
+            ds = None
+            print(f"[Stage {stage}/{self.total_stages}] Segmentation raster exists ({self.seg_tif.name}), skipping.")
+            return
+
+        print(f"[Stage {stage}/{self.total_stages}] Running Multimodal Image Segmentation ({self.seg_mode.upper()})...")
 
         if self.seg_mode == 'lpis':
             lpis_file = self._resolve_lpis_vector()
@@ -2531,7 +2606,18 @@ class ProcessingPipelineS1S2:
         if not is_sam:
             self._stitch_tile_seams(out_ds, tile_size, cols, rows, ras_path)
             print("    [SIEVE FILTER] Absorbing isolated micro-slivers (< 30 px) into adjacent parcels...")
-            gdal.SieveFilter(out_band, None, out_band, 30, 8, callback=None)
+            foot_mask_band = ds_foot.GetRasterBand(1) if ds_foot else None
+            gdal.SieveFilter(out_band, foot_mask_band, out_band, 30, 8, callback=None)
+            if ds_foot:
+                for sy in range(0, rows, 4096):
+                    for sx in range(0, cols, 4096):
+                        sxs = min(4096, cols - sx)
+                        sysz = min(4096, rows - sy)
+                        f_blk = foot_mask_band.ReadAsArray(sx, sy, sxs, sysz)
+                        if f_blk is not None and np.any(f_blk == 0):
+                            s_blk = out_band.ReadAsArray(sx, sy, sxs, sysz)
+                            s_blk[f_blk == 0] = 0
+                            out_band.WriteArray(s_blk, sx, sy)
 
         out_band.FlushCache()
         out_ds = None
@@ -2542,7 +2628,13 @@ class ProcessingPipelineS1S2:
     # --- Stage 3: Sample Point Split (70/30) ---
     def stage_3_split_samples(self, force_recompute=False, learn_frac=0.7, random_state=42):
         stage = 3
-        if self.learn_shp.exists() and self.control_shp.exists() and not force_recompute:
+        if (
+            self.learn_shp.exists()
+            and self.control_shp.exists()
+            and not force_recompute
+            and not self.overwrite
+            and not self._is_artifact_stale(self.learn_shp, [self.seg_tif, self.sample_shp])
+        ):
             print(f"[Stage {stage}/{self.total_stages}] Train/Validation sample split exists, skipping.")
             return
 
@@ -2583,6 +2675,15 @@ class ProcessingPipelineS1S2:
             except Exception as e:
                 print(f"    [WARNING] Could not group sample split by segment ID: {e}")
 
+        # Filter to points falling inside active segmented parcels of the current orbit
+        valid_orbit_mask = seg_ids < 1_000_000_000
+        if np.any(valid_orbit_mask):
+            excluded_outside = int(np.sum(~valid_orbit_mask))
+            gdf = gdf[valid_orbit_mask].copy()
+            seg_ids = seg_ids[valid_orbit_mask]
+            if excluded_outside > 0:
+                print(f"    Filtered national samples to active orbit footprint: {len(gdf)} inside orbit ({excluded_outside} outside orbit excluded).")
+
         gdf['_seg_group'] = seg_ids
         rng = np.random.RandomState(random_state)
 
@@ -2612,7 +2713,12 @@ class ProcessingPipelineS1S2:
     # --- Stage 4: Multimodal Feature Extraction (Enhanced Vectorized Chunk I/O) ---
     def stage_4_selection(self, force_recompute=False):
         stage = 4
-        if self.sel_csv.exists() and not force_recompute:
+        if (
+            self.sel_csv.exists()
+            and not force_recompute
+            and not self.overwrite
+            and not self._is_artifact_stale(self.sel_csv, [self.learn_shp, self.seg_tif, self.s1_ras, self.s2_ras, self.nisar_ras])
+        ):
             try:
                 df_test = pd.read_csv(self.sel_csv, nrows=5)
                 n_feats = df_test.shape[1] - 2
@@ -2708,6 +2814,7 @@ class ProcessingPipelineS1S2:
         accum_nisar_sq_sums = {sid: np.zeros(nbands_nisar, dtype=np.float64) for sid in target_sids} if ds_nisar else {}
         target_sids_set = set(target_sids)
 
+        foot_ds = gdal.Open(str(self.footprint_mask)) if self.footprint_mask.exists() else None
         for y in range(0, rows, tile_size):
             for x in range(0, cols, tile_size):
                 xsize = min(tile_size, cols - x)
@@ -2716,6 +2823,9 @@ class ProcessingPipelineS1S2:
                 sub_seg = seg_band.ReadAsArray(x, y, xsize, ysize)
                 if sub_seg is None:
                     continue
+                if foot_ds is not None:
+                    foot_arr = safe_read_tile(foot_ds, x, y, xsize, ysize, band_idx=1, dtype=np.uint8)
+                    sub_seg[foot_arr == 0] = 0
                 u_in_tile, inv_arr = np.unique(sub_seg, return_inverse=True)
                 present_pairs = [(int(s), idx) for idx, s in enumerate(u_in_tile) if s in target_sids_set]
                 if not present_pairs:
@@ -2929,7 +3039,12 @@ class ProcessingPipelineS1S2:
     # --- Stage 5: Train Unified MLP + XGBoost Fusion Ensemble (with Outlier Cleaning) ---
     def stage_5_train_classifier(self, force_recompute=False, **kwargs):
         stage = 5
-        if self.model_pkl.exists() and not force_recompute:
+        if (
+            self.model_pkl.exists()
+            and not force_recompute
+            and not self.overwrite
+            and not self._is_artifact_stale(self.model_pkl, [self.sel_csv])
+        ):
             try:
                 df_hdr = pd.read_csv(self.sel_csv, nrows=2)
                 csv_feat_cnt = df_hdr.shape[1] - 2
@@ -3930,9 +4045,9 @@ class ProcessingPipelineS1S2:
     def run_all(self):
         """Executes all classification stages (1 through 8) sequentially."""
         force = getattr(self, 'overwrite', False)
-        self.stage_1_generate_footprint(False)
-        self.stage_2_segmentation(False)
-        self.stage_3_split_samples(False)
+        self.stage_1_generate_footprint(force)
+        self.stage_2_segmentation(force)
+        self.stage_3_split_samples(force)
         self.stage_4_selection(force)
         self.stage_5_train_classifier(force)
         self.stage_6_classify_vector(True)

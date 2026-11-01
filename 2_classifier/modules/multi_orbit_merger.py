@@ -159,12 +159,12 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
             if found:
                 break
 
-    # Case 1: Prefix is a country code (2 letters)
-    if not tracks and len(prefix) == 2 and prefix.isalpha():
+    # Case 1: Prefix is a country code (2 or 3 letters)
+    if not tracks and len(prefix) in (2, 3) and prefix.isalpha():
         country = prefix_upper
         country_dir = base_dir / country
         if country_dir.exists():
-            for sub in country_dir.iterdir():
+            for sub in sorted(country_dir.iterdir()):
                 if not sub.is_dir() or not sub.name.startswith("orbit_"):
                     continue
                 tr = f"{country}/{sub.name}"
@@ -191,8 +191,8 @@ def discover_tracks(base_dir: Path, prefix: str, suffix: str = ""):
                         break
     
     # Case 2: Prefix is a legacy track prefix
-    if not tracks:
-        for sub in base_dir.iterdir():
+    if not tracks and base_dir.exists():
+        for sub in sorted(base_dir.iterdir()):
             if not sub.is_dir():
                 continue
             tr = sub.name
