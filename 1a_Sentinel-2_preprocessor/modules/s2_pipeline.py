@@ -52,117 +52,27 @@ import shutil
 
 def try_reuse_existing_country_s2_stack(track_name: str, country_code: str, overwrite: bool = False) -> bool:
     """
-    Checks if a valid multi-temporal S2 stack for this country already exists
-    in another orbit or shared repository. If found, instantly links or aligns it,
-    saving ~70 hours of repetitive downloading and mosaicking.
+    Checks if a valid orbit-clipped multi-temporal S2 stack for this specific track already exists.
+    Since each orbit has its own distinct S1 swath footprint, stacks from different orbits are never reused across orbits.
     """
     from osgeo import gdal
     norm_track = track_name.replace('\\', '/')
-    sanitized_track = norm_track.replace('/', '_')
     track_dir = mosaic_stack.BASE_DIR / norm_track
     dest_proc_dir = track_dir / "1_input_stacks"
-    dest_s2_stack = dest_proc_dir / f"{sanitized_track}_S2_timeseries.tif"
-
-    if dest_s2_stack.exists() and dest_s2_stack.stat().st_size > 100 * 1024 * 1024 and not overwrite:
-        try:
-            ds_check = gdal.Open(str(dest_s2_stack))
-            if ds_check and ds_check.RasterCount >= 126:
-                logging.info(f"Target Sentinel-2 stack {dest_s2_stack.name} already exists and is complete ({dest_s2_stack.stat().st_size / (1024**3):.1f} GB). Skipping S2 pipeline!")
-                return True
-        except Exception:
-            pass
-
-    s1_ref = mosaic_stack.get_s1_raster_reference(track_dir)
-    if not s1_ref:
+    if not dest_proc_dir.exists() or overwrite:
         return False
 
-    target_w = s1_ref['width']
-    target_h = s1_ref['height']
-    target_gt = s1_ref['gt']
-    target_bounds = s1_ref['bounds']
-    target_proj = s1_ref['proj']
-
-    # Search for candidates across the country
-    candidate_paths = [
-        mosaic_stack.BASE_DIR / country_code.upper() / "S2" / f"{country_code.upper()}_S2_timeseries.tif",
-    ]
-    cand_country_dirs = [mosaic_stack.BASE_DIR / country_code.upper()]
-    if os.name == "nt":
-        candidate_paths.append(Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / "S2" / f"{country_code.upper()}_S2_timeseries.tif")
-        cand_country_dirs.append(Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper())
-    for c_dir in cand_country_dirs:
-        if c_dir.exists():
-            for o_stack in c_dir.glob("orbit_*/1_input_stacks/*S2*.tif"):
-                if o_stack.resolve() != dest_s2_stack.resolve() and not o_stack.name.endswith(".tmp.tif"):
-                    candidate_paths.append(o_stack)
-
-    for cand in candidate_paths:
-        if cand.exists() and cand.stat().st_size > 100 * 1024 * 1024:
+    for cand in sorted(dest_proc_dir.glob("*_S2_timeseries.tif")):
+        if cand.exists() and cand.stat().st_size > 100 * 1024 * 1024 and not cand.name.endswith(".tmp.tif"):
             try:
-                ds_cand = gdal.Open(str(cand))
-                if not ds_cand or ds_cand.RasterCount < 126:
-                    continue
-
-                cand_w = ds_cand.RasterXSize
-                cand_h = ds_cand.RasterYSize
-                cand_gt = ds_cand.GetGeoTransform()
-
-                # Case A: Exact or near-exact match (within 10 meters / 1 pixel shift)
-                if cand_w == target_w and cand_h == target_h and abs(cand_gt[0] - target_gt[0]) < 10.0 and abs(cand_gt[3] - target_gt[3]) < 10.0:
-                    dest_proc_dir.mkdir(parents=True, exist_ok=True)
-                    if dest_s2_stack.exists():
-                        try: dest_s2_stack.unlink()
-                        except: pass
-                    try:
-                        os.link(str(cand), str(dest_s2_stack))
-                        logging.info(f" >>> [OPTIMIZATION] Created instant hardlink from {cand.name} to {dest_s2_stack.name} (0 bytes duplicated) <<<")
-                    except Exception:
-                        shutil.copy2(str(cand), str(dest_s2_stack))
-                        logging.info(f" >>> [OPTIMIZATION] Copied {cand.name} to {dest_s2_stack.name} <<<")
-
-                    # Also link overviews if present
-                    cand_ovr = cand.parent / f"{cand.name}.ovr"
-                    if cand_ovr.exists():
-                        dest_ovr = dest_proc_dir / f"{dest_s2_stack.name}.ovr"
-                        try:
-                            if dest_ovr.exists(): dest_ovr.unlink()
-                            os.link(str(cand_ovr), str(dest_ovr))
-                        except: pass
-
-                    logging.info(f" >>> [OPTIMIZATION] Reused existing full-country S2 stack ({cand.stat().st_size / (1024**3):.1f} GB) for {track_name}! (Saved ~70h processing time) <<<\n")
+                ds_check = gdal.Open(str(cand))
+                if ds_check and ds_check.RasterCount >= 126 and ds_check.GetMetadataItem("ORBIT_CLIPPED") == "1":
+                    ds_check = None
+                    logging.info(f"Target orbit-clipped Sentinel-2 stack {cand.name} already exists and is complete ({cand.stat().st_size / (1024**3):.1f} GB). Skipping S2 pipeline!")
                     return True
-
-                # Case B: Slight bounding box difference (e.g. 1-2 rows diff) - Warp existing stack in ~1-2 minutes instead of 70 hours
-                elif abs(cand_w - target_w) <= 10 and abs(cand_h - target_h) <= 10:
-                    dest_proc_dir.mkdir(parents=True, exist_ok=True)
-                    logging.info(f" >>> [OPTIMIZATION] Found country S2 stack {cand.name} with minor boundary shift ({cand_w}x{cand_h} vs target {target_w}x{target_h}). Fast-warping in ~1-2 mins instead of 70 hours...")
-                    warp_opts = gdal.WarpOptions(
-                        outputBounds=target_bounds,
-                        width=target_w,
-                        height=target_h,
-                        dstSRS=target_proj,
-                        resampleAlg='bilinear',
-                        creationOptions=['COMPRESS=DEFLATE', 'PREDICTOR=2', 'ZLEVEL=6', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'],
-                        callback=gdal.TermProgress_nocb
-                    )
-                    ds_warp = gdal.Warp(str(dest_s2_stack), str(cand), options=warp_opts)
-                    if ds_warp:
-                        ds_warp.FlushCache()
-                        ds_warp = None
-                        logging.info(f" >>> [OPTIMIZATION] Fast-warp complete for {dest_s2_stack.name}! Building overviews...")
-                        ds_out = gdal.Open(str(dest_s2_stack), gdal.GA_Update)
-                        if ds_out:
-                            gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
-                            gdal.SetConfigOption('PREDICTOR_OVERVIEW', '2')
-                            gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
-                            ds_out.BuildOverviews('AVERAGE', [2, 4, 8, 16, 32, 64])
-                            ds_out = None
-                        logging.info(f" >>> [OPTIMIZATION] Successfully adapted existing country S2 stack for {track_name}! (Saved ~70 hours!) <<<\n")
-                        return True
-            except Exception as e:
-                logging.warning(f"Error checking S2 candidate {cand}: {e}")
-                continue
-
+                ds_check = None
+            except Exception:
+                pass
     return False
 
 
@@ -321,54 +231,60 @@ def run_s2_master_pipeline(
                 overwrite=overwrite
             )
         else:
+            orbits = extract_creodias.discover_s1_orbits(country_code)
             logging.info(f"\n#####################################################################")
-            logging.info(f"   STARTING UNIFIED SENTINEL-2 PIPELINE FOR COUNTRY: {country_code}")
+            logging.info(f"   STARTING PER-ORBIT SENTINEL-2 PIPELINE FOR COUNTRY: {country_code} (Orbits: {orbits})")
             logging.info(f"   SOURCE: {source.upper()} | MODE: {mode.upper()} | THREADS: {threads}")
             logging.info(f"#####################################################################\n")
 
-            # Step 1: Ingestion
-            if mode in ['all', 'download', 'download_only']:
-                if not start_date or not end_date:
-                    raise ValueError("Start date (-s) and end date (-e) must be specified for download mode.")
-
-                if source.lower() == 'creodias':
-                    extract_creodias.process_country_creodias_s2(
+            if orbits:
+                for orb in orbits:
+                    run_s2_pipeline_for_orbit(
                         country_code=country_code,
+                        orbit_num=orb,
                         start_date=start_date,
                         end_date=end_date,
-                        max_cloud_cover=cloud_cover,
-                        max_workers=threads
-                    )
-                else:
-                    download_cdse.process_country_cdse_s2(
-                        country_code=country_code,
-                        start_date=start_date,
-                        end_date=end_date,
+                        source=source,
+                        mode=mode,
                         cloud_cover=cloud_cover,
-                        max_workers=threads
+                        doys=doys,
+                        threads=threads,
+                        overwrite=overwrite
                     )
-
-            if mode in ['download', 'download_only']:
-                logging.info(f"Country download & conversion complete for {country_code}.")
-                return
-
-            # Step 2: Synthetic Time-series Interpolation
-            if mode in ['all', 'process', 'process_only']:
-                time_series.run_time_series(
-                    country=country_code,
-                    doys=doys,
-                    max_workers=threads,
-                    overwrite=overwrite
-                )
-
-                # Step 3: Mosaic & Stack into Country Master BigTIFF
-                mosaic_stack.mosaic_stack_clip_single_track(
-                    track=country_code,
-                    country_code=country_code,
-                    doys=doys,
-                    max_workers=threads,
-                    overwrite=overwrite
-                )
+            else:
+                # Fallback if no orbits configured
+                if mode in ['all', 'download', 'download_only']:
+                    if not start_date or not end_date:
+                        raise ValueError("Start date (-s) and end date (-e) must be specified for download mode.")
+                    if source.lower() == 'creodias':
+                        extract_creodias.process_country_creodias_s2(
+                            country_code=country_code,
+                            start_date=start_date,
+                            end_date=end_date,
+                            max_cloud_cover=cloud_cover,
+                            max_workers=threads
+                        )
+                    else:
+                        download_cdse.process_country_cdse_s2(
+                            country_code=country_code,
+                            start_date=start_date,
+                            end_date=end_date,
+                            cloud_cover=cloud_cover,
+                            max_workers=threads
+                        )
+                if mode in ['all', 'process', 'process_only']:
+                    time_series.run_time_series(
+                        country=country_code,
+                        doys=doys,
+                        max_workers=threads,
+                        overwrite=overwrite
+                    )
+                    mosaic_stack.mosaic_stack_clip_s2(
+                        country=country_code,
+                        doys=doys,
+                        max_workers=threads,
+                        overwrite=overwrite
+                    )
 
         logging.info(f"\n=====================================================================")
         logging.info(f" Sentinel-2 Pipeline for country {country_code} COMPLETED SUCCESSFULLY!")

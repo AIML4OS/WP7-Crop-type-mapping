@@ -383,23 +383,23 @@ class CountryOrbitOptimizer:
            optimizes both using Set Cover, and selects the direction with the best coverage and minimal orbits."""
         logging.info(f"Starting orbit discovery for a {search_days}-day window starting from {start_date}...")
         
-        # Define candidate orbits for common countries to speed up S3 scan
+        # Define candidate orbits for countries from complete registry to speed up S3 scan
         candidate_orbits = None
         if country_code:
-            country_orbits = {
-                'NL': [15, 37, 88, 110, 139, 161],
-                'PL': [22, 29, 73, 95, 102, 124, 146, 168, 175],
-                'IE': [30, 74, 103, 132, 147],
-                'FR': [8, 30, 37, 59, 81, 88, 103, 110, 132, 139, 153, 161],
-                'AT': [22, 29, 73, 95, 102, 124, 146, 168],
-                'PT': [45, 147, 23, 125],
-                'ES': [8, 81, 88, 153, 161, 45, 147, 23, 125],
-                'DE': [22, 29, 73, 95, 102, 124, 146, 168, 175],
-                'IT': [44, 117, 146, 168]
-            }
-            candidate_orbits = country_orbits.get(country_code.upper())
+            c_up = country_code.upper()
+            complete_json = _PROJECT_ROOT / "auxiliary_files" / "country_orbits_complete.json"
+            if complete_json.exists():
+                try:
+                    with open(complete_json, 'r', encoding='utf-8') as f:
+                        all_orbs_data = json.load(f)
+                        if c_up in all_orbs_data:
+                            candidate_orbits = sorted(set(all_orbs_data[c_up]) | set(COUNTRY_ORBITS.get(c_up, [])))
+                except Exception:
+                    pass
+            if not candidate_orbits and c_up in COUNTRY_ORBITS:
+                candidate_orbits = list(COUNTRY_ORBITS[c_up])
             if candidate_orbits:
-                logging.info(f"Using pre-filtered candidate orbits for {country_code}: {candidate_orbits}")
+                logging.info(f"Using pre-filtered candidate orbits for {c_up}: {candidate_orbits}")
 
         discovered_asc = defaultdict(list)
         discovered_dsc = defaultdict(list)

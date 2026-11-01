@@ -89,7 +89,7 @@ COUNTRY_ORBITS = {
     'HR': [22, 51, 124],  # DESCENDING (100.0%) - 3 orbits
     'HU': [51, 124, 153],  # DESCENDING (100.0%) - 3 orbits
     'IE': [1, 74],  # ASCENDING (100.0%) - 2 orbits
-    'IS': [53, 82, 111],  # DESCENDING (100.0%) - 3 orbits
+    'IS': [9, 16, 111, 118, 155],  # DESCENDING+ASCENDING (100.0%) - 5 orbits
     'IT': [15, 44, 88, 117, 146],  # ASCENDING (100.0%) - 5 orbits
     'LI': [66],  # DESCENDING (100.0%) - 1 orbits
     'LT': [58, 131],  # ASCENDING (99.95%) - 2 orbits
@@ -112,24 +112,39 @@ COUNTRY_ORBITS = {
 }
 
 COUNTRY_MGRS_TILES = {
-    'NL': ['31UDR', '31UER', '31UES', '31UET', '31UFR', '31UFS', '31UFT', '31UGR', '31UGS', '31UGT'],
+    'NL': [
+        '31UES', '31UET', '31UEU',
+        '31UFS', '31UFT', '31UFU', '31UFV',
+        '31UGS', '31UGT', '31UGU', '31UGV'
+    ],
     'PT': [
-        '29SMC', '29SMD', '29SNC', '29SND', '29SPC', '29SPD', '29SQC', '29SQD',
-        '29SMB', '29SNB', '29SPB', '29SQB', '29SMA', '29SNA', '29SPA', '29SQA',
-        '29TNE', '29TNF', '29TNG', '29TPE', '29TPF', '29TPG', '29TQE', '29TQF', '29TQG'
+        '29SMA', '29SMB', '29SMC', '29SMD',
+        '29SNA', '29SNB', '29SNC', '29SND',
+        '29SPA', '29SPB', '29SPC', '29SPD',
+        '29TME', '29TNE', '29TNF', '29TNG',
+        '29TPE', '29TPF', '29TPG', '29TQF', '29TQG'
     ],
     'PL': [
-        '33UUT', '33UUS', '33UVR', '33UVS', '33UVT', '33UWU', '33UWV', '33UWR', '33UWS', '33UWT',
-        '34UCU', '34UCV', '34UCA', '34UCB', '34UCC', '34UCD', '34UCE', '34UCF',
-        '34UDU', '34UDV', '34UDA', '34UDB', '34UDC', '34UDD', '34UDE', '34UDF',
-        '34UEU', '34UEV', '34UEA', '34UEB', '34UEC', '34UED', '34UEE', '34UEF',
-        '34UFU', '34UFV', '34UFA', '34UFB', '34UFC', '34UFD', '34UFE', '34UFF',
-        '34UGU', '34UGV', '34UGA', '34UGB', '34UGC', '34UGD', '34UGE', '34UGF',
-        '35ULA', '35ULB', '35ULC', '35ULD', '35ULE', '35ULF',
-        '33UXT', '33UXU', '33UXV', '34VDC', '34VDD', '34VDE', '34VDF'
+        '33UVA', '33UVS', '33UVT', '33UVU', '33UVV',
+        '33UWA', '33UWR', '33UWS', '33UWT', '33UWU', '33UWV',
+        '33UXA', '33UXR', '33UXS', '33UXT', '33UXU', '33UXV',
+        '33UYQ', '33UYR', '33UYS', '33UYT', '33UYU', '33UYV',
+        '34UCA', '34UCB', '34UCC', '34UCD', '34UCE', '34UCF', '34UCV',
+        '34UDA', '34UDB', '34UDC', '34UDD', '34UDE', '34UDF', '34UDV',
+        '34UEA', '34UEB', '34UEC', '34UED', '34UEE', '34UEF', '34UEV',
+        '34UFA', '34UFB', '34UFC', '34UFD', '34UFE', '34UFF', '34UFV',
+        '34UGA', '34UGB'
     ],
-    'IE': ['29UNU', '29UNV', '29UPU', '29UPV', '29UQU', '29UQV', '29UNT', '29UPT', '29UQT', '29UNS', '29UPS', '29UQS'],
-    'AT': ['32UPU', '32UPV', '32UQU', '32UQV', '33UUP', '33UUQ', '33UVP', '33UVQ', '33UWP', '33UWQ', '33UXP', '33UXQ'],
+    'IE': [
+        '29ULT', '29UMA', '29UMS', '29UMT', '29UMU', '29UMV',
+        '29UNA', '29UNB', '29UNT', '29UNU', '29UNV',
+        '29UPA', '29UPB', '29UPT', '29UPU', '29UPV', '29UQU'
+    ],
+    'AT': [
+        '32TNS', '32TNT', '32TPS', '32TPT', '32TQS', '32TQT', '32UQU',
+        '33TUM', '33TUN', '33TVM', '33TVN', '33TWM', '33TWN', '33TXN',
+        '33UUP', '33UVP', '33UVQ', '33UWP', '33UWQ', '33UXP', '33UXQ'
+    ],
 }
 
 logging.basicConfig(
@@ -168,48 +183,14 @@ class CDSETokenManager:
             return _cached_token
 
 
-def load_shapefile_geometry_ogr(shp_path: Path, target_epsg=4326) -> Optional[ogr.Geometry]:
-    driver = ogr.GetDriverByName('ESRI Shapefile')
-    ds = driver.Open(str(shp_path))
-    if not ds:
-        return None
-    layer = ds.GetLayer()
-    src_srs = layer.GetSpatialRef()
-    dst_srs = osr.SpatialReference()
-    dst_srs.ImportFromEPSG(target_epsg)
-
-    coord_trans = None
-    if src_srs and not src_srs.IsSame(dst_srs):
-        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        coord_trans = osr.CoordinateTransformation(src_srs, dst_srs)
-
-    union_geom = None
-    layer.ResetReading()
-    for feature in layer:
-        geom = feature.GetGeometryRef()
-        if geom:
-            cloned = geom.Clone()
-            if coord_trans:
-                cloned.Transform(coord_trans)
-            if union_geom is None:
-                union_geom = cloned
-            else:
-                union_geom = union_geom.Union(cloned)
-    ds = None
-    return union_geom
+def load_shapefile_geometry_ogr(shp_path: Path, target_epsg: int = 4326, country_code: Optional[str] = None) -> Optional[ogr.Geometry]:
+    import s2_extract_creodias as _ext
+    return _ext.load_shapefile_geometry_ogr(shp_path, target_epsg=target_epsg, country_code=country_code)
 
 
-def get_country_geometry(country_code: str) -> Optional[ogr.Geometry]:
-    country_dir = SHAPEFILES_DIR / country_code.upper()
-    shp_path = country_dir / f"NUTS2_{country_code.upper()}.shp"
-    if not shp_path.exists() and country_dir.exists():
-        shp_files = list(country_dir.glob("*.shp"))
-        if shp_files:
-            shp_path = shp_files[0]
-    if not shp_path.exists():
-        return None
-    return load_shapefile_geometry_ogr(shp_path)
+def get_country_geometry(country_code: str, target_epsg: int = 4326) -> Optional[ogr.Geometry]:
+    import s2_extract_creodias as _ext
+    return _ext.get_country_geometry(country_code, target_epsg=target_epsg)
 
 
 def discover_s1_orbits(country_code: str) -> List[int]:
@@ -232,57 +213,9 @@ def discover_s1_orbits(country_code: str) -> List[int]:
     return cand
 
 
-def get_s1_orbit_extent_geometry(country_code: str, orbit_num: int) -> Optional[ogr.Geometry]:
-    track_dir = BASE_DIR / country_code.upper() / f"orbit_{orbit_num}"
-    candidate_dirs = [
-        track_dir / "1_input_stacks",
-        track_dir,
-        track_dir / "processed_raster",
-        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / f"orbit_{orbit_num}" / "1_input_stacks",
-        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / f"orbit_{orbit_num}" / "processed_raster",
-        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / f"orbit_{orbit_num}"
-    ]
-
-    for proc_dir in candidate_dirs:
-        if proc_dir.exists():
-            s1_tifs = list(proc_dir.glob("*_VH_VV*.tif")) + list(proc_dir.glob("*Sigma0*.tif")) + list(proc_dir.glob("S1_*_stack*.tif"))
-            if s1_tifs:
-                ds = gdal.Open(str(s1_tifs[0]))
-                if ds:
-                    gt = ds.GetGeoTransform()
-                    w = ds.RasterXSize
-                    h = ds.RasterYSize
-                    proj_wkt = ds.GetProjection()
-
-                    min_x = gt[0]
-                    max_x = gt[0] + w * gt[1]
-                    max_y = gt[3]
-                    min_y = gt[3] + h * gt[5]
-
-                    ring = ogr.Geometry(ogr.wkbLinearRing)
-                    ring.AddPoint(min_x, min_y)
-                    ring.AddPoint(max_x, min_y)
-                    ring.AddPoint(max_x, max_y)
-                    ring.AddPoint(min_x, max_y)
-                    ring.AddPoint(min_x, min_y)
-
-                    poly = ogr.Geometry(ogr.wkbPolygon)
-                    poly.AddGeometry(ring)
-
-                    src_srs = osr.SpatialReference()
-                    src_srs.ImportFromWkt(proj_wkt)
-                    dst_srs = osr.SpatialReference()
-                    dst_srs.ImportFromEPSG(4326)
-
-                    src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-                    dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-
-                    transform = osr.CoordinateTransformation(src_srs, dst_srs)
-                    poly.Transform(transform)
-                    ds = None
-                    return poly
-
-    return get_country_geometry(country_code)
+def get_s1_orbit_extent_geometry(country_code: str, orbit_num: int, target_epsg: int = 4326) -> Optional[ogr.Geometry]:
+    import s2_extract_creodias as _ext
+    return _ext.get_s1_orbit_extent_geometry(country_code, orbit_num, target_epsg=target_epsg)
 
 
 class Sentinel2FinderCDSE:
@@ -299,7 +232,7 @@ class Sentinel2FinderCDSE:
     ) -> List[Dict]:
         start_str = start_date.strftime("%Y-%m-%dT00:00:00.000Z")
         end_str = end_date.strftime("%Y-%m-%dT23:59:59.999Z")
-        env = geom.GetEnvelope() # minX, maxX, minY, maxY
+        env = geom.GetEnvelope()  # minX, maxX, minY, maxY
         wkt_poly = f"POLYGON(({env[0]} {env[2]}, {env[1]} {env[2]}, {env[1]} {env[3]}, {env[0]} {env[3]}, {env[0]} {env[2]}))"
 
         next_url = (
@@ -312,6 +245,7 @@ class Sentinel2FinderCDSE:
         )
 
         products = []
+        intersecting_tiles_cache: Dict[str, bool] = {}
         try:
             while next_url:
                 resp = requests.get(next_url, timeout=45)
@@ -322,6 +256,24 @@ class Sentinel2FinderCDSE:
                     name = item['Name']
                     tile_match = re.search(r'_T([0-9]{2}[A-Z]{3})_', name)
                     tile_name = tile_match.group(1) if tile_match else "UNKNOWN"
+                    tile_upper = tile_name.upper()
+
+                    if geom is not None and not geom.IsEmpty():
+                        if tile_upper in intersecting_tiles_cache:
+                            if not intersecting_tiles_cache[tile_upper]:
+                                continue
+                        else:
+                            fp = item.get('GeoFootprint')
+                            if fp:
+                                try:
+                                    fp_geom = ogr.CreateGeometryFromJson(json.dumps(fp))
+                                    if fp_geom is not None:
+                                        intersects = bool(fp_geom.Intersects(geom))
+                                        intersecting_tiles_cache[tile_upper] = intersects
+                                        if not intersects:
+                                            continue
+                                except Exception:
+                                    pass
 
                     products.append({
                         'id': item['Id'],

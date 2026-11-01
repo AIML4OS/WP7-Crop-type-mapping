@@ -68,7 +68,7 @@ COUNTRY_ORBITS = {
     'HR': [22, 51, 124],  # DESCENDING (100.0%) - 3 orbits
     'HU': [51, 124, 153],  # DESCENDING (100.0%) - 3 orbits
     'IE': [1, 74],  # ASCENDING (100.0%) - 2 orbits
-    'IS': [53, 82, 111],  # DESCENDING (100.0%) - 3 orbits
+    'IS': [9, 16, 111, 118, 155],  # DESCENDING+ASCENDING (100.0%) - 5 orbits
     'IT': [15, 44, 88, 117, 146],  # ASCENDING (100.0%) - 5 orbits
     'LI': [66],  # DESCENDING (100.0%) - 1 orbits
     'LT': [58, 131],  # ASCENDING (99.95%) - 2 orbits
@@ -191,6 +191,106 @@ def get_s1_raster_reference(track_dir: Path) -> Optional[Dict]:
     return None
 
 
+def prepare_orbit_cutline_shapefile(
+    country_code: str,
+    norm_track: str,
+    out_dir: Path,
+    target_epsg: int = 3857
+) -> Tuple[Optional[Path], Optional[ogr.Geometry]]:
+    """
+    Creates a dissolved, topologically valid single-feature cutline shapefile in target_epsg
+    representing the intersection of the active S1 orbit footprint and the country's NUTS2 boundary.
+    Prevents GEOS TopologyException during gdal.Warp and clips each orbit's S2 mosaic to its exact S1 extent.
+    """
+    try:
+        import s2_extract_creodias as _ext
+        orbit_match = re.search(r'orbit_(\d+)', norm_track)
+        if orbit_match:
+            orbit_num = int(orbit_match.group(1))
+            clip_geom = _ext.get_s1_orbit_extent_geometry(country_code, orbit_num, target_epsg=target_epsg)
+        else:
+            clip_geom = _ext.get_country_geometry(country_code, target_epsg=target_epsg)
+
+        if clip_geom is None or clip_geom.IsEmpty():
+            return get_country_shapefile(country_code), None
+
+        clip_geom = clip_geom.MakeValid()
+        try:
+            buf = clip_geom.Buffer(0.0)
+            if buf is not None and not buf.IsEmpty():
+                clip_geom = buf
+        except Exception:
+            pass
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cut_shp = out_dir / "_clean_orbit_cutline.shp"
+        drv = ogr.GetDriverByName("ESRI Shapefile")
+        if cut_shp.exists():
+            try:
+                drv.DeleteDataSource(str(cut_shp))
+            except Exception:
+                pass
+
+        dst_srs = osr.SpatialReference()
+        dst_srs.ImportFromEPSG(target_epsg)
+        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+        ds_cut = drv.CreateDataSource(str(cut_shp))
+        if ds_cut is None:
+            return get_country_shapefile(country_code), clip_geom
+        lyr_cut = ds_cut.CreateLayer("cutline", dst_srs, ogr.wkbMultiPolygon)
+        feat = ogr.Feature(lyr_cut.GetLayerDefn())
+        feat.SetGeometry(clip_geom)
+        lyr_cut.CreateFeature(feat)
+        feat = None
+        ds_cut = None
+        return cut_shp, clip_geom
+    except Exception as e:
+        logging.warning(f"Could not build dissolved orbit cutline for {norm_track} ({e}); falling back to raw country shapefile.")
+        return get_country_shapefile(country_code), None
+
+
+def _synthetic_dir_intersects_geom(syn_dir: Path, clip_geom_target_srs: Optional[ogr.Geometry], target_epsg: int = 3857) -> bool:
+    """Checks whether a tile's _synthetic_s2 raster bounding box intersects clip_geom_target_srs."""
+    if clip_geom_target_srs is None or clip_geom_target_srs.IsEmpty():
+        return True
+    try:
+        sample_tifs = list(syn_dir.glob("day*/*.tif"))
+        if not sample_tifs:
+            return False
+        ds = gdal.Open(str(sample_tifs[0]))
+        if not ds:
+            return True
+        gt = ds.GetGeoTransform()
+        w = ds.RasterXSize
+        h = ds.RasterYSize
+        proj_wkt = ds.GetProjection()
+        ds = None
+
+        min_x, max_x = gt[0], gt[0] + w * gt[1]
+        max_y, min_y = gt[3], gt[3] + h * gt[5]
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        ring.AddPoint(min_x, min_y)
+        ring.AddPoint(max_x, min_y)
+        ring.AddPoint(max_x, max_y)
+        ring.AddPoint(min_x, max_y)
+        ring.AddPoint(min_x, min_y)
+        poly = ogr.Geometry(ogr.wkbPolygon)
+        poly.AddGeometry(ring)
+
+        src_srs = osr.SpatialReference()
+        src_srs.ImportFromWkt(proj_wkt)
+        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        dst_srs = osr.SpatialReference()
+        dst_srs.ImportFromEPSG(target_epsg)
+        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        if not src_srs.IsSame(dst_srs):
+            poly.Transform(osr.CoordinateTransformation(src_srs, dst_srs))
+        return bool(poly.Intersects(clip_geom_target_srs))
+    except Exception:
+        return True
+
+
 def mosaic_single_band_doy(
     band_input_files: List[Path],
     output_tif: Path,
@@ -204,20 +304,8 @@ def mosaic_single_band_doy(
     target_height: Optional[int] = None,
     overwrite: bool = False
 ) -> bool:
-    if output_tif.exists() and output_tif.stat().st_size > 1024:
-        if not overwrite:
-            return True
-        # Smart check: if overwrite is requested, but file already has exact matching target geometry, skip it!
-        if target_width and target_height:
-            try:
-                ds_check = gdal.Open(str(output_tif))
-                if ds_check:
-                    if ds_check.RasterXSize == target_width and ds_check.RasterYSize == target_height:
-                        ds_check = None
-                        return True
-                    ds_check = None
-            except:
-                pass
+    if output_tif.exists() and output_tif.stat().st_size > 1024 and not overwrite:
+        return True
 
     output_tif.parent.mkdir(parents=True, exist_ok=True)
     existing_files = [str(f) for f in band_input_files if f.exists()]
@@ -275,6 +363,7 @@ def mosaic_stack_clip_single_track(
     overwrite: bool = False,
     build_overviews: bool = True
 ):
+    import json as _json
     if doys is None or doys == DEFAULT_DOYS:
         doys = get_regional_doys(country_code)
         logging.info(f"Auto-selected regional DOY phenological profile for {country_code}: {doys}")
@@ -319,7 +408,7 @@ def mosaic_stack_clip_single_track(
     out_final_dir.mkdir(parents=True, exist_ok=True)
     out_proc_dir.mkdir(parents=True, exist_ok=True)
 
-    shp_cutline = get_country_shapefile(country_code)
+    shp_cutline, clip_geom = prepare_orbit_cutline_shapefile(country_code, norm_track, out_final_dir, target_epsg=target_epsg)
 
     ref_proj, res_x, res_y = (None, 10.0, 10.0)
     output_bounds = None
@@ -334,11 +423,65 @@ def mosaic_stack_clip_single_track(
         target_width = s1_ref['width']
         target_height = s1_ref['height']
         logging.info(f"Matching S1 SAR reference geometry for {track}: {target_width}x{target_height} ({res_x}m x {res_y}m), Bounds: {output_bounds}")
+    elif clip_geom is not None and not clip_geom.IsEmpty():
+        env = clip_geom.GetEnvelope()  # minX, maxX, minY, maxY in target_epsg
+        min_x = float(int(env[0] // res_x) * res_x)
+        min_y = float(int(env[2] // res_y) * res_y)
+        max_x = float(int((env[1] + res_x - 1e-6) // res_x) * res_x)
+        max_y = float(int((env[3] + res_y - 1e-6) // res_y) * res_y)
+        output_bounds = (min_x, min_y, max_x, max_y)
+        target_width = int(round((max_x - min_x) / res_x))
+        target_height = int(round((max_y - min_y) / res_y))
+        logging.info(f"Computed snapped 10m orbit geometry for {track}: {target_width}x{target_height}, Bounds: {output_bounds}")
 
-    synthetic_dirs = list(s2_base.glob("**/_synthetic_s2"))
-    if not synthetic_dirs:
+    all_synthetic_dirs = sorted(s2_base.glob("**/_synthetic_s2"))
+    if not all_synthetic_dirs:
         logging.warning(f"No _synthetic_s2 directories found in {s2_base}. Please run Stage 2 first.")
         return
+
+    allowed_tiles = None
+    try:
+        import s2_extract_creodias as _ext
+        if country_code.upper() in _ext.COUNTRY_MGRS_TILES:
+            allowed_tiles = set(t.upper().lstrip('T') for t in _ext.COUNTRY_MGRS_TILES[country_code.upper()])
+    except Exception:
+        pass
+
+    synthetic_dirs = []
+    for syn_d in all_synthetic_dirs:
+        tile_code = syn_d.parent.name.upper().lstrip('T')
+        if allowed_tiles is not None and tile_code not in allowed_tiles:
+            continue
+        if clip_geom is not None and not _synthetic_dir_intersects_geom(syn_d, clip_geom, target_epsg=target_epsg):
+            continue
+        synthetic_dirs.append(syn_d)
+
+    if not synthetic_dirs:
+        synthetic_dirs = all_synthetic_dirs
+
+    selected_tiles = sorted(syn_d.parent.name.upper() for syn_d in synthetic_dirs)
+
+    # Invalidate stale intermediate DOY mosaics if tile set or orbit clipping changed
+    sig_file = out_final_dir / "_mosaic_signature.json"
+    current_sig = {
+        "track": norm_track,
+        "tiles": selected_tiles,
+        "width": target_width,
+        "height": target_height,
+        "orbit_clipped": True
+    }
+    force_rewarp = overwrite
+    if not force_rewarp:
+        if not sig_file.exists():
+            force_rewarp = True
+        else:
+            try:
+                old_sig = _json.loads(sig_file.read_text(encoding="utf-8"))
+                if old_sig != current_sig:
+                    logging.info(f"Track {track}: tile set or clipping geometry changed ({old_sig.get('tiles')} -> {selected_tiles}); rebuilding DOY mosaics.")
+                    force_rewarp = True
+            except Exception:
+                force_rewarp = True
 
     year = None
     for syn_d in synthetic_dirs:
@@ -353,7 +496,7 @@ def mosaic_stack_clip_single_track(
         logging.warning(f"No generated synthetic DOY folders (day*_<year>) found in {s2_base}. Please run Stage 2 (time-series interpolation) first.")
         return
 
-    logging.info(f"Track {track}: mosaicking from {len(synthetic_dirs)} tile sources (Acquisition Year: {year})...")
+    logging.info(f"Track {track}: mosaicking & clipping from {len(synthetic_dirs)} intersecting MGRS tiles {selected_tiles} (Acquisition Year: {year})...")
 
     mosaic_tasks = []
     mosaic_bands_list = []
@@ -382,7 +525,7 @@ def mosaic_stack_clip_single_track(
         nonlocal done_bands
         res = mosaic_single_band_doy(
             task[0], task[1], shp_cutline, target_epsg, ref_proj, res_x, res_y,
-            output_bounds, target_width, target_height, overwrite
+            output_bounds, target_width, target_height, force_rewarp
         )
         with lock:
             done_bands += 1
@@ -394,6 +537,11 @@ def mosaic_stack_clip_single_track(
 
     with ThreadPoolExecutor(max_workers=warp_workers) as executor:
         list(executor.map(_worker_mosaic, mosaic_tasks))
+
+    try:
+        sig_file.write_text(_json.dumps(current_sig, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
     valid_layers = []
     band_descriptions = []
@@ -439,6 +587,8 @@ def mosaic_stack_clip_single_track(
 
     if ds_final:
         ds_final.SetMetadataItem("BOA_OFFSET_CORRECTED", "1")
+        ds_final.SetMetadataItem("ORBIT_CLIPPED", "1")
+        ds_final.SetMetadataItem("MGRS_TILES", ",".join(selected_tiles))
         for b_idx, desc in enumerate(band_descriptions, start=1):
             band_obj = ds_final.GetRasterBand(b_idx)
             band_obj.SetDescription(desc)
@@ -462,31 +612,18 @@ def mosaic_stack_clip_single_track(
         if out_final_tmp.exists():
             out_final_tmp.rename(out_final_tif)
 
-        # Ensure shared country S2 directory has master stack with timestamp signature
-        shared_s2_dir = BASE_DIR / country_code.upper() / "S2"
-        shared_s2_dir.mkdir(parents=True, exist_ok=True)
-        shared_country_tif = shared_s2_dir / f"{country_code.upper()}{date_range_str}_S2_timeseries.tif"
-        if out_final_tif.exists() and shared_country_tif.resolve() != out_final_tif.resolve():
-            try:
-                if shared_country_tif.exists():
-                    shared_country_tif.unlink()
-                os.link(str(out_final_tif), str(shared_country_tif))
-                logging.info(f"Shared country master S2 stack linked to {shared_country_tif.name}")
-            except Exception:
+        # Only link to shared country master S2 stack when running country-wide (not per-orbit clipped)
+        if "/" not in norm_track and "\\" not in norm_track:
+            shared_s2_dir = BASE_DIR / country_code.upper() / "S2"
+            shared_s2_dir.mkdir(parents=True, exist_ok=True)
+            canonical_s2 = shared_s2_dir / f"{country_code.upper()}_S2_timeseries.tif"
+            if out_final_tif.exists() and canonical_s2.resolve() != out_final_tif.resolve():
                 try:
-                    shutil.copy2(str(out_final_tif), str(shared_country_tif))
+                    if canonical_s2.exists():
+                        canonical_s2.unlink()
+                    os.link(str(out_final_tif), str(canonical_s2))
                 except Exception:
                     pass
-
-        # Also create canonical alias without timestamp for backward compatibility
-        canonical_s2 = shared_s2_dir / f"{country_code.upper()}_S2_timeseries.tif"
-        if out_final_tif.exists() and canonical_s2.resolve() != out_final_tif.resolve():
-            try:
-                if canonical_s2.exists():
-                    canonical_s2.unlink()
-                os.link(str(out_final_tif), str(canonical_s2))
-            except Exception:
-                pass
 
     if out_vrt.exists():
         try: out_vrt.unlink()
@@ -503,7 +640,8 @@ def mosaic_stack_clip_single_track(
 
 
 def discover_s1_orbits(country_code: str) -> List[int]:
-    country_dir = BASE_DIR / country_code
+    c_up = country_code.upper()
+    country_dir = BASE_DIR / c_up
     if country_dir.exists():
         found = [
             int(re.search(r'orbit_(\d+)', d.name).group(1))
@@ -515,7 +653,7 @@ def discover_s1_orbits(country_code: str) -> List[int]:
         found_all = [int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name)]
         if found_all:
             return sorted(list(set(found_all)))
-    return []
+    return COUNTRY_ORBITS.get(c_up, [])
 
 
 def mosaic_stack_clip_s2(

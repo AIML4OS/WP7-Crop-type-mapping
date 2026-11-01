@@ -219,7 +219,7 @@ COUNTRY_ORBITS = {
     'HR': [22, 51, 124],  # DESCENDING (100.0%) - 3 orbits
     'HU': [51, 124, 153],  # DESCENDING (100.0%) - 3 orbits
     'IE': [1, 74],  # ASCENDING (100.0%) - 2 orbits
-    'IS': [53, 82, 111],  # DESCENDING (100.0%) - 3 orbits
+    'IS': [9, 16, 111, 118, 155],  # DESCENDING+ASCENDING (100.0%) - 5 orbits
     'IT': [15, 44, 88, 117, 146],  # ASCENDING (100.0%) - 5 orbits
     'LI': [66],  # DESCENDING (100.0%) - 1 orbits
     'LT': [58, 131],  # ASCENDING (99.95%) - 2 orbits
@@ -682,27 +682,84 @@ def generate_s2_time_series_for_tile(
     return True
 
 
+def _tile_dir_intersects_geom(tile_tif_dir: Path, target_geom_4326) -> bool:
+    """Checks whether the spatial footprint of a tile_tif_dir intersects target_geom_4326."""
+    if target_geom_4326 is None or target_geom_4326.IsEmpty():
+        return True
+    try:
+        from osgeo import ogr, osr
+        sample_tifs = list(tile_tif_dir.glob("**/*_B02*.tif"))
+        if not sample_tifs:
+            return False
+        ds = gdal.Open(str(sample_tifs[0]))
+        if not ds:
+            return True
+        gt = ds.GetGeoTransform()
+        w = ds.RasterXSize
+        h = ds.RasterYSize
+        proj_wkt = ds.GetProjection()
+        ds = None
+
+        min_x, max_x = gt[0], gt[0] + w * gt[1]
+        max_y, min_y = gt[3], gt[3] + h * gt[5]
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        ring.AddPoint(min_x, min_y)
+        ring.AddPoint(max_x, min_y)
+        ring.AddPoint(max_x, max_y)
+        ring.AddPoint(min_x, max_y)
+        ring.AddPoint(min_x, min_y)
+        poly = ogr.Geometry(ogr.wkbPolygon)
+        poly.AddGeometry(ring)
+
+        src_srs = osr.SpatialReference()
+        src_srs.ImportFromWkt(proj_wkt)
+        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        dst_srs = osr.SpatialReference()
+        dst_srs.ImportFromEPSG(4326)
+        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        if not src_srs.IsSame(dst_srs):
+            poly.Transform(osr.CoordinateTransformation(src_srs, dst_srs))
+        return bool(poly.Intersects(target_geom_4326))
+    except Exception:
+        return True
+
+
 def run_time_series_for_dir(
     s2_base: Path,
     doys: List[int],
     max_workers: int = 8,
     overwrite: bool = False,
     enable_whittaker: bool = True,
-    whittaker_lambda: float = 15.0
+    whittaker_lambda: float = 15.0,
+    target_geom_4326=None,
+    allowed_tiles: Optional[set] = None
 ):
     import threading
     if not s2_base.exists():
         return
 
-    tile_dirs = [d for d in s2_base.iterdir() if d.is_dir() and d.name.endswith("_tif")]
-    if not tile_dirs:
+    all_tile_dirs = sorted(d for d in s2_base.iterdir() if d.is_dir() and d.name.endswith("_tif"))
+    if not all_tile_dirs:
         return
+
+    tile_dirs = []
+    for d in all_tile_dirs:
+        clean_name = d.name.replace('_tif', '').upper().lstrip('T')
+        if allowed_tiles is not None and clean_name not in allowed_tiles:
+            continue
+        if target_geom_4326 is not None and not _tile_dir_intersects_geom(d, target_geom_4326):
+            continue
+        tile_dirs.append(d)
+
+    if not tile_dirs:
+        tile_dirs = all_tile_dirs
 
     total_tiles = len(tile_dirs)
     done_tiles = 0
     lock = threading.Lock()
 
-    logging.info(f"Generating seamless synthetic time-series for {s2_base} ({total_tiles} tiles, Workers: {max_workers})...")
+    tile_names = [d.name.replace('_tif', '') for d in tile_dirs]
+    logging.info(f"Generating seamless synthetic time-series for {s2_base} ({total_tiles} intersecting tiles: {tile_names}, Workers: {max_workers})...")
 
     def _worker_tile(t_dir):
         nonlocal done_tiles
@@ -729,13 +786,41 @@ def run_time_series_for_track(
     enable_whittaker: bool = True,
     whittaker_lambda: float = 15.0
 ):
-    country_part = track.split('/')[0].split('\\')[0].upper()
+    norm_track = track.replace('\\', '/')
+    country_part = norm_track.split('/')[0].upper()
     if doys is None or doys == DEFAULT_DOYS:
         doys = get_regional_doys(country_part)
         logging.info(f"Auto-selected regional DOY phenological profile for {country_part}: {doys}")
 
-    s2_base = BASE_DIR / track / "S2"
-    run_time_series_for_dir(s2_base, doys, max_workers, overwrite, enable_whittaker, whittaker_lambda)
+    orbit_match = re.search(r'orbit_(\d+)', norm_track)
+    orbit_num = int(orbit_match.group(1)) if orbit_match else None
+
+    target_geom = None
+    allowed_tiles = None
+    try:
+        import s2_extract_creodias as _ext
+        if country_part in _ext.COUNTRY_MGRS_TILES:
+            allowed_tiles = set(t.upper().lstrip('T') for t in _ext.COUNTRY_MGRS_TILES[country_part])
+        if orbit_num is not None:
+            target_geom = _ext.get_s1_orbit_extent_geometry(country_part, orbit_num, target_epsg=4326)
+        else:
+            target_geom = _ext.get_country_geometry(country_part, target_epsg=4326)
+    except Exception:
+        pass
+
+    shared_s2 = BASE_DIR / country_part / "S2"
+    track_s2 = BASE_DIR / norm_track / "S2"
+    if shared_s2.exists() and any(d.name.endswith("_tif") for d in shared_s2.iterdir() if d.is_dir()):
+        s2_base = shared_s2
+    elif track_s2.exists():
+        s2_base = track_s2
+    else:
+        s2_base = shared_s2
+
+    run_time_series_for_dir(
+        s2_base, doys, max_workers, overwrite, enable_whittaker, whittaker_lambda,
+        target_geom_4326=target_geom, allowed_tiles=allowed_tiles
+    )
 
 
 def run_time_series(
@@ -756,24 +841,25 @@ def run_time_series(
             doys = get_regional_doys(country_code)
             logging.info(f"Auto-selected regional DOY phenological profile for {country_code}: {doys}")
 
-        shared_s2 = BASE_DIR / country_code / "S2"
-        if shared_s2.exists() and any(d.name.endswith("_tif") for d in shared_s2.iterdir() if d.is_dir()):
-            logging.info(f"Using shared country-level S2 repository for {country_code} at {shared_s2}")
-            run_time_series_for_dir(shared_s2, doys, max_workers, overwrite, enable_whittaker, whittaker_lambda)
-        else:
-            country_dir = BASE_DIR / country_code
-            if orbit is not None:
-                orbits = [orbit]
-            elif country_dir.exists():
-                orbits = [int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name)]
-                if not orbits:
-                    orbits = COUNTRY_ORBITS.get(country_code, [])
-            else:
-                orbits = COUNTRY_ORBITS.get(country_code, [])
+        if orbit is not None:
+            run_time_series_for_track(f"{country_code}/orbit_{orbit}", doys, max_workers, overwrite, enable_whittaker, whittaker_lambda)
+            return
 
+        country_dir = BASE_DIR / country_code
+        if country_dir.exists():
+            orbits = sorted(int(re.search(r'orbit_(\d+)', d.name).group(1)) for d in country_dir.glob("orbit_*") if re.search(r'orbit_(\d+)', d.name))
+            if not orbits:
+                orbits = COUNTRY_ORBITS.get(country_code, [])
+        else:
+            orbits = COUNTRY_ORBITS.get(country_code, [])
+
+        if orbits:
             logging.info(f"Generating synthetic time-series for country {country_code} across orbits {orbits}...")
             for o in orbits:
                 run_time_series_for_track(f"{country_code}/orbit_{o}", doys, max_workers, overwrite, enable_whittaker, whittaker_lambda)
+        else:
+            shared_s2 = BASE_DIR / country_code / "S2"
+            run_time_series_for_dir(shared_s2, doys, max_workers, overwrite, enable_whittaker, whittaker_lambda)
 
 
 def main():

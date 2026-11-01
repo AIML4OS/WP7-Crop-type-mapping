@@ -115,7 +115,7 @@ COUNTRY_ORBITS = {
     'HR': [22, 51, 124],  # DESCENDING (100.0%) - 3 orbits
     'HU': [51, 124, 153],  # DESCENDING (100.0%) - 3 orbits
     'IE': [1, 74],  # ASCENDING (100.0%) - 2 orbits
-    'IS': [53, 82, 111],  # DESCENDING (100.0%) - 3 orbits
+    'IS': [9, 16, 111, 118, 155],  # DESCENDING+ASCENDING (100.0%) - 5 orbits
     'IT': [15, 44, 88, 117, 146],  # ASCENDING (100.0%) - 5 orbits
     'LI': [66],  # DESCENDING (100.0%) - 1 orbits
     'LT': [58, 131],  # ASCENDING (99.95%) - 2 orbits
@@ -151,13 +151,14 @@ def detect_s2_source() -> str:
 
 
 def discover_country_orbits(country_code: str) -> List[int]:
-    """Finds existing orbit folders or falls back to master orbit registry."""
+    """Finds existing orbit folders or falls back to optimal greedy orbit registry."""
+    c_up = country_code.upper()
     found = set()
     cand_bases = [BASE_DIR]
     if os.name == "nt":
         cand_bases.append(Path(r"D:/AIML_CropMapper_Cloud/workingDir"))
     for b in cand_bases:
-        c_dir = b / country_code.upper()
+        c_dir = b / c_up
         if c_dir.exists():
             for d in c_dir.glob("orbit_*"):
                 m = re.search(r'orbit_(\d+)', d.name)
@@ -165,16 +166,18 @@ def discover_country_orbits(country_code: str) -> List[int]:
                     found.add(int(m.group(1)))
     if found:
         return sorted(list(found))
-    json_path = Path(__file__).resolve().parent.parent / "auxiliary_files" / "country_orbits_complete.json"
-    if json_path.exists():
+    if c_up in COUNTRY_ORBITS and COUNTRY_ORBITS[c_up]:
+        return list(COUNTRY_ORBITS[c_up])
+    greedy_json = Path(__file__).resolve().parent.parent / "auxiliary_files" / "country_optimal_greedy_orbits_clean.json"
+    if greedy_json.exists():
         try:
-            with open(json_path, 'r', encoding='utf-8') as f:
+            with open(greedy_json, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                if country_code.upper() in data and data[country_code.upper()]:
-                    return data[country_code.upper()]
+                if c_up in data and data[c_up].get("orbits"):
+                    return list(data[c_up]["orbits"])
         except Exception:
             pass
-    return COUNTRY_ORBITS.get(country_code.upper(), [])
+    return []
 
 
 class Sentinel2Pipeline:
@@ -246,8 +249,8 @@ class Sentinel2Pipeline:
         logging.info(f" Track: {self.track} | Date range: {self.start_date_str} to {self.end_date_str}")
         logging.info(f"============================================================")
 
-        if self.orbit:
-            orbits_to_run = [self.orbit]
+        orbits_to_run = [self.orbit] if self.orbit else discover_country_orbits(self.country)
+        if orbits_to_run:
             for orb in orbits_to_run:
                 if self.source == "creodias":
                     extract_mod = importlib.import_module("s2_extract_creodias")
@@ -346,9 +349,32 @@ class Sentinel2Pipeline:
             )
 
     def run_all(self):
-        """Executes all 3 stages sequentially."""
+        """Executes all 3 stages sequentially per orbit."""
         if not self.start_date or not self.end_date:
             self.prompt_dates()
+        if self.orbit is None:
+            orbits = discover_country_orbits(self.country)
+            if orbits:
+                logging.info(f"\n>>> Processing country {self.country} per-orbit across {len(orbits)} orbit(s): {orbits} <<<")
+                for orb in orbits:
+                    sub_pipe = Sentinel2Pipeline(
+                        country=self.country,
+                        orbit=orb,
+                        start_date=self.start_date_str,
+                        end_date=self.end_date_str,
+                        source=self.source,
+                        cloud_cover=self.cloud_cover,
+                        doys=self.doys,
+                        threads=self.threads,
+                        overwrite=self.overwrite,
+                        enable_whittaker=self.enable_whittaker,
+                        whittaker_lambda=self.whittaker_lambda
+                    )
+                    sub_pipe.stage_1_download_extract()
+                    sub_pipe.stage_2_time_series()
+                    sub_pipe.stage_3_mosaic_stack()
+                logging.info(f"\n[SUCCESS] Sentinel-2 per-orbit preprocessing pipeline completed successfully for {self.country} ({orbits})!")
+                return
         self.stage_1_download_extract()
         self.stage_2_time_series()
         self.stage_3_mosaic_stack()

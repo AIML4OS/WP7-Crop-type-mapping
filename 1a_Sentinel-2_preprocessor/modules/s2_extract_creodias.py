@@ -37,6 +37,7 @@ from osgeo import gdal, ogr, osr
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
 AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files")))
+SHAPEFILES_DIR = AUX_DIR / "shapefiles_nuts"
 def safe_exists(p) -> bool:
     """Safely check if path exists, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
     if p is None:
@@ -96,7 +97,7 @@ COUNTRY_ORBITS = {
     'HR': [22, 51, 124],  # DESCENDING (100.0%) - 3 orbits
     'HU': [51, 124, 153],  # DESCENDING (100.0%) - 3 orbits
     'IE': [1, 74],  # ASCENDING (100.0%) - 2 orbits
-    'IS': [53, 82, 111],  # DESCENDING (100.0%) - 3 orbits
+    'IS': [9, 16, 111, 118, 155],  # DESCENDING+ASCENDING (100.0%) - 5 orbits
     'IT': [15, 44, 88, 117, 146],  # ASCENDING (100.0%) - 5 orbits
     'LI': [66],  # DESCENDING (100.0%) - 1 orbits
     'LT': [58, 131],  # ASCENDING (99.95%) - 2 orbits
@@ -119,24 +120,39 @@ COUNTRY_ORBITS = {
 }
 
 COUNTRY_MGRS_TILES = {
-    'NL': ['31UDR', '31UER', '31UES', '31UET', '31UFR', '31UFS', '31UFT', '31UGR', '31UGS', '31UGT'],
+    'NL': [
+        '31UES', '31UET', '31UEU',
+        '31UFS', '31UFT', '31UFU', '31UFV',
+        '31UGS', '31UGT', '31UGU', '31UGV'
+    ],
     'PT': [
-        '29SMC', '29SMD', '29SNC', '29SND', '29SPC', '29SPD', '29SQC', '29SQD',
-        '29SMB', '29SNB', '29SPB', '29SQB', '29SMA', '29SNA', '29SPA', '29SQA',
-        '29TNE', '29TNF', '29TNG', '29TPE', '29TPF', '29TPG', '29TQE', '29TQF', '29TQG'
+        '29SMA', '29SMB', '29SMC', '29SMD',
+        '29SNA', '29SNB', '29SNC', '29SND',
+        '29SPA', '29SPB', '29SPC', '29SPD',
+        '29TME', '29TNE', '29TNF', '29TNG',
+        '29TPE', '29TPF', '29TPG', '29TQF', '29TQG'
     ],
     'PL': [
-        '33UUT', '33UUS', '33UVR', '33UVS', '33UVT', '33UWU', '33UWV', '33UWR', '33UWS', '33UWT',
-        '34UCU', '34UCV', '34UCA', '34UCB', '34UCC', '34UCD', '34UCE', '34UCF',
-        '34UDU', '34UDV', '34UDA', '34UDB', '34UDC', '34UDD', '34UDE', '34UDF',
-        '34UEU', '34UEV', '34UEA', '34UEB', '34UEC', '34UED', '34UEE', '34UEF',
-        '34UFU', '34UFV', '34UFA', '34UFB', '34UFC', '34UFD', '34UFE', '34UFF',
-        '34UGU', '34UGV', '34UGA', '34UGB', '34UGC', '34UGD', '34UGE', '34UGF',
-        '35ULA', '35ULB', '35ULC', '35ULD', '35ULE', '35ULF',
-        '33UXT', '33UXU', '33UXV', '34VDC', '34VDD', '34VDE', '34VDF'
+        '33UVA', '33UVS', '33UVT', '33UVU', '33UVV',
+        '33UWA', '33UWR', '33UWS', '33UWT', '33UWU', '33UWV',
+        '33UXA', '33UXR', '33UXS', '33UXT', '33UXU', '33UXV',
+        '33UYQ', '33UYR', '33UYS', '33UYT', '33UYU', '33UYV',
+        '34UCA', '34UCB', '34UCC', '34UCD', '34UCE', '34UCF', '34UCV',
+        '34UDA', '34UDB', '34UDC', '34UDD', '34UDE', '34UDF', '34UDV',
+        '34UEA', '34UEB', '34UEC', '34UED', '34UEE', '34UEF', '34UEV',
+        '34UFA', '34UFB', '34UFC', '34UFD', '34UFE', '34UFF', '34UFV',
+        '34UGA', '34UGB'
     ],
-    'IE': ['29UNU', '29UNV', '29UPU', '29UPV', '29UQU', '29UQV', '29UNT', '29UPT', '29UQT', '29UNS', '29UPS', '29UQS'],
-    'AT': ['32UPU', '32UPV', '32UQU', '32UQV', '33UUP', '33UUQ', '33UVP', '33UVQ', '33UWP', '33UWQ', '33UXP', '33UXQ'],
+    'IE': [
+        '29ULT', '29UMA', '29UMS', '29UMT', '29UMU', '29UMV',
+        '29UNA', '29UNB', '29UNT', '29UNU', '29UNV',
+        '29UPA', '29UPB', '29UPT', '29UPU', '29UPV', '29UQU'
+    ],
+    'AT': [
+        '32TNS', '32TNT', '32TPS', '32TPT', '32TQS', '32TQT', '32UQU',
+        '33TUM', '33TUN', '33TVM', '33TVN', '33TWM', '33TWN', '33TXN',
+        '33UUP', '33UVP', '33UVQ', '33UWP', '33UWQ', '33UXP', '33UXQ'
+    ],
 }
 
 logging.basicConfig(
@@ -146,52 +162,92 @@ logging.basicConfig(
 )
 
 
-def load_shapefile_geometry_ogr(shp_path: Path, target_epsg=4326) -> Optional[ogr.Geometry]:
-    """Loads all geometries from a shapefile, transforms to target EPSG, and returns union."""
+def load_shapefile_geometry_ogr(shp_path: Path, target_epsg: int = 4326, country_code: Optional[str] = None) -> Optional[ogr.Geometry]:
+    """Loads all continental geometries from a NUTS shapefile, transforms to target EPSG, and returns a validated union."""
     driver = ogr.GetDriverByName('ESRI Shapefile')
     ds = driver.Open(str(shp_path))
     if not ds:
         return None
     layer = ds.GetLayer()
     src_srs = layer.GetSpatialRef()
-    dst_srs = osr.SpatialReference()
-    dst_srs.ImportFromEPSG(target_epsg)
 
-    coord_trans = None
-    if src_srs and not src_srs.IsSame(dst_srs):
-        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    srs_4326 = osr.SpatialReference()
+    srs_4326.ImportFromEPSG(4326)
+    srs_4326.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+    to_4326 = None
+    if src_srs and not src_srs.IsSame(srs_4326):
         src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        coord_trans = osr.CoordinateTransformation(src_srs, dst_srs)
+        to_4326 = osr.CoordinateTransformation(src_srs, srs_4326)
 
-    union_geom = None
+    c_up = (country_code or "").upper()
+    union_geom = ogr.Geometry(ogr.wkbMultiPolygon)
     layer.ResetReading()
     for feature in layer:
         geom = feature.GetGeometryRef()
-        if geom:
-            cloned = geom.Clone()
-            if coord_trans:
-                cloned.Transform(coord_trans)
-            if union_geom is None:
-                union_geom = cloned
-            else:
-                union_geom = union_geom.Union(cloned)
+        if not geom:
+            continue
+        cloned = geom.Clone()
+        if to_4326:
+            cloned.Transform(to_4326)
+        env = cloned.GetEnvelope()  # minX, maxX, minY, maxY in EPSG:4326
+        # Exclude non-continental overseas territories (French Guiana/DOM-TOM, Canary Islands, Svalbard/Jan Mayen)
+        if c_up == 'FR' and (env[0] < -10.0 or env[2] < 38.0):
+            continue
+        if c_up == 'ES' and (env[0] < -11.0 or env[2] < 34.0):
+            continue
+        if c_up == 'NO' and env[3] > 72.0:
+            continue
+
+        cloned_valid = cloned.MakeValid()
+        if cloned_valid is None or cloned_valid.IsEmpty():
+            continue
+        g_type = cloned_valid.GetGeometryType() & ~ogr.wkb25Bit
+        if g_type == ogr.wkbPolygon:
+            union_geom.AddGeometry(cloned_valid)
+        elif g_type in (ogr.wkbMultiPolygon, ogr.wkbGeometryCollection):
+            for i in range(cloned_valid.GetGeometryCount()):
+                sub_g = cloned_valid.GetGeometryRef(i)
+                if sub_g and (sub_g.GetGeometryType() & ~ogr.wkb25Bit) == ogr.wkbPolygon:
+                    union_geom.AddGeometry(sub_g.Clone())
     ds = None
-    return union_geom
-
-
-def get_country_geometry(country_code: str) -> Optional[ogr.Geometry]:
-    """Dynamically locates and loads the NUTS shapefile for the given country code."""
-    country_dir = SHAPEFILES_DIR / country_code.upper()
-    shp_path = country_dir / f"NUTS2_{country_code.upper()}.shp"
-    if not shp_path.exists() and country_dir.exists():
-        shp_files = list(country_dir.glob("*.shp"))
-        if shp_files:
-            shp_path = shp_files[0]
-    if not shp_path.exists():
-        logging.error(f"Shapefile for country {country_code} not found in {SHAPEFILES_DIR}")
+    if union_geom.IsEmpty():
         return None
 
-    return load_shapefile_geometry_ogr(shp_path)
+    res_geom = union_geom.MakeValid()
+    try:
+        buf = res_geom.Buffer(0.0)
+        if buf is not None and not buf.IsEmpty():
+            res_geom = buf
+    except Exception:
+        pass
+
+    if target_epsg != 4326:
+        dst_srs = osr.SpatialReference()
+        dst_srs.ImportFromEPSG(target_epsg)
+        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        ct_out = osr.CoordinateTransformation(srs_4326, dst_srs)
+        res_geom.Transform(ct_out)
+        res_geom = res_geom.MakeValid()
+    return res_geom
+
+
+def get_country_geometry(country_code: str, target_epsg: int = 4326) -> Optional[ogr.Geometry]:
+    """Dynamically locates and loads the NUTS shapefile for the given country code."""
+    c_up = country_code.upper()
+    candidates = [
+        SHAPEFILES_DIR / c_up / f"NUTS2_{c_up}.shp",
+        AUX_DIR / "NUTS2" / f"NUTS2_{c_up}.shp",
+    ]
+    country_dir = SHAPEFILES_DIR / c_up
+    if country_dir.exists():
+        candidates.extend(sorted(country_dir.glob("*.shp")))
+    shp_path = next((p for p in candidates if p.exists()), None)
+    if shp_path is None:
+        logging.error(f"Shapefile for country {c_up} not found in {SHAPEFILES_DIR}")
+        return None
+
+    return load_shapefile_geometry_ogr(shp_path, target_epsg=target_epsg, country_code=c_up)
 
 
 def discover_s1_orbits(country_code: str) -> List[int]:
@@ -217,50 +273,170 @@ def discover_s1_orbits(country_code: str) -> List[int]:
     return cand
 
 
-def get_s1_orbit_extent_geometry(country_code: str, orbit_num: int) -> Optional[ogr.Geometry]:
-    """Retrieves bounding polygon for S1 orbit raster if present, else fallback to country geometry."""
-    track_dir = BASE_DIR / country_code.upper() / f"orbit_{orbit_num}"
-    proc_dir = track_dir / "processed_raster"
+def _extract_active_s1_raster_footprint(s1_tif_path: Path, target_epsg: int = 4326) -> Optional[ogr.Geometry]:
+    """Extracts the active (non-nodata) footprint polygon from a Sentinel-1 stack using a fast 256x256 overview."""
+    try:
+        ds = gdal.Open(str(s1_tif_path))
+        if not ds:
+            return None
+        w = ds.RasterXSize
+        h = ds.RasterYSize
+        gt = ds.GetGeoTransform()
+        proj_wkt = ds.GetProjection()
+        nb = ds.RasterCount
 
-    if proc_dir.exists():
-        s1_tifs = list(proc_dir.glob("*_VH_VV*.tif"))
-        if s1_tifs:
-            ds = gdal.Open(str(s1_tifs[0]))
-            if ds:
-                gt = ds.GetGeoTransform()
-                w = ds.RasterXSize
-                h = ds.RasterYSize
-                proj_wkt = ds.GetProjection()
+        ov_w = max(128, min(256, w // 20))
+        ov_h = max(128, min(256, h // 20))
+        mask = np.zeros((ov_h, ov_w), dtype=np.uint8)
+        for b_idx in sorted(set([1, max(1, nb // 2), nb])):
+            arr = ds.GetRasterBand(b_idx).ReadAsArray(buf_xsize=ov_w, buf_ysize=ov_h)
+            if arr is not None:
+                mask |= ((arr != 0) & (~np.isnan(arr))).astype(np.uint8)
+        ds = None
 
-                min_x = gt[0]
-                max_x = gt[0] + w * gt[1]
-                max_y = gt[3]
-                min_y = gt[3] + h * gt[5]
+        if not np.any(mask):
+            return None
 
-                ring = ogr.Geometry(ogr.wkbLinearRing)
-                ring.AddPoint(min_x, min_y)
-                ring.AddPoint(max_x, min_y)
-                ring.AddPoint(max_x, max_y)
-                ring.AddPoint(min_x, max_y)
-                ring.AddPoint(min_x, min_y)
+        padded = np.pad(mask, 1, mode='edge')
+        dilated = (
+            padded[1:-1, 1:-1] | padded[:-2, 1:-1] | padded[2:, 1:-1] |
+            padded[1:-1, :-2] | padded[1:-1, 2:] | padded[:-2, :-2] |
+            padded[:-2, 2:] | padded[2:, :-2] | padded[2:, 2:]
+        )
 
-                poly = ogr.Geometry(ogr.wkbPolygon)
-                poly.AddGeometry(ring)
+        mem_drv = gdal.GetDriverByName('MEM')
+        mem_ds = mem_drv.Create('', ov_w, ov_h, 1, gdal.GDT_Byte)
+        ov_gt = (gt[0], gt[1] * w / ov_w, 0.0, gt[3], 0.0, gt[5] * h / ov_h)
+        mem_ds.SetGeoTransform(ov_gt)
+        mem_ds.SetProjection(proj_wkt)
+        mem_ds.GetRasterBand(1).WriteArray(dilated)
 
-                src_srs = osr.SpatialReference()
-                src_srs.ImportFromWkt(proj_wkt)
-                dst_srs = osr.SpatialReference()
-                dst_srs.ImportFromEPSG(4326)
+        src_srs = osr.SpatialReference()
+        src_srs.ImportFromWkt(proj_wkt)
+        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
-                src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-                dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        ogr_drv = ogr.GetDriverByName('MEM') or ogr.GetDriverByName('Memory')
+        ogr_ds = ogr_drv.CreateDataSource('mem_s1_fp')
+        ogr_lyr = ogr_ds.CreateLayer('fp', src_srs, ogr.wkbPolygon)
+        ogr_lyr.CreateField(ogr.FieldDefn('val', ogr.OFTInteger))
+        gdal.Polygonize(mem_ds.GetRasterBand(1), mem_ds.GetRasterBand(1), ogr_lyr, 0, [])
 
-                transform = osr.CoordinateTransformation(src_srs, dst_srs)
-                poly.Transform(transform)
-                ds = None
-                return poly
+        s1_geom = ogr.Geometry(ogr.wkbMultiPolygon)
+        for feat in ogr_lyr:
+            if feat.GetField('val') == 1:
+                g = feat.GetGeometryRef()
+                if g:
+                    s1_geom.AddGeometry(g.Clone())
+        ogr_ds = None
+        mem_ds = None
 
-    return get_country_geometry(country_code)
+        if s1_geom.IsEmpty():
+            return None
+
+        s1_geom = s1_geom.MakeValid().Buffer(200.0).SimplifyPreserveTopology(150.0).MakeValid().Buffer(0.0)
+        dst_srs = osr.SpatialReference()
+        dst_srs.ImportFromEPSG(target_epsg)
+        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        if not src_srs.IsSame(dst_srs):
+            ct = osr.CoordinateTransformation(src_srs, dst_srs)
+            s1_geom.Transform(ct)
+            s1_geom = s1_geom.MakeValid()
+        return s1_geom
+    except Exception:
+        return None
+
+
+def _query_s1_orbit_swath_from_cdse(country_geom_4326: ogr.Geometry, orbit_num: int) -> Optional[ogr.Geometry]:
+    """Queries CDSE OData for Sentinel-1 IW_GRDH_1S footprints of relativeOrbitNumber over the country."""
+    try:
+        env = country_geom_4326.GetEnvelope()
+        wkt = (
+            f"POLYGON(({env[0]:.4f} {env[2]:.4f}, {env[1]:.4f} {env[2]:.4f}, "
+            f"{env[1]:.4f} {env[3]:.4f}, {env[0]:.4f} {env[3]:.4f}, {env[0]:.4f} {env[2]:.4f}))"
+        )
+        flt = (
+            "Collection/Name eq 'SENTINEL-1' and "
+            "Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'productType' and att/OData.CSC.StringAttribute/Value eq 'IW_GRDH_1S') and "
+            f"Attributes/OData.CSC.IntegerAttribute/any(att:att/Name eq 'relativeOrbitNumber' and att/OData.CSC.IntegerAttribute/Value eq {int(orbit_num)}) and "
+            "ContentDate/Start gt 2024-06-01T00:00:00.000Z and ContentDate/Start lt 2024-06-25T00:00:00.000Z and "
+            f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt}')"
+        )
+        url = f"https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter={urllib.parse.quote(flt)}&$top=200"
+        req = urllib.request.Request(url, headers={"User-Agent": "AIML-CropMapper/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        swath_union = ogr.Geometry(ogr.wkbMultiPolygon)
+        for item in data.get("value", []):
+            fp = item.get("GeoFootprint")
+            if fp:
+                g = ogr.CreateGeometryFromJson(json.dumps(fp))
+                if g:
+                    g = g.MakeValid()
+                    gt = g.GetGeometryType() & ~ogr.wkb25Bit
+                    if gt == ogr.wkbPolygon:
+                        swath_union.AddGeometry(g)
+                    elif gt == ogr.wkbMultiPolygon:
+                        for i in range(g.GetGeometryCount()):
+                            swath_union.AddGeometry(g.GetGeometryRef(i).Clone())
+        if not swath_union.IsEmpty():
+            return swath_union.MakeValid().Buffer(0.0)
+    except Exception:
+        pass
+    return None
+
+
+def get_s1_orbit_extent_geometry(country_code: str, orbit_num: int, target_epsg: int = 4326) -> Optional[ogr.Geometry]:
+    """
+    Retrieves the active spatial footprint polygon for a specific S1 orbit clipped to the country's NUTS2 boundary.
+    Uses the S1 stack raster's active pixels when available, or queries the S1 relative orbit swath from CDSE.
+    """
+    c_up = country_code.upper()
+    country_geom = get_country_geometry(c_up, target_epsg=target_epsg)
+    track_dir = BASE_DIR / c_up / f"orbit_{orbit_num}"
+    candidate_dirs = [
+        track_dir / "1_input_stacks",
+        track_dir,
+        track_dir / "processed_raster",
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / c_up / f"orbit_{orbit_num}" / "1_input_stacks",
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / c_up / f"orbit_{orbit_num}" / "processed_raster",
+        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / c_up / f"orbit_{orbit_num}"
+    ]
+
+    for proc_dir in candidate_dirs:
+        if proc_dir.exists():
+            s1_tifs = (
+                list(proc_dir.glob("*_VH_VV*.tif")) +
+                list(proc_dir.glob("*Sigma0*.tif")) +
+                list(proc_dir.glob("S1_*_stack*.tif"))
+            )
+            if s1_tifs:
+                fp_geom = _extract_active_s1_raster_footprint(s1_tifs[0], target_epsg=target_epsg)
+                if fp_geom is not None and not fp_geom.IsEmpty():
+                    if country_geom is not None and not country_geom.IsEmpty():
+                        inter = fp_geom.Intersection(country_geom)
+                        if inter is not None and not inter.IsEmpty():
+                            return inter.MakeValid()
+                    return fp_geom
+
+    # Fallback when S1 raster does not exist on disk yet: intersect S1 relative orbit swath with country geometry
+    if country_geom is not None and not country_geom.IsEmpty():
+        country_4326 = country_geom if target_epsg == 4326 else get_country_geometry(c_up, target_epsg=4326)
+        if country_4326 is not None:
+            swath_4326 = _query_s1_orbit_swath_from_cdse(country_4326, orbit_num)
+            if swath_4326 is not None and not swath_4326.IsEmpty():
+                inter_4326 = swath_4326.Intersection(country_4326)
+                if inter_4326 is not None and not inter_4326.IsEmpty():
+                    inter_valid = inter_4326.MakeValid()
+                    if target_epsg != 4326:
+                        srs_4326 = osr.SpatialReference()
+                        srs_4326.ImportFromEPSG(4326)
+                        srs_4326.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                        dst_srs = osr.SpatialReference()
+                        dst_srs.ImportFromEPSG(target_epsg)
+                        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                        inter_valid.Transform(osr.CoordinateTransformation(srs_4326, dst_srs))
+                    return inter_valid.MakeValid()
+    return country_geom
 
 
 def parse_metadata_cloud_cover(safe_dir: Path) -> float:
@@ -484,11 +660,13 @@ def _query_cdse_odata_s2_scenes(
     start_date: datetime.date,
     end_date: datetime.date,
     target_tiles: Optional[List[str]] = None,
-    max_cloud_cover: float = 80.0
+    max_cloud_cover: float = 80.0,
+    target_geom: Optional[ogr.Geometry] = None
 ) -> Optional[List[Dict]]:
     """
     Fast pre-lookup of Sentinel-2 L2A scenes via the Copernicus Data Space (CDSE) OData Catalog API.
     Bypasses slow FUSE/s3fs directory scanning across 25,000+ global daily scenes on /eodata.
+    Filters scenes by spatial intersection with target_geom (orbit or country footprint) when provided.
     """
     try:
         start_str = start_date.strftime("%Y-%m-%dT00:00:00.000Z")
@@ -502,10 +680,19 @@ def _query_cdse_odata_s2_scenes(
             f"Attributes/OData.CSC.DoubleAttribute/any(att:att/Name eq 'cloudCover' and att/OData.CSC.DoubleAttribute/Value le {float(max_cloud_cover):.2f})"
         ]
 
-        if target_tiles:
+        if target_geom is not None and not target_geom.IsEmpty():
+            env = target_geom.GetEnvelope()  # minX, maxX, minY, maxY in EPSG:4326
+            wkt_poly = (
+                f"POLYGON(({env[0]:.4f} {env[2]:.4f}, {env[1]:.4f} {env[2]:.4f}, "
+                f"{env[1]:.4f} {env[3]:.4f}, {env[0]:.4f} {env[3]:.4f}, {env[0]:.4f} {env[2]:.4f}))"
+            )
+            filter_parts.append(f"OData.CSC.Intersects(area=geography'SRID=4326;{wkt_poly}')")
+        elif target_tiles:
             clean_tiles = sorted(set(t.upper().lstrip('T') for t in target_tiles))
             tile_clauses = [f"contains(Name,'_T{t}_')" for t in clean_tiles]
             filter_parts.append("(" + " or ".join(tile_clauses) + ")")
+
+        allowed_tile_set = set(t.upper().lstrip('T') for t in target_tiles) if target_tiles else None
 
         flt = " and ".join(filter_parts)
         next_url = (
@@ -524,6 +711,7 @@ def _query_cdse_odata_s2_scenes(
         # Deduplicate reprocessed versions of the exact same (tile, sensing_timestamp, orbit), keeping latest baseline/processing date
         dedup_map: Dict[Tuple[str, str, str], Dict] = {}
         repo_is_eodata = str(repo_path).startswith("/eodata")
+        intersecting_tiles_cache: Dict[str, bool] = {}
 
         for item in raw_items:
             name = item.get("Name", "")
@@ -535,6 +723,27 @@ def _query_cdse_odata_s2_scenes(
             tile_name, acq_date = extract_tile_and_date_from_safe_name(name)
             if not (start_date <= acq_date <= end_date):
                 continue
+
+            tile_upper = tile_name.upper().lstrip('T')
+            if allowed_tile_set is not None and tile_upper not in allowed_tile_set:
+                continue
+
+            if target_geom is not None and not target_geom.IsEmpty():
+                if tile_upper in intersecting_tiles_cache:
+                    if not intersecting_tiles_cache[tile_upper]:
+                        continue
+                else:
+                    fp = item.get("GeoFootprint")
+                    if fp:
+                        try:
+                            fp_geom = ogr.CreateGeometryFromJson(json.dumps(fp))
+                            if fp_geom is not None:
+                                intersects = bool(fp_geom.Intersects(target_geom))
+                                intersecting_tiles_cache[tile_upper] = intersects
+                                if not intersects:
+                                    continue
+                        except Exception:
+                            pass
 
             cloud_pct = 0.0
             for att in item.get("Attributes", []):
@@ -571,6 +780,9 @@ def _query_cdse_odata_s2_scenes(
 
         matched = list(dedup_map.values())
         matched.sort(key=lambda x: (x['date'], x['tile'], x['title']))
+        if matched:
+            found_tiles = sorted(set(m['tile'] for m in matched))
+            logging.info(f"OData spatial filter matched {len(found_tiles)} MGRS tiles: {found_tiles}")
         return matched
     except Exception as e:
         logging.warning(f"CDSE OData catalog pre-lookup failed ({e}); falling back to directory scan.")
@@ -582,16 +794,18 @@ def scan_creodias_for_dates(
     start_date: datetime.date,
     end_date: datetime.date,
     target_tiles: Optional[List[str]] = None,
-    max_cloud_cover: float = 80.0
+    max_cloud_cover: float = 80.0,
+    target_geom: Optional[ogr.Geometry] = None
 ) -> List[Dict]:
     tiles_key = tuple(sorted(set(t.upper().lstrip('T') for t in target_tiles))) if target_tiles else None
-    cache_key = (str(repo_path), str(start_date), str(end_date), tiles_key, max_cloud_cover)
+    geom_key = target_geom.ExportToWkt()[:120] if (target_geom is not None and not target_geom.IsEmpty()) else None
+    cache_key = (str(repo_path), str(start_date), str(end_date), tiles_key, max_cloud_cover, geom_key)
     if cache_key in _GLOBAL_SCAN_CACHE:
         cached_all = _GLOBAL_SCAN_CACHE[cache_key]
         logging.info(f"Loaded {len(cached_all)} matching S2 SAFE scenes from memory cache.")
         return list(cached_all)
 
-    logging.info(f"Scanning CREODIAS repository ({repo_path}) for dates {start_date} to {end_date} (Target MGRS tiles: {len(target_tiles) if target_tiles else 'ALL'})...")
+    logging.info(f"Scanning CREODIAS repository ({repo_path}) for dates {start_date} to {end_date} (Target MGRS tiles: {len(target_tiles) if target_tiles else 'AUTO-GEOM'})...")
     matched = []
     if not safe_exists(repo_path):
         logging.error(f"CREODIAS S2 path not found: {repo_path}")
@@ -603,7 +817,8 @@ def scan_creodias_for_dates(
         start_date=start_date,
         end_date=end_date,
         target_tiles=target_tiles,
-        max_cloud_cover=max_cloud_cover
+        max_cloud_cover=max_cloud_cover,
+        target_geom=target_geom
     )
     if odata_matched is not None and len(odata_matched) > 0:
         _GLOBAL_SCAN_CACHE[cache_key] = list(odata_matched)
@@ -665,59 +880,6 @@ def scan_creodias_for_dates(
     return matched
 
 
-def get_s1_orbit_extent_geometry(country_code: str, orbit_num: int) -> Optional[ogr.Geometry]:
-    track_dir = BASE_DIR / country_code.upper() / f"orbit_{orbit_num}"
-    candidate_dirs = [
-        track_dir / "1_input_stacks",
-        track_dir,
-        track_dir / "processed_raster",
-        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / f"orbit_{orbit_num}" / "1_input_stacks",
-        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / f"orbit_{orbit_num}" / "processed_raster",
-        Path(r"D:/AIML_CropMapper_Cloud/workingDir") / country_code.upper() / f"orbit_{orbit_num}"
-    ]
-
-    for proc_dir in candidate_dirs:
-        if proc_dir.exists():
-            s1_tifs = list(proc_dir.glob("*_VH_VV*.tif")) + list(proc_dir.glob("*Sigma0*.tif")) + list(proc_dir.glob("S1_*_stack*.tif"))
-            if s1_tifs:
-                ds = gdal.Open(str(s1_tifs[0]))
-                if ds:
-                    gt = ds.GetGeoTransform()
-                    w = ds.RasterXSize
-                    h = ds.RasterYSize
-                    proj_wkt = ds.GetProjection()
-
-                    min_x = gt[0]
-                    max_x = gt[0] + w * gt[1]
-                    max_y = gt[3]
-                    min_y = gt[3] + h * gt[5]
-
-                    ring = ogr.Geometry(ogr.wkbLinearRing)
-                    ring.AddPoint(min_x, min_y)
-                    ring.AddPoint(max_x, min_y)
-                    ring.AddPoint(max_x, max_y)
-                    ring.AddPoint(min_x, max_y)
-                    ring.AddPoint(min_x, min_y)
-
-                    poly = ogr.Geometry(ogr.wkbPolygon)
-                    poly.AddGeometry(ring)
-
-                    src_srs = osr.SpatialReference()
-                    src_srs.ImportFromWkt(proj_wkt)
-                    dst_srs = osr.SpatialReference()
-                    dst_srs.ImportFromEPSG(4326)
-
-                    src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-                    dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-
-                    transform = osr.CoordinateTransformation(src_srs, dst_srs)
-                    poly.Transform(transform)
-                    ds = None
-                    return poly
-
-    return get_country_geometry(country_code)
-
-
 def process_orbit_creodias_s2(
     country_code: str,
     orbit_num: int,
@@ -742,9 +904,15 @@ def process_orbit_creodias_s2(
         dest_track_s2 = shared_s2 if shared_s2.exists() else orbit_s2
     dest_track_s2.mkdir(parents=True, exist_ok=True)
 
+    orbit_geom = get_s1_orbit_extent_geometry(country_code, orbit_num, target_epsg=4326)
     if all_scenes is None:
         target_tiles = COUNTRY_MGRS_TILES.get(country_code, None)
-        all_scenes = scan_creodias_for_dates(S2_REPO_PATH, start_date, end_date, target_tiles=target_tiles, max_cloud_cover=max_cloud_cover)
+        all_scenes = scan_creodias_for_dates(
+            S2_REPO_PATH, start_date, end_date,
+            target_tiles=target_tiles,
+            max_cloud_cover=max_cloud_cover,
+            target_geom=orbit_geom
+        )
 
     if not all_scenes:
         logging.warning("No S2 products available to convert.")
@@ -817,8 +985,14 @@ def process_country_creodias_s2(
     logging.info(f" Date range: {start_date} to {end_date} | Cloud cover <= {max_cloud_cover}% | Workers: {max_workers}")
     logging.info(f"========================================================")
 
+    country_geom = get_country_geometry(country_code, target_epsg=4326)
     target_tiles = COUNTRY_MGRS_TILES.get(country_code, None)
-    all_scenes = scan_creodias_for_dates(S2_REPO_PATH, start_date, end_date, target_tiles=target_tiles, max_cloud_cover=max_cloud_cover)
+    all_scenes = scan_creodias_for_dates(
+        S2_REPO_PATH, start_date, end_date,
+        target_tiles=target_tiles,
+        max_cloud_cover=max_cloud_cover,
+        target_geom=country_geom
+    )
 
     if not all_scenes:
         logging.warning(f"No Sentinel-2 products found on CREODIAS for country {country_code}.")
