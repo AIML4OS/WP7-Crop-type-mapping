@@ -34,12 +34,12 @@ All output stacks are co-registered pixel-for-pixel to the **Sentinel-1** and **
 
 ### Stage 2: 12-day cycle mosaicking & `EPSG:3857` (`10.0 m`) alignment (`--stage 2`)
 * Performs along-track 1D vertical slit healing (`9 x 1` closing kernel), cross-seam radiometric median harmonization, and C1-continuous distance-squared feathering across overlapping frames.
-* Warps and clips each 12-day cycle mosaic to match the exact `EPSG:3857` (`10.0 m`) bounding box and pixel dimensions of the `Sentinel-1` / `Sentinel-2` reference stack (`1_input_stacks/`).
+* Warps each 12-day cycle mosaic to match the exact `EPSG:3857` (`10.0 m`) pixel grid and bounding box of the Sentinel-1 reference stack, clipping to the dissolved cutline of the active Sentinel-1 relative orbit footprint intersected with the country's official administrative boundary (`NUTS2_<COUNTRY>.shp` in `auxiliary_files/shapefiles_national_NUTS2/` or `shapefiles_nuts/`).
 
 ### Stage 3: Multi-temporal L-band BigTIFF stacking & pyramid overviews (`--stage 3`)
-* Stacks all 12-day cycle mosaics into a single multi-temporal `DEFLATE`-compressed BigTIFF (`4 * T` bands) with `[2, 4, 8, 16, 32, 64]` external pyramid overviews (`.ovr`).
-* Automatically warps any legacy cycle mosaics in native UTM projections on-the-fly to match the `EPSG:3857` (`10.0 m`) master grid.
-* Outputs `{COUNTRY}_orbit_{ORBIT}_{END_DATE}_{START_DATE}_NISAR_GCOV_L_timeseries.tif` (with instant hardlink aliases `*_NISAR_GCOV.tif` and `*_NISAR_timeseries.tif`).
+* Stacks all 12-day cycle mosaics into a single multi-temporal `DEFLATE`-compressed BigTIFF (`4 * T` bands) with `[2, 4, 8, 16, 32, 64]` pyramid overviews.
+* Automatically warps any legacy cycle mosaics on-the-fly to match the `EPSG:3857` (`10.0 m`) master grid.
+* Outputs `{COUNTRY}_orbit_{ORBIT}_{END_DATE}_{START_DATE}_NISAR_GCOV_L_timeseries.tif` (with instant hardlink aliases `*_NISAR_GCOV.tif`, `*_{START_DATE}_{END_DATE}_NISAR_GCOV_L_timeseries.tif`, and `*_NISAR_timeseries.tif` in `workingDirs/<COUNTRY>/orbit_<ORBIT>/1_input_stacks/`).
 
 ---
 

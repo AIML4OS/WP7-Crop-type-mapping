@@ -41,10 +41,10 @@ class MosaicNISAR:
     """
 
     BAND_SPECS = [
-        ("HHHH_gamma0.tif", ["HHHH_gamma0.tif", "*_HHHH*.tif"]),
-        ("HVHV_gamma0.tif", ["HVHV_gamma0.tif", "*_HVHV*.tif"]),
+        ("HHHH_gamma0.tif", ["HHHH_gamma0.tif", "*_HHHH*.tif", "*_VVVV*.tif", "*_HH*.tif", "*_VV*.tif"]),
+        ("HVHV_gamma0.tif", ["HVHV_gamma0.tif", "*_HVHV*.tif", "*_VHVH*.tif", "*_HV*.tif", "*_VH*.tif"]),
         ("RVI_L.tif", ["RVI_L.tif", "*_RVI*.tif"]),
-        ("ratio_HH_HV.tif", ["ratio_HH_HV.tif", "*_ratio*.tif"])
+        ("ratio_HH_HV.tif", ["ratio_HH_HV.tif", "*_ratio*.tif", "*_RATIO*.tif"])
     ]
 
     def __init__(
@@ -301,7 +301,7 @@ class MosaicNISAR:
                     if -140 <= ov_r < bridge_margin:
                         needed = (bridge_margin - ov_r) // 2 + 16
                         src_l = arr_l[r, max(0, l_end - needed - 8): max(0, l_end - 8)][::-1]
-                        if len(src_l) > 0 and l_end + 1 + len(src_l) < cols:
+                        if len(src_l) > 0 and l_end + 1 + len(src_l) <= cols:
                             arr_l[r, l_end + 1: l_end + 1 + len(src_l)] = src_l
                         src_r = arr_r[r, min(cols, r_start + 8): min(cols, r_start + 8 + needed)][::-1]
                         if len(src_r) > 0 and r_start - len(src_r) >= 0:
@@ -460,19 +460,25 @@ class MosaicNISAR:
             t_id = self._get_track_id(s_dir)
             scenes_by_track.setdefault(t_id, []).append(s_dir)
 
-        gt = (
-            target_extent[0],
-            (target_extent[2] - target_extent[0]) / max(cols, 1),
-            0.0,
-            target_extent[3],
-            0.0,
-            -(target_extent[3] - target_extent[1]) / max(rows, 1)
-        )
+        if "gt" in self.target_grid and self.target_grid["gt"] is not None:
+            gt = self.target_grid["gt"]
+        else:
+            gt = (
+                target_extent[0],
+                (target_extent[2] - target_extent[0]) / max(cols, 1),
+                0.0,
+                target_extent[3],
+                0.0,
+                -(target_extent[3] - target_extent[1]) / max(rows, 1)
+            )
 
-        srs_tgt = osr.SpatialReference()
-        srs_tgt.ImportFromEPSG(self.target_epsg)
-        srs_tgt.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-        proj = srs_tgt.ExportToWkt()
+        if "proj" in self.target_grid and self.target_grid["proj"]:
+            proj = self.target_grid["proj"]
+        else:
+            srs_tgt = osr.SpatialReference()
+            srs_tgt.ImportFromEPSG(self.target_epsg)
+            srs_tgt.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            proj = srs_tgt.ExportToWkt()
 
         aoi_mask_ds = self._rasterize_aoi_mask(cols, rows, gt, proj)
         aoi_mask_band = aoi_mask_ds.GetRasterBand(1) if aoi_mask_ds else None
@@ -522,6 +528,9 @@ class MosaicNISAR:
                     if t_ds is not None:
                         temp_vrts.append(vrt_path)
                         track_datasets.append(t_ds)
+
+                if not track_datasets:
+                    raise RuntimeError(f"Could not build valid track datasets for {out_band_name}")
 
                 driver = gdal.GetDriverByName("GTiff")
                 out_ds = driver.Create(
@@ -575,9 +584,18 @@ class MosaicNISAR:
                 logging.error(f"Seamless NISAR mosaicking failed for {out_band_name} ({e}), running direct GDAL Warp fallback...")
                 out_band = None
                 out_ds = None
+                if output_file.exists():
+                    try:
+                        output_file.unlink()
+                    except Exception:
+                        pass
+                fallback_opts_dict = dict(**warp_unclipped_options)
+                if self.cutline_shp and self.cutline_shp.exists():
+                    fallback_opts_dict["cutlineDSName"] = str(self.cutline_shp)
+                    fallback_opts_dict["cropToCutline"] = False
                 fallback_opts = gdal.WarpOptions(
-                    **warp_unclipped_options,
-                    creationOptions=["COMPRESS=DEFLATE", "BIGTIFF=YES", "TILED=YES"]
+                    **fallback_opts_dict,
+                    creationOptions=["COMPRESS=DEFLATE", "BIGTIFF=YES", "TILED=YES", "NUM_THREADS=ALL_CPUS"]
                 )
                 gdal.Warp(str(output_file), all_sources, options=fallback_opts)
                 if output_file.exists():
@@ -643,22 +661,30 @@ def stack_nisar_timeseries(
         t_epsg = int(target_grid.get("epsg", 3857))
         if t_cols > 0 and t_rows > 0:
             cols, rows = int(t_cols), int(t_rows)
-            gt = (
-                float(t_ext[0]),
-                (float(t_ext[2]) - float(t_ext[0])) / max(cols, 1),
-                0.0,
-                float(t_ext[3]),
-                0.0,
-                -(float(t_ext[3]) - float(t_ext[1])) / max(rows, 1)
-            )
-            srs_tgt = osr.SpatialReference()
-            srs_tgt.ImportFromEPSG(t_epsg)
-            srs_tgt.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-            proj = srs_tgt.ExportToWkt()
+            if "gt" in target_grid and target_grid["gt"] is not None:
+                gt = target_grid["gt"]
+            else:
+                gt = (
+                    float(t_ext[0]),
+                    (float(t_ext[2]) - float(t_ext[0])) / max(cols, 1),
+                    0.0,
+                    float(t_ext[3]),
+                    0.0,
+                    -(float(t_ext[3]) - float(t_ext[1])) / max(rows, 1)
+                )
+            if "proj" in target_grid and target_grid["proj"]:
+                proj = target_grid["proj"]
+            else:
+                srs_tgt = osr.SpatialReference()
+                srs_tgt.ImportFromEPSG(t_epsg)
+                srs_tgt.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                proj = srs_tgt.ExportToWkt()
 
+    copol_prefix = "NISAR_HHHH_dB" if convert_gamma0_to_db else "NISAR_HHHH"
+    crosspol_prefix = "NISAR_HVHV_dB" if convert_gamma0_to_db else "NISAR_HVHV"
     layer_defs = [
-        ("HHHH_gamma0.tif", "NISAR_HHHH_dB", True),
-        ("HVHV_gamma0.tif", "NISAR_HVHV_dB", True),
+        ("HHHH_gamma0.tif", copol_prefix, True),
+        ("HVHV_gamma0.tif", crosspol_prefix, True),
         ("RVI_L.tif", "NISAR_RVI_L", False),
         ("ratio_HH_HV.tif", "NISAR_RATIO", False)
     ]
@@ -679,7 +705,7 @@ def stack_nisar_timeseries(
         rows,
         total_bands,
         gdal.GDT_Float32,
-        options=["COMPRESS=DEFLATE", "PREDICTOR=3", "TILED=YES", "BIGTIFF=YES", "NUM_THREADS=ALL_CPUS"]
+        options=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=YES", "NUM_THREADS=ALL_CPUS"]
     )
     out_ds.SetGeoTransform(gt)
     out_ds.SetProjection(proj)
@@ -749,10 +775,6 @@ def stack_nisar_timeseries(
             band_idx += 1
 
     out_ds.FlushCache()
-    if build_overviews:
-        logging.info("Building multi-scale pyramid overviews [2, 4, 8, 16, 32, 64] on NISAR stack...")
-        gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
-        out_ds.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
     out_ds = None
 
     if output_stack_tif.exists():
@@ -761,6 +783,16 @@ def stack_nisar_timeseries(
         except Exception:
             pass
     tmp_tif.rename(output_stack_tif)
+
+    if build_overviews and output_stack_tif.exists():
+        logging.info(f"Building multi-scale pyramid overviews [2, 4, 8, 16, 32, 64] on {output_stack_tif.name}...")
+        ds_ovr = gdal.Open(str(output_stack_tif), gdal.GA_Update)
+        if ds_ovr is not None:
+            gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
+            gdal.SetConfigOption("GDAL_NUM_THREADS", "ALL_CPUS")
+            ds_ovr.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
+            ds_ovr.FlushCache()
+            ds_ovr = None
 
     if cleanup_mosaics and output_stack_tif.exists() and output_stack_tif.stat().st_size > 1024 * 1024:
         try:

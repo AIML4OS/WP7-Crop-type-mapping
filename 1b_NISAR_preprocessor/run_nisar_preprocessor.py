@@ -60,8 +60,14 @@ from nisar_asf_search import (
     AUX_DIR,
     BASE_DIR,
     FindNisarASF,
+    discover_country_orbits,
+    get_country_geometry,
+    get_country_shapefile,
+    get_s1_orbit_extent_geometry,
     get_s1_reference_grid,
-    load_country_or_belt_geometry
+    load_country_or_belt_geometry,
+    prepare_orbit_cutline_shapefile,
+    resolve_target_grid_and_cutline
 )
 from nisar_pipeline import CalculateTrackNISAR
 
@@ -79,18 +85,6 @@ def setup_logging():
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
-
-
-def discover_country_orbits(country_code: str) -> List[int]:
-    c_dir = BASE_DIR / country_code.upper()
-    if not c_dir.exists():
-        return []
-    found = []
-    for d in sorted(c_dir.glob("orbit_*")):
-        m = re.search(r"orbit_(\d+)", d.name)
-        if m and d.is_dir():
-            found.append(int(m.group(1)))
-    return sorted(list(set(found)))
 
 
 def load_nisar_config(config_path: Optional[Path] = None) -> dict:
@@ -118,7 +112,8 @@ def load_nisar_config(config_path: Optional[Path] = None) -> dict:
         "cycle_days": 12,
         "border_trim_pixels": 8,
         "blend_width_pixels": 350,
-        "min_aoi_coverage_pct": 50.0
+        "min_aoi_coverage_pct": 50.0,
+        "min_track_coverage_pct": 35.0
     }
 
 
@@ -134,7 +129,9 @@ class NISARPreprocessorPipeline:
         config_file: Optional[Path] = None,
         grouping_mode: Optional[str] = None,
         source: str = "auto",
-        overwrite: bool = False
+        overwrite: bool = False,
+        threads: int = 4,
+        keep_h5: bool = False
     ):
         self.country = country.upper()
         self.orbit = int(orbit) if orbit is not None else None
@@ -146,6 +143,10 @@ class NISARPreprocessorPipeline:
             self.config["grouping_mode"] = grouping_mode
         if overwrite:
             self.config["overwrite_existing"] = True
+        if keep_h5:
+            self.config["keep_intermediate_h5"] = True
+        if threads:
+            self.config["threads"] = int(threads)
 
         self.start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.date(2025, 2, 1)
         self.end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else datetime.date(2025, 10, 15)
@@ -162,29 +163,16 @@ class NISARPreprocessorPipeline:
         return None
 
     def _resolve_target_grid_and_cutline(self):
-        s1_grid = get_s1_reference_grid(self.track_dir)
-        country_info = load_country_or_belt_geometry(
-            self.country,
-            aux_dir=AUX_DIR,
-            target_epsg=int(self.config.get("target_epsg", 3857)),
-            pixel_res=float(self.config.get("pixel_resolution_meters", 10.0))
+        target_epsg = int(self.config.get("target_epsg", 3857))
+        pixel_res = float(self.config.get("pixel_resolution_meters", 10.0))
+        return resolve_target_grid_and_cutline(
+            country_code=self.country,
+            orbit_num=self.orbit,
+            track_dir=self.track_dir,
+            target_epsg=target_epsg,
+            pixel_res=pixel_res,
+            aux_dir=AUX_DIR
         )
-        if s1_grid is not None:
-            logging.info(
-                f"Matched Sentinel-1 reference grid: {s1_grid['ref_raster'].name} "
-                f"({s1_grid['size'][0]}x{s1_grid['size'][1]} px at {s1_grid['x_res']:.1f}m, EPSG:{s1_grid['epsg']})"
-            )
-            cutline_shp = country_info["cutline_shp"] if country_info else None
-            return s1_grid, cutline_shp
-
-        if country_info is not None:
-            logging.info(
-                f"Using Eurostat NUTS / country boundary grid for {self.country}: "
-                f"({country_info['size'][0]}x{country_info['size'][1]} px at 10.0m, EPSG:{country_info['epsg']})"
-            )
-            return country_info, country_info["cutline_shp"]
-
-        raise FileNotFoundError(f"Could not resolve S1 reference grid or country shapefile for {self.track}")
 
     def run(self, stage: str = "A"):
         logging.info(f"\n============================================================")
@@ -261,14 +249,31 @@ def interactive_wizard():
             orbit_val = int(orb_in)
     s_date = input(" Enter Start Date (YYYY-MM-DD) [2025-10-15]: ").strip() or "2025-10-15"
     e_date = input(" Enter End Date   (YYYY-MM-DD) [2026-09-15]: ").strip() or "2026-09-15"
+    source = input(" Enter Data Source ('auto', 'asf', 'local') [auto]: ").strip().lower() or "auto"
     stage = input(" Enter Stage ('A' for All, '1' Extract, '2' Mosaic, '3' Stack) [A]: ").strip().upper() or "A"
+    threads_in = input(" Enter Worker Threads [4]: ").strip()
+    threads_val = int(threads_in) if threads_in.isdigit() else 4
 
     if orbit_val is None and orbits:
         for o_num in orbits:
-            pipe = NISARPreprocessorPipeline(country=country, orbit=o_num, start_date=s_date, end_date=e_date)
+            pipe = NISARPreprocessorPipeline(
+                country=country,
+                orbit=o_num,
+                start_date=s_date,
+                end_date=e_date,
+                source=source,
+                threads=threads_val
+            )
             pipe.run(stage=stage)
     else:
-        pipe = NISARPreprocessorPipeline(country=country, orbit=orbit_val, start_date=s_date, end_date=e_date)
+        pipe = NISARPreprocessorPipeline(
+            country=country,
+            orbit=orbit_val,
+            start_date=s_date,
+            end_date=e_date,
+            source=source,
+            threads=threads_val
+        )
         pipe.run(stage=stage)
 
 
@@ -278,7 +283,7 @@ def main():
         description="Unified NISAR L-Band SAR (L2 GCOV) Preprocessor for AIML CropMapper Cloud.",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("-t", "--track", default=None, help="Track identifier (e.g. NL/orbit_88, PT/orbit_52)")
+    parser.add_argument("-t", "--track", default=None, help="Track identifier (e.g. NL/orbit_88, PT/orbit_52, NL_orbit_110)")
     parser.add_argument("-c", "--country", default=None, help="2-letter EU country code (e.g. NL, PT, PL, FR, DE)")
     parser.add_argument("-o", "--orbit", type=int, default=None, help="Relative S1 reference orbit number")
     parser.add_argument("-s", "--start_date", default=None, help="Start date (YYYY-MM-DD)")
@@ -286,6 +291,8 @@ def main():
     parser.add_argument("--source", default="auto", choices=["asf", "local", "auto"], help="Data source: 'asf' (NASA ASF DAAC), 'local' (/eodata/NISAR), or 'auto' (default)")
     parser.add_argument("--stage", default="A", choices=["A", "1", "2", "3", "a"], help="Stage to run: 'A' (all), '1' (extract), '2' (mosaic), '3' (stack)")
     parser.add_argument("--grouping_mode", default=None, choices=["cycle", "dekada", "date"], help="Temporal grouping mode (default: cycle [12-day NISAR orbital cycle])")
+    parser.add_argument("--threads", type=int, default=4, help="Number of worker threads (default: 4)")
+    parser.add_argument("--keep_h5", action="store_true", help="Retain raw .h5 files after extraction")
     parser.add_argument("-j", "--config", default=None, help="Path to config_nisar.json")
     parser.add_argument("-f", "--overwrite", action="store_true", help="Force overwrite of existing mosaics and stacks")
 
@@ -298,15 +305,36 @@ def main():
     country = args.country.upper() if args.country else None
     orbit = args.orbit
     if args.track:
-        norm_t = args.track.replace("\\", "/")
-        if "/" in norm_t:
-            parts = norm_t.split("/")
-            country = parts[0].upper()
-            m = re.search(r"(\d+)", parts[1])
-            if m:
-                orbit = int(m.group(1))
+        norm_t = args.track.replace("\\", "/").strip("/")
+        m = re.search(r"(?:^|/)([A-Za-z]{2})[/\-_](?:orbit[_-]?)?(\d+)(?:/|$)", norm_t, re.IGNORECASE)
+        if m:
+            if not country:
+                country = m.group(1).upper()
+            if orbit is None:
+                orbit = int(m.group(2))
         else:
-            country = norm_t.upper()
+            parts = [p for p in norm_t.split("/") if p]
+            if len(parts) >= 2:
+                m_orb = re.search(r"(\d+)", parts[-1])
+                if m_orb and orbit is None:
+                    orbit = int(m_orb.group(1))
+                if not country and len(parts[-2]) == 2 and parts[-2].isalpha():
+                    country = parts[-2].upper()
+            elif len(parts) == 1:
+                m_orb = re.search(r"([A-Za-z]{2})_orbit_(\d+)", parts[0], re.IGNORECASE)
+                if m_orb:
+                    if not country:
+                        country = m_orb.group(1).upper()
+                    if orbit is None:
+                        orbit = int(m_orb.group(2))
+                else:
+                    m_orb2 = re.search(r"(\d+)", parts[0])
+                    if m_orb2 and orbit is None:
+                        orbit = int(m_orb2.group(1))
+                    if not country:
+                        m_c = re.search(r"^([A-Za-z]{2})$", parts[0])
+                        if m_c:
+                            country = m_c.group(1).upper()
 
     if not country:
         parser.error("Either --track (-t) or --country (-c) must be specified.")
@@ -322,7 +350,9 @@ def main():
             config_file=cfg_path,
             grouping_mode=args.grouping_mode,
             source=args.source,
-            overwrite=args.overwrite
+            overwrite=args.overwrite,
+            threads=args.threads,
+            keep_h5=args.keep_h5
         )
         pipe.run(stage=args.stage)
     else:
@@ -337,7 +367,9 @@ def main():
                     config_file=cfg_path,
                     grouping_mode=args.grouping_mode,
                     source=args.source,
-                    overwrite=args.overwrite
+                    overwrite=args.overwrite,
+                    threads=args.threads,
+                    keep_h5=args.keep_h5
                 )
                 pipe.run(stage=args.stage)
         else:
@@ -349,7 +381,9 @@ def main():
                 config_file=cfg_path,
                 grouping_mode=args.grouping_mode,
                 source=args.source,
-                overwrite=args.overwrite
+                overwrite=args.overwrite,
+                threads=args.threads,
+                keep_h5=args.keep_h5
             )
             pipe.run(stage=args.stage)
 

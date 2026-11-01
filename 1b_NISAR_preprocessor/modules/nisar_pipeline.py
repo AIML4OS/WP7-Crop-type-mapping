@@ -140,8 +140,13 @@ class CalculateTrackNISAR:
                     span_days = (max(combo_dates) - min(combo_dates)).days
                     combos.append((round(cov, 2), len(combo), span_days, cov, combo))
 
-            combos.sort(key=lambda x: (-x[0], x[1], x[2]))
-            chosen = combos[0][4]
+            meeting_combos = [c for c in combos if c[3] >= min_aoi_cov]
+            if meeting_combos:
+                meeting_combos.sort(key=lambda x: (x[1], x[2], -x[3]))
+                chosen = meeting_combos[0][4]
+            else:
+                combos.sort(key=lambda x: (-x[3], x[1], x[2]))
+                chosen = combos[0][4]
             kept_imgs = []
             for t in chosen:
                 kept_imgs.extend([it[1] for it in by_track[t]])
@@ -180,7 +185,14 @@ class CalculateTrackNISAR:
     def _group_images(self, raw_list: List[Dict]) -> Dict[str, Dict]:
         mode = str(self.configuration.get("grouping_mode", "cycle")).lower()
         cycle_days = int(self.configuration.get("cycle_days", 12))
-        min_aoi_cov = float(self.configuration.get("min_aoi_coverage_pct", self.configuration.get("min_belt_coverage_pct", 50.0)))
+        is_orbit_track = self.track_dir.name.startswith("orbit_")
+        default_cov = 35.0 if is_orbit_track else 50.0
+        min_aoi_cov = float(
+            self.configuration.get(
+                "min_track_coverage_pct" if is_orbit_track else "min_aoi_coverage_pct",
+                default_cov
+            )
+        )
 
         dedup_map = {}
         for image in raw_list:
@@ -328,19 +340,41 @@ class CalculateTrackNISAR:
                     extracted_scene_dirs = existing_scenes
 
             if not extracted_scene_dirs:
-                for img in images:
-                    extractor = DownloadAndExtractGCOV(
-                        product=img,
-                        temp_dir=period_temp_dir,
-                        session=self.session,
-                        username=username,
-                        password=password,
-                        keep_intermediate_h5=keep_h5,
-                        border_trim_pixels=border_trim_px
-                    )
-                    tifs = extractor.process()
-                    if tifs:
-                        extracted_scene_dirs.append(tifs[0].parent)
+                threads = int(self.configuration.get("threads", 4))
+                if len(images) > 1 and threads > 1:
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    def _extract_single(img):
+                        extractor = DownloadAndExtractGCOV(
+                            product=img,
+                            temp_dir=period_temp_dir,
+                            session=self.session,
+                            username=username,
+                            password=password,
+                            keep_intermediate_h5=keep_h5,
+                            border_trim_pixels=border_trim_px
+                        )
+                        tifs = extractor.process()
+                        return tifs[0].parent if tifs else None
+
+                    max_workers = min(len(images), threads)
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        results = list(executor.map(_extract_single, images))
+                    extracted_scene_dirs = [r for r in results if r is not None]
+                else:
+                    for img in images:
+                        extractor = DownloadAndExtractGCOV(
+                            product=img,
+                            temp_dir=period_temp_dir,
+                            session=self.session,
+                            username=username,
+                            password=password,
+                            keep_intermediate_h5=keep_h5,
+                            border_trim_pixels=border_trim_px
+                        )
+                        tifs = extractor.process()
+                        if tifs:
+                            extracted_scene_dirs.append(tifs[0].parent)
 
             if stage_u == "1":
                 continue
@@ -381,19 +415,22 @@ class CalculateTrackNISAR:
         legacy_gcov_tif = self.dirs["stacks"] / f"{prefix}_{e_str}_{s_str}_NISAR_GCOV.tif"
         canonical_tif = self.dirs["stacks"] / f"{prefix}_NISAR_timeseries.tif"
         cleanup_mosaics = bool(self.configuration.get("cleanup_cycle_mosaics", False))
+        calib = str(self.configuration.get("calibration", "gamma0_db")).lower()
+        convert_to_db = bool(self.configuration.get("convert_to_db", True)) and ("linear" not in calib)
 
         stacked = stack_nisar_timeseries(
             mosaic_base_dir=self.dirs["mosaic"],
             output_stack_tif=out_stack_tif,
             target_grid=self.target_grid,
-            convert_gamma0_to_db=True,
+            convert_gamma0_to_db=convert_to_db,
             build_overviews=True,
             cleanup_mosaics=cleanup_mosaics
         )
 
         if stacked and stacked.exists():
             # Create canonical aliases in 1_input_stacks/
-            for alias_tif in (canonical_tif, legacy_gcov_tif):
+            sym_date_tif = self.dirs["stacks"] / f"{prefix}_{s_str}_{e_str}_NISAR_GCOV_L_timeseries.tif"
+            for alias_tif in (canonical_tif, legacy_gcov_tif, sym_date_tif):
                 if alias_tif.resolve() != stacked.resolve():
                     try:
                         if alias_tif.exists():

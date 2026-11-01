@@ -170,6 +170,17 @@ class DownloadAndExtractGCOV:
         x_res = (x_coords[-1] - x_coords[0]) / max(len(x_coords) - 1, 1)
         y_res = (y_coords[-1] - y_coords[0]) / max(len(y_coords) - 1, 1)
 
+        # Ensure standard North-up raster orientation for GIS & GDAL
+        if y_res > 0:
+            array = np.flipud(array)
+            y_coords = y_coords[::-1]
+            y_res = -y_res
+
+        if x_res < 0:
+            array = np.fliplr(array)
+            x_coords = x_coords[::-1]
+            x_res = -x_res
+
         top_left_x = x_coords[0] - (x_res / 2.0)
         top_left_y = y_coords[0] - (y_res / 2.0)
 
@@ -235,21 +246,75 @@ class DownloadAndExtractGCOV:
                 if grid_group is None:
                     raise ValueError(f"Could not locate GCOV frequency grid group in {h5_path.name}")
 
-                x_coords = grid_group["xCoordinates"][:]
-                y_coords = grid_group["yCoordinates"][:]
+                x_ds = grid_group.get("xCoordinates") or grid_group.get("xCoordinate") or grid_group.get("x")
+                y_ds = grid_group.get("yCoordinates") or grid_group.get("yCoordinate") or grid_group.get("y")
+                if x_ds is None or y_ds is None:
+                    for k in grid_group.keys():
+                        if k.lower() in ("xcoordinates", "xcoordinate", "x"):
+                            x_ds = grid_group[k]
+                        if k.lower() in ("ycoordinates", "ycoordinate", "y"):
+                            y_ds = grid_group[k]
+                if x_ds is None or y_ds is None:
+                    raise KeyError(f"Could not find x/y coordinate datasets in {h5_path.name}")
+                x_coords = x_ds[:]
+                y_coords = y_ds[:]
 
                 epsg = 4326
-                if "projection" in grid_group:
-                    proj_val = grid_group["projection"][()]
-                    if isinstance(proj_val, (int, np.integer)):
-                        epsg = int(proj_val)
-                    elif hasattr(grid_group["projection"], "attrs") and "epsg_code" in grid_group["projection"].attrs:
-                        epsg = int(grid_group["projection"].attrs["epsg_code"])
+                proj_ds = grid_group.get("projection") or grid_group.get("spatial_ref") or grid_group.get("crs") or grid_group.get("coordinate_system")
+                if proj_ds is not None:
+                    if hasattr(proj_ds, "attrs"):
+                        for k in ["epsg_code", "epsg", "spatial_epsg", "AUTHORITY"]:
+                            if k in proj_ds.attrs:
+                                try:
+                                    epsg = int(proj_ds.attrs[k])
+                                    break
+                                except Exception:
+                                    pass
+                    if epsg == 4326:
+                        try:
+                            val = proj_ds[()]
+                            if isinstance(val, (int, np.integer)):
+                                epsg = int(val)
+                            elif isinstance(val, (bytes, str)):
+                                val_str = val.decode() if isinstance(val, bytes) else val
+                                if val_str.isdigit():
+                                    epsg = int(val_str)
+                                elif "GEOGCS" in val_str or "PROJCS" in val_str:
+                                    srs_t = osr.SpatialReference()
+                                    if srs_t.ImportFromWkt(val_str) == 0:
+                                        auth = srs_t.GetAttrValue("AUTHORITY", 1)
+                                        if auth and auth.isdigit():
+                                            epsg = int(auth)
+                        except Exception:
+                            pass
+                if epsg == 4326 and hasattr(grid_group, "attrs"):
+                    for k in ["epsg_code", "epsg", "spatial_epsg"]:
+                        if k in grid_group.attrs:
+                            try:
+                                epsg = int(grid_group.attrs[k])
+                                break
+                            except Exception:
+                                pass
 
-                hh_name = "HHHH" if "HHHH" in grid_group else ("VVVV" if "VVVV" in grid_group else None)
-                hv_name = "HVHV" if "HVHV" in grid_group else ("VHVH" if "VHVH" in grid_group else None)
+                channel_pairs = [
+                    ("HHHH", "HVHV"),
+                    ("VVVV", "VHVH"),
+                    ("HH", "HV"),
+                    ("VV", "VH")
+                ]
+                hh_name, hv_name = None, None
+                for c1, c2 in channel_pairs:
+                    if c1 in grid_group and c2 in grid_group:
+                        hh_name, hv_name = c1, c2
+                        break
                 if hh_name is None or hv_name is None:
-                    raise KeyError(f"Could not find dual-pol channels (HHHH/HVHV or VVVV/VHVH) in {h5_path.name}")
+                    keys = list(grid_group.keys())
+                    hh_cand = [k for k in keys if "HH" in k.upper()]
+                    hv_cand = [k for k in keys if "HV" in k.upper() or "VH" in k.upper()]
+                    if hh_cand and hv_cand:
+                        hh_name, hv_name = hh_cand[0], hv_cand[0]
+                    else:
+                        raise KeyError(f"Could not find dual-pol channels in {h5_path.name}: {keys}")
 
                 raw_hh = grid_group[hh_name][:].astype(np.float32)
                 raw_hv = grid_group[hv_name][:].astype(np.float32)
