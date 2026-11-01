@@ -112,6 +112,8 @@ def load_country_or_belt_geometry(
         shp_candidates.append(Path(custom_shp))
 
     shp_candidates.extend([
+        aux_dir / "shapefiles_nuts" / c_upper / f"NUTS2_{c_upper}.shp",
+        aux_dir / "shapefiles_nuts" / c_upper / f"{c_upper}.shp",
         aux_dir / "shapefiles" / f"{c_upper}_borders_3857.shp",
         aux_dir / "shapefiles" / f"{c_upper}_3857.shp",
         aux_dir / "shapefiles" / f"{c_upper}.shp",
@@ -370,8 +372,9 @@ class FindNisarASF:
             if flight_direction and flight_direction.upper() != "ALL":
                 params["flightDirection"] = flight_direction.upper()
 
-            url = "https://api.daac.asf.alaska.edu/services/search/param?" + urllib.parse.urlencode(params)
-            req = urllib.request.Request(url, headers={"User-Agent": "AIML-CropMapper-Cloud/2.0"})
+            url = "https://api.daac.asf.alaska.edu/services/search/param"
+            post_data = urllib.parse.urlencode(params).encode("utf-8")
+            req = urllib.request.Request(url, data=post_data, headers={"User-Agent": "AIML-CropMapper-Cloud/2.0"})
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
 
