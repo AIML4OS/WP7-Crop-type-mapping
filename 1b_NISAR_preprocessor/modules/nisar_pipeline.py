@@ -23,7 +23,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from osgeo import ogr, osr
 
@@ -87,6 +87,15 @@ class CalculateTrackNISAR:
         return None
 
     def _filter_cycle_tracks(self, items: List, min_aoi_cov: float = 95.0) -> List[Dict]:
+        """
+        Selects the minimal, optimal set of tracks that covers the target AOI polygon.
+        Strictly enforces topological contiguity (overlapping swaths) so disjoint or
+        gap-separated tracks are never merged into an incomplete mosaic.
+        Prioritizes:
+        1. Highest AOI coverage (rounded to 2 decimal places).
+        2. Fewest tracks (minimizes spatial seams and track boundaries).
+        3. Shortest date span (maximizes temporal and phenological consistency).
+        """
         if not items:
             return []
 
@@ -126,10 +135,28 @@ class CalculateTrackNISAR:
                 t_geom[t] = u
                 t_dates[t] = (min(dates), max(dates))
 
+            def _is_contiguous(c_tracks: Tuple) -> bool:
+                if len(c_tracks) <= 1:
+                    return True
+                visited = {c_tracks[0]}
+                queue = [c_tracks[0]]
+                while queue:
+                    curr = queue.pop(0)
+                    for other in c_tracks:
+                        if other not in visited:
+                            if t_geom.get(curr) and t_geom.get(other) and t_geom[curr].Intersects(t_geom[other]):
+                                inter = t_geom[curr].Intersection(t_geom[other])
+                                if inter and not inter.IsEmpty() and inter.GetArea() > 1e-5:
+                                    visited.add(other)
+                                    queue.append(other)
+                return len(visited) == len(c_tracks)
+
             tracks = list(by_track.keys())
             combos = []
             for r in range(1, min(len(tracks) + 1, 7)):
                 for combo in combinations(tracks, r):
+                    if not _is_contiguous(combo):
+                        continue
                     u_combo = ogr.Geometry(ogr.wkbMultiPolygon)
                     combo_dates = []
                     for t in combo:
@@ -140,18 +167,27 @@ class CalculateTrackNISAR:
                     span_days = (max(combo_dates) - min(combo_dates)).days
                     combos.append((round(cov, 2), len(combo), span_days, cov, combo))
 
-            target_high_cov = 85.0
-            meeting_combos = [c for c in combos if c[3] >= target_high_cov]
-            if meeting_combos:
-                meeting_combos.sort(key=lambda x: (x[1], x[2], -x[3]))
-                chosen = meeting_combos[0][4]
-            else:
-                # If no single track achieves target coverage, maximize combined AOI coverage
-                combos.sort(key=lambda x: (-x[3], x[1], x[2]))
-                chosen = combos[0][4]
+            if not combos:
+                return [it[1] for it in items]
+
+            # Criteria ranking (adopting calculate_belts_nisar.py):
+            # 1) Maximum coverage rounded to 2 decimal places (-x[0], descending)
+            # 2) Fewest tracks (x[1], ascending): minimizes swath boundary seams
+            # 3) Shortest date span (x[2], ascending): maximizes temporal/phenological consistency
+            combos.sort(key=lambda x: (-x[0], x[1], x[2]))
+            chosen = combos[0][4]
+
             kept_imgs = []
             for t in chosen:
                 kept_imgs.extend([it[1] for it in by_track[t]])
+
+            dropped_tracks = [str(t) for t in tracks if t not in chosen]
+            if dropped_tracks:
+                logging.info(
+                    f"Selected optimal contiguous tracks: {list(chosen)} (coverage: {combos[0][0]:.2f}%) "
+                    f"for {self.track_dir.name}. Filtered out tracks: {dropped_tracks}"
+                )
+
             return kept_imgs
         except Exception as e:
             logging.warning(f"Could not calculate optimal NISAR track selection: {e}")
@@ -187,12 +223,10 @@ class CalculateTrackNISAR:
     def _group_images(self, raw_list: List[Dict]) -> Dict[str, Dict]:
         mode = str(self.configuration.get("grouping_mode", "cycle")).lower()
         cycle_days = int(self.configuration.get("cycle_days", 12))
-        is_orbit_track = self.track_dir.name.startswith("orbit_")
-        default_cov = 35.0 if is_orbit_track else 50.0
         min_aoi_cov = float(
             self.configuration.get(
-                "min_track_coverage_pct" if is_orbit_track else "min_aoi_coverage_pct",
-                default_cov
+                "min_aoi_coverage_pct",
+                self.configuration.get("min_belt_coverage_pct", 95.0)
             )
         )
 
@@ -249,13 +283,30 @@ class CalculateTrackNISAR:
                     filtered_imgs = [it[1] for it in items]
 
                 cov = self._calculate_items_aoi_coverage(filtered_imgs)
-                filtered_dates = sorted(list(set(it[0] for it in items)))
+
+                # Use acquisition dates of filtered images only
+                filtered_dates = []
+                for img in filtered_imgs:
+                    st = img.get("start_time", "")
+                    if isinstance(st, str) and "T" in st:
+                        d = datetime.datetime.strptime(st.split("T")[0], "%Y-%m-%d").date()
+                    elif isinstance(st, (datetime.date, datetime.datetime)):
+                        d = st if isinstance(st, datetime.date) else st.date()
+                    else:
+                        continue
+                    filtered_dates.append(d)
+
+                filtered_dates = sorted(list(set(filtered_dates)))
+                if not filtered_dates:
+                    filtered_dates = sorted(list(set(it[0] for it in items)))
+
                 folder_key = filtered_dates[0].strftime("%Y%m%d")
                 dates_str = ", ".join(d.strftime("%Y-%m-%d") for d in filtered_dates)
 
                 if cov < min_aoi_cov:
                     logging.warning(
-                        f"Skipping Cycle {c_idx} [{folder_key}]: AOI coverage is {cov:.1f}% (< {min_aoi_cov:.1f}%)."
+                        f"Skipping Cycle {c_idx} [Folder {folder_key}]: AOI coverage is only {cov:.1f}% "
+                        f"(below required {min_aoi_cov:.1f}% threshold for classification)."
                     )
                     continue
 
@@ -263,7 +314,7 @@ class CalculateTrackNISAR:
                     "images": filtered_imgs,
                     "cycle_num": c_idx,
                     "coverage_pct": cov,
-                    "description": f"Cycle {c_idx} [{folder_key}] (coverage: {cov:.1f}%, dates: {dates_str})"
+                    "description": f"Cycle {c_idx} [Folder {folder_key}] (coverage: {cov:.1f}%, dates: {dates_str})"
                 }
         elif mode == "dekada":
             dekada_buckets = {}
@@ -276,11 +327,16 @@ class CalculateTrackNISAR:
                 imgs = [it[1] for it in items]
                 cov = self._calculate_items_aoi_coverage(imgs)
                 if cov < min_aoi_cov:
+                    logging.warning(
+                        f"Skipping Dekada {d_key}: AOI coverage is only {cov:.1f}% "
+                        f"(below required {min_aoi_cov:.1f}% threshold for classification)."
+                    )
                     continue
+                unique_dates = sorted(list(set(it[0].strftime("%Y-%m-%d") for it in items)))
                 grouped_result[d_key] = {
                     "images": imgs,
                     "coverage_pct": cov,
-                    "description": f"Dekada {d_key} (coverage: {cov:.1f}%)"
+                    "description": f"Dekada {d_key} (coverage: {cov:.1f}%, dates: {', '.join(unique_dates)})"
                 }
         else:
             date_buckets = {}

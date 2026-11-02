@@ -112,7 +112,7 @@ def load_nisar_config(config_path: Optional[Path] = None) -> dict:
         "cycle_days": 12,
         "border_trim_pixels": 8,
         "blend_width_pixels": 350,
-        "min_aoi_coverage_pct": 50.0,
+        "min_aoi_coverage_pct": 95.0,
         "min_track_coverage_pct": 35.0
     }
 
