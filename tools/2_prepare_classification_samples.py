@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-3_prepare_classification_samples.py
+2_prepare_classification_samples.py
 ===================================
 Universal Agricultural Crop Sample Point Generator from LPIS/Cadastral Vector Databases.
 
@@ -16,13 +16,13 @@ Features:
 
 Usage examples:
   # Netherlands (NL BRP 2026 dataset - 18 classes):
-  python tools/3_prepare_classification_samples.py -c NL --input auxiliary_files/shapefiles_samples/NL/gewaspercelen_concept_2026.gpkg --crop_col gewas --max_samples_per_class 2000
+  python tools/2_prepare_classification_samples.py -c NL --input auxiliary_files/shapefiles_samples/NL/gewaspercelen_concept_2026.gpkg --crop_col gewas --max_samples_per_class 2000
 
   # Poland (PL ARiMR dataset):
-  python tools/3_prepare_classification_samples.py -c PL --input path/to/arimr.shp --crop_col CROP_NAME --max_samples_per_class 3000
+  python tools/2_prepare_classification_samples.py -c PL --input path/to/arimr.shp --crop_col CROP_NAME --max_samples_per_class 3000
 
   # Portugal (PT LPIS dataset):
-  python tools/3_prepare_classification_samples.py -c PT --input path/to/isip.shp --crop_col CATEGORIA --min_area_ha 0.3
+  python tools/2_prepare_classification_samples.py -c PT --input path/to/isip.shp --crop_col CATEGORIA --min_area_ha 0.3
 """
 
 import argparse

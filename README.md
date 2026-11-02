@@ -574,11 +574,12 @@ Located in `2_classifier/`, this tool combines multiple single-orbit classificat
 
 Located in `tools/`, these standalone command-line scripts assist in preparing auxiliary datasets:
 
-* `1_download_nuts_boundaries.py`: Downloads GISCO NUTS administrative boundaries from Eurostat in GeoJSON and Shapefile formats.
-* `2_build_agricultural_mask.py`: Generates standardized high-resolution cropland masks (`EPSG:3857`, 10 m) from national LPIS parcel vectors or Copernicus CLMS/HRL raster layers.
-* `3_prepare_classification_samples.py`: Extracts point ground truth samples (`samples.shp`) from national agricultural parcel databases (e.g., BRP in the Netherlands, ARiMR in Poland, ISIP in Portugal).
-* `4_generate_crop_priors.py`: Calculates statistical real-world crop acreage proportions for Bayesian prior calibration (`priors.json`).
-* `5_build_raster_overviews.py`: Universal multi-scale pyramid overviews builder (`[2, 4, 8, 16, 32, 64]`) with LZW/DEFLATE compression for instant QGIS/ArcGIS rendering.
+* `1_download_nuts_boundaries.py`: Downloads GISCO NUTS administrative boundaries from Eurostat in GeoJSON and Shapefile formats into `auxiliary_files/shapefiles_nuts/`.
+* `2_prepare_classification_samples.py`: High-performance streaming SQL extractor generating interior point training samples (`samples.shp`) and class priors from national parcel databases (e.g. Dutch BRP 2026, Polish ARiMR, Portuguese ISIP) with adaptive negative buffering.
+* `3_build_raster_overviews.py`: Universal multi-scale pyramid overviews builder (`[2, 4, 8, 16, 32, 64]`) with LZW/DEFLATE compression for instant QGIS/ArcGIS rendering.
+
+> [!NOTE]
+> Standalone agricultural raster masking and static crop prior generators have been superseded by native classifier capabilities: Stage 2 `--seg_mode lpis` automatically rasterizes and masks parcel geometries per orbit on-the-fly, while `classifier_mlpxgb_presto.py` dynamically computes per-orbit Bayesian class priors from local training distributions.
 
 ---
 
@@ -1022,10 +1023,8 @@ AIML_CropMapper_Cloud/
 │   └── Archive_scripts/                 # Frozen historical archive (read-only)
 ├── tools/                               # Standalone preparation utilities
 │   ├── 1_download_nuts_boundaries.py    # GISCO NUTS boundaries downloader
-│   ├── 2_build_agricultural_mask.py     # Cropland mask builder
-│   ├── 3_prepare_classification_samples.py # Ground truth sample extractor
-│   ├── 4_generate_crop_priors.py        # Bayesian crop acreage priors calculator
-│   └── 5_build_raster_overviews.py      # Universal GDAL pyramid overviews generator
+│   ├── 2_prepare_classification_samples.py # Ground truth sample & priors generator
+│   └── 3_build_raster_overviews.py      # Universal GDAL pyramid overviews generator
 ├── auxiliary_files/                     # Auxiliary data
 │   ├── raster_files/AgriMasks/{COUNTRY}/# High-resolution agricultural masks & LPIS
 │   ├── shapefiles_nuts/                 # Downloaded GISCO NUTS boundaries
@@ -1107,7 +1106,7 @@ Edit `gpt.vmoptions` in your SNAP installation `bin/` directory:
 ### 4. High disk I/O latency when opening large BigTIFF rasters
 Run the pyramid overviews utility on your output rasters to enable smooth zooming:
 ```powershell
-python tools/5_build_raster_overviews.py -i workingDirs/NL/orbit_88/1_input_stacks/NL_orbit_88_S2_timeseries.tif
+python tools/3_build_raster_overviews.py -i workingDirs/NL/orbit_37/1_input_stacks/NL_orbit_37_S2_timeseries.tif
 ```
 
 ---

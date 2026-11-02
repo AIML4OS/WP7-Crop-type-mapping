@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 """
-5_build_raster_overviews.py - Universal High-Performance GDAL Pyramid/Overviews Generator.
+3_build_raster_overviews.py - Universal High-Performance GDAL Pyramid/Overviews Generator.
 
 Generates compressed (LZW) multiscale pyramid overviews for massive GeoTIFF stacks,
 Sentinel-1/2 rasters, and classification maps so they render instantaneously in QGIS / ArcGIS.
 
 Usage examples:
-  python tools/5_build_raster_overviews.py -i workingDir/NL/orbit_88/processed_raster/NL_orbit_88_S2_timeseries.tif
-  python tools/5_build_raster_overviews.py -d workingDir/NL/orbit_88/processed_raster/
-  python tools/5_build_raster_overviews.py -c NL
+  python tools/3_build_raster_overviews.py -i workingDir/NL/orbit_88/processed_raster/NL_orbit_88_S2_timeseries.tif
+  python tools/3_build_raster_overviews.py -d workingDir/NL/orbit_88/processed_raster/
+  python tools/3_build_raster_overviews.py -c NL
 """
 
 import argparse
