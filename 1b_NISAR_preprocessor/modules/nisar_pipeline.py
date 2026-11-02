@@ -351,7 +351,7 @@ class CalculateTrackNISAR:
                     def _extract_single(item):
                         idx, img = item
                         if idx > 0:
-                            time.sleep(min(idx * 2.0, 6.0))
+                            time.sleep(min(idx * 3.5, 12.0))
                         try:
                             extractor = DownloadAndExtractGCOV(
                                 product=img,

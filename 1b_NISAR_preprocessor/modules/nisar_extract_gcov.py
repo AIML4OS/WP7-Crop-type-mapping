@@ -318,7 +318,7 @@ class DownloadAndExtractGCOV:
             if token:
                 req_headers["Authorization"] = f"Bearer {token}"
 
-            logging.info(f"Direct TEA streaming download from {url}...")
+            logging.info(f"Connecting to NASA Earthdata Cloud for {dest_path.name}...")
             redirect_url = None
             max_tea_retries = 8
             for attempt in range(max_tea_retries):
@@ -335,13 +335,13 @@ class DownloadAndExtractGCOV:
                         break
                     elif r.status_code in (400, 429, 500, 502, 503, 504):
                         sleep_s = min(2.0 * (attempt + 1), 15.0)
-                        logging.info(f"TEA endpoint warming/retry for {dest_path.name} (HTTP {r.status_code}); retrying in {sleep_s:.1f}s...")
+                        logging.debug(f"NASA TEA endpoint warming/retry for {dest_path.name} (status {r.status_code}); retrying in {sleep_s:.1f}s...")
                         time.sleep(sleep_s)
                     else:
-                        logging.warning(f"Unexpected HTTP status {r.status_code} from TEA: {r.text[:200]}")
+                        logging.debug(f"Unexpected status {r.status_code} from TEA: {r.text[:200]}")
                         time.sleep(2)
                 except Exception as e:
-                    logging.warning(f"TEA download attempt {attempt+1} exception: {e}")
+                    logging.debug(f"TEA download attempt {attempt+1} exception: {e}")
                     time.sleep(2)
 
             if not redirect_url:
