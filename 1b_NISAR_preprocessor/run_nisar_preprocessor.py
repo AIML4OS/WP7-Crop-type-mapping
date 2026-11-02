@@ -152,14 +152,65 @@ class NISARPreprocessorPipeline:
         self.end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else datetime.date(2025, 10, 15)
 
     def _authenticate_earthdata(self):
+        token = os.environ.get("EARTHDATA_TOKEN") or self.config.get("earthdata_token")
         username = os.environ.get("EARTHDATA_USERNAME") or self.config.get("earthdata_username")
         password = os.environ.get("EARTHDATA_PASSWORD") or self.config.get("earthdata_password")
-        if HAS_ASF and username and password and "YOUR_" not in username:
+
+        extended_domains = [
+            "asf.alaska.edu",
+            "earthdata.nasa.gov",
+            "earthdatacloud.nasa.gov",
+            "nasa.gov",
+            "alaska.edu"
+        ]
+
+        if not HAS_ASF:
+            logging.warning("asf_search package not installed. Cannot initialize NASA Earthdata session.")
+            return None
+
+        # 1. Direct Bearer token authentication
+        if token and "YOUR_" not in token:
+            try:
+                logging.info("Authenticating with NASA Earthdata using provided Bearer token...")
+                session = asf.ASFSession(auth_domains=extended_domains)
+                session.auth_with_token(token)
+                session.token = token
+                self.config["earthdata_token"] = token
+                logging.info("Successfully authenticated NASA Earthdata session with Bearer token.")
+                return session
+            except Exception as e:
+                logging.warning(f"NASA Earthdata token authentication failed: {e}")
+
+        # 2. Username/Password authentication
+        if username and password and "YOUR_" not in username:
+            # Step 2a: Retrieve EDL Bearer token via /api/users/find_or_create_token
+            # This directly sets Authorization: Bearer <token> on trusted domains and avoids
+            # the known cumulus.asf.alaska.edu asf-urs cookie HTTP 400 error.
+            try:
+                from requests.auth import HTTPBasicAuth
+                init_session = asf.ASFSession()
+                init_session.auth = HTTPBasicAuth(username, password)
+                retrieved_token = init_session._get_urs_access_token()
+                init_session.auth = None
+                if retrieved_token:
+                    session = asf.ASFSession(auth_domains=extended_domains)
+                    session.auth_with_token(retrieved_token)
+                    session.token = retrieved_token
+                    self.config["earthdata_token"] = retrieved_token
+                    logging.info(f"Successfully authenticated NASA Earthdata as user: {username} (EDL Bearer token active)")
+                    return session
+            except Exception as e:
+                logging.warning(f"Direct EDL Bearer token retrieval encountered issue ({e}); attempting auth_with_creds...")
+
+            # Step 2b: Standard auth_with_creds fallback
             try:
                 logging.info(f"Authenticating with NASA Earthdata as user: {username}")
-                return asf.ASFSession().auth_with_creds(username, password)
+                session = asf.ASFSession(auth_domains=extended_domains)
+                session.auth_with_creds(username, password)
+                return session
             except Exception as e:
                 logging.warning(f"NASA Earthdata asf_search session auth warning: {e}")
+
         return None
 
     def _resolve_target_grid_and_cutline(self):

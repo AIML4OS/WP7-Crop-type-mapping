@@ -317,6 +317,8 @@ class CalculateTrackNISAR:
         username = self.configuration.get("earthdata_username")
         password = self.configuration.get("earthdata_password")
 
+        token = getattr(self.session, "token", None) or self.configuration.get("earthdata_token")
+
         for period_key, period_info in self.images_by_period.items():
             date_str = period_key
             images = period_info["images"]
@@ -345,17 +347,22 @@ class CalculateTrackNISAR:
                     from concurrent.futures import ThreadPoolExecutor
 
                     def _extract_single(img):
-                        extractor = DownloadAndExtractGCOV(
-                            product=img,
-                            temp_dir=period_temp_dir,
-                            session=self.session,
-                            username=username,
-                            password=password,
-                            keep_intermediate_h5=keep_h5,
-                            border_trim_pixels=border_trim_px
-                        )
-                        tifs = extractor.process()
-                        return tifs[0].parent if tifs else None
+                        try:
+                            extractor = DownloadAndExtractGCOV(
+                                product=img,
+                                temp_dir=period_temp_dir,
+                                session=self.session,
+                                token=token,
+                                username=username,
+                                password=password,
+                                keep_intermediate_h5=keep_h5,
+                                border_trim_pixels=border_trim_px
+                            )
+                            tifs = extractor.process()
+                            return tifs[0].parent if tifs else None
+                        except Exception as e:
+                            logging.error(f"Scene extraction exception for {img.get('title')}: {e}")
+                            return None
 
                     max_workers = min(len(images), threads)
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -363,18 +370,22 @@ class CalculateTrackNISAR:
                     extracted_scene_dirs = [r for r in results if r is not None]
                 else:
                     for img in images:
-                        extractor = DownloadAndExtractGCOV(
-                            product=img,
-                            temp_dir=period_temp_dir,
-                            session=self.session,
-                            username=username,
-                            password=password,
-                            keep_intermediate_h5=keep_h5,
-                            border_trim_pixels=border_trim_px
-                        )
-                        tifs = extractor.process()
-                        if tifs:
-                            extracted_scene_dirs.append(tifs[0].parent)
+                        try:
+                            extractor = DownloadAndExtractGCOV(
+                                product=img,
+                                temp_dir=period_temp_dir,
+                                session=self.session,
+                                token=token,
+                                username=username,
+                                password=password,
+                                keep_intermediate_h5=keep_h5,
+                                border_trim_pixels=border_trim_px
+                            )
+                            tifs = extractor.process()
+                            if tifs:
+                                extracted_scene_dirs.append(tifs[0].parent)
+                        except Exception as e:
+                            logging.error(f"Scene extraction exception for {img.get('title')}: {e}")
 
             if stage_u == "1":
                 continue
@@ -392,6 +403,8 @@ class CalculateTrackNISAR:
                 )
                 mosaic.run_mosaic()
                 shutil.rmtree(period_temp_dir, ignore_errors=True)
+            else:
+                logging.warning(f"No valid scenes extracted for {desc}. Skipping mosaic.")
 
     def stage_3_stack_timeseries(self, start_date: Optional[datetime.date] = None, end_date: Optional[datetime.date] = None) -> Optional[Path]:
         date_dirs = sorted([

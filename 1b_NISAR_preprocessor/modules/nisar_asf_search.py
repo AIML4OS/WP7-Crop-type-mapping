@@ -1005,6 +1005,8 @@ class FindNisarASF:
                     title = props.get("sceneName") or props.get("fileID") or props.get("fileName") or ""
                     if "_SHSH_" in title or "_SVSV_" in title:
                         continue
+                    if session:
+                        res.session = session
                     products.append({
                         "title": title,
                         "start_time": props.get("startTime"),
@@ -1014,7 +1016,8 @@ class FindNisarASF:
                         "flight_direction": props.get("flightDirection"),
                         "path_number": props.get("pathNumber"),
                         "geometry": getattr(res, "geometry", None),
-                        "asf_product": res
+                        "asf_product": res,
+                        "token": getattr(session, "token", None) if session else None
                     })
                 logging.info(f"Found {len(products)} NISAR granules via asf_search.")
                 return products

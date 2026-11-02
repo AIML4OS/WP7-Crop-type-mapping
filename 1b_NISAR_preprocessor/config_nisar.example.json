@@ -1,6 +1,7 @@
 {
   "earthdata_username": "YOUR_NASA_EARTHDATA_USERNAME",
   "earthdata_password": "YOUR_NASA_EARTHDATA_PASSWORD",
+  "earthdata_token": "OPTIONAL_EARTHDATA_BEARER_TOKEN",
   "working_directory": "../workingDirs",
   "auxiliary_directory": "../auxiliary_files",
   "local_nisar_repository": "/eodata/NISAR",

@@ -47,6 +47,7 @@ class DownloadAndExtractGCOV:
         product: Dict,
         temp_dir: Path,
         session=None,
+        token: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
         keep_intermediate_h5: bool = False,
@@ -56,6 +57,7 @@ class DownloadAndExtractGCOV:
         self.temp_dir = Path(temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.session = session
+        self.token = token or getattr(session, "token", None) or product.get("token")
         self.username = username
         self.password = password
         self.keep_intermediate_h5 = keep_intermediate_h5
@@ -207,23 +209,64 @@ class DownloadAndExtractGCOV:
         ds = None
 
     def _download_h5_fallback(self, url: str, dest_path: Path) -> Optional[Path]:
-        """Downloads HDF5 archive from NASA Earthdata URS using standard HTTP Basic Auth + CookieJar."""
+        """
+        Downloads HDF5 archive from NASA Earthdata Cloud / ASF DAAC using requests streaming,
+        supporting EDL Bearer token authorization and HTTP basic auth with redirect preservation.
+        """
+        import requests
+        temp_part = dest_path.with_suffix(f"{dest_path.suffix}.part")
         try:
-            password_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-            if self.username and self.password:
-                password_mgr.add_password(None, "https://urs.earthdata.nasa.gov", self.username, self.password)
-                password_mgr.add_password(None, url, self.username, self.password)
-            cookie_jar = http.cookiejar.CookieJar()
-            opener = urllib.request.build_opener(
-                urllib.request.HTTPBasicAuthHandler(password_mgr),
-                urllib.request.HTTPCookieProcessor(cookie_jar)
-            )
-            req = urllib.request.Request(url, headers={"User-Agent": "AIML-CropMapper-Cloud/2.0"})
-            with opener.open(req, timeout=300) as resp, open(dest_path, "wb") as out_f:
-                shutil.copyfileobj(resp, out_f, length=16 * 1024 * 1024)
-            return dest_path if dest_path.exists() and dest_path.stat().st_size > 1024 else None
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            token = self.token
+            if not token and self.username and self.password and "YOUR_" not in self.username:
+                try:
+                    tok_resp = requests.post(
+                        "https://urs.earthdata.nasa.gov/api/users/find_or_create_token",
+                        auth=(self.username, self.password),
+                        timeout=30
+                    )
+                    if tok_resp.status_code == 200:
+                        token = tok_resp.json().get("access_token")
+                        self.token = token
+                except Exception:
+                    pass
+
+            req_session = self.session if self.session is not None else requests.Session()
+            req_headers = {"User-Agent": "AIML-CropMapper-Cloud/2.0"}
+            if token:
+                req_headers["Authorization"] = f"Bearer {token}"
+
+            auth = (self.username, self.password) if (not token and self.username and self.password) else None
+
+            logging.info(f"Fallback streaming download from {url}...")
+            with req_session.get(url, headers=req_headers, auth=auth, stream=True, allow_redirects=True, timeout=300) as resp:
+                if resp.status_code != 200:
+                    logging.error(f"HTTP fallback download failed for {url}: HTTP {resp.status_code}")
+                    return None
+
+                first_chunk = True
+                with open(temp_part, "wb") as out_f:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if first_chunk:
+                            first_chunk = False
+                            if len(chunk) >= 8 and chunk[:8] != b"\x89HDF\r\n\x1a\n":
+                                logging.warning(f"Downloaded stream for {url} missing HDF5 header: {chunk[:20]}")
+                        out_f.write(chunk)
+
+            if temp_part.exists() and temp_part.stat().st_size > 1024:
+                temp_part.replace(dest_path)
+                return dest_path
+            else:
+                if temp_part.exists():
+                    temp_part.unlink()
+                return None
         except Exception as e:
-            logging.error(f"HTTP download failed for {url}: {e}")
+            logging.error(f"HTTP fallback download exception for {url}: {e}")
+            if temp_part.exists():
+                try:
+                    temp_part.unlink()
+                except Exception:
+                    pass
             return None
 
     def _read_h5_grids(self, h5_path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
@@ -377,15 +420,23 @@ class DownloadAndExtractGCOV:
                 logging.info(f"Reading local NISAR HDF5 archive: {h5_path.name}")
             else:
                 logging.info(f"Downloading NISAR granule: {title}")
+                expected_h5 = self.temp_dir / f"{title}.h5"
                 if asf_prod is not None:
-                    download_results = asf_prod.download(path=str(self.temp_dir), session=self.session)
-                    if download_results:
-                        h5_path = Path(download_results)
+                    try:
+                        p_fn = asf_prod.properties.get("fileName")
+                        asf_prod.download(path=str(self.temp_dir), session=self.session)
+                        if expected_h5.exists() and expected_h5.stat().st_size > 1024:
+                            h5_path = expected_h5
+                        elif p_fn and (self.temp_dir / p_fn).exists() and (self.temp_dir / p_fn).stat().st_size > 1024:
+                            h5_path = self.temp_dir / p_fn
+                    except Exception as e:
+                        logging.warning(f"asf_search download failed for {title} ({e}); trying fallback download...")
+
                 if (h5_path is None or not h5_path.exists()) and self.product.get("url"):
-                    target_h5 = self.temp_dir / f"{title}.h5"
-                    h5_path = self._download_h5_fallback(self.product["url"], target_h5)
+                    h5_path = self._download_h5_fallback(self.product["url"], expected_h5)
+
                 if h5_path is None or not h5_path.exists():
-                    candidates = list(self.temp_dir.glob(f"*{title}*.h5"))
+                    candidates = [f for f in self.temp_dir.glob(f"*{title}*.h5") if f.stat().st_size > 1024]
                     if candidates:
                         h5_path = candidates[0]
 
