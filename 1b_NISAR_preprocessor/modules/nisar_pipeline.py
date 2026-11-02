@@ -140,11 +140,13 @@ class CalculateTrackNISAR:
                     span_days = (max(combo_dates) - min(combo_dates)).days
                     combos.append((round(cov, 2), len(combo), span_days, cov, combo))
 
-            meeting_combos = [c for c in combos if c[3] >= min_aoi_cov]
+            target_high_cov = 85.0
+            meeting_combos = [c for c in combos if c[3] >= target_high_cov]
             if meeting_combos:
                 meeting_combos.sort(key=lambda x: (x[1], x[2], -x[3]))
                 chosen = meeting_combos[0][4]
             else:
+                # If no single track achieves target coverage, maximize combined AOI coverage
                 combos.sort(key=lambda x: (-x[3], x[1], x[2]))
                 chosen = combos[0][4]
             kept_imgs = []
