@@ -80,7 +80,7 @@ class CalculateTrackNISAR:
 
     def _get_aoi_geom_4326(self) -> Optional[ogr.Geometry]:
         if "geom_4326" in self.target_grid and self.target_grid["geom_4326"] is not None:
-            return self.target_grid["geom_4326"]
+            return self.target_grid["geom_4326"].Clone()
         wkt = self.target_grid.get("wkt_4326")
         if wkt:
             return ogr.CreateGeometryFromWkt(wkt)
@@ -89,8 +89,9 @@ class CalculateTrackNISAR:
     def _filter_cycle_tracks(self, items: List, min_aoi_cov: float = 95.0) -> List[Dict]:
         """
         Selects the minimal, optimal set of tracks that covers the target AOI polygon.
-        Strictly enforces topological contiguity (overlapping swaths) so disjoint or
-        gap-separated tracks are never merged into an incomplete mosaic.
+        Strictly enforces topological contiguity (overlapping swaths within or immediately
+        adjacent to the AOI) so disjoint or gap-separated tracks are never merged into an
+        incomplete mosaic.
         Prioritizes:
         1. Highest AOI coverage (rounded to 2 decimal places).
         2. Fewest tracks (minimizes spatial seams and track boundaries).
@@ -113,10 +114,14 @@ class CalculateTrackNISAR:
         try:
             aoi_geom = self._get_aoi_geom_4326()
             if aoi_geom is None or aoi_geom.GetArea() <= 0:
-                return [it[1] for it in items]
+                best_t = max(by_track.keys(), key=lambda k: len(by_track[k]))
+                return [it[1] for it in by_track[best_t]]
             aoi_area = aoi_geom.GetArea()
+            # Buffer AOI by ~10 km (0.1 deg) to capture track intersections at/near AOI borders
+            aoi_buf = aoi_geom.Buffer(0.1)
 
             t_geom = {}
+            t_geom_aoi = {}
             t_dates = {}
             for t, t_list in by_track.items():
                 u = ogr.Geometry(ogr.wkbMultiPolygon)
@@ -132,20 +137,26 @@ class CalculateTrackNISAR:
                                 g = g_shrunk
                             u = u.Union(g)
                     dates.append(img_date)
+                if u and not u.IsEmpty():
+                    u = u.Buffer(0.0)
                 t_geom[t] = u
-                t_dates[t] = (min(dates), max(dates))
+                t_geom_aoi[t] = u.Intersection(aoi_buf) if (u and not u.IsEmpty() and aoi_buf) else ogr.Geometry(ogr.wkbMultiPolygon)
+                t_dates[t] = (min(dates), max(dates)) if dates else (datetime.date.min, datetime.date.min)
 
             def _is_contiguous(c_tracks: Tuple) -> bool:
                 if len(c_tracks) <= 1:
                     return True
+                # Tracks must intersect each other within or immediately adjacent to the AOI (aoi_buf)
                 visited = {c_tracks[0]}
                 queue = [c_tracks[0]]
                 while queue:
                     curr = queue.pop(0)
                     for other in c_tracks:
                         if other not in visited:
-                            if t_geom.get(curr) and t_geom.get(other) and t_geom[curr].Intersects(t_geom[other]):
-                                inter = t_geom[curr].Intersection(t_geom[other])
+                            g_curr = t_geom_aoi.get(curr)
+                            g_other = t_geom_aoi.get(other)
+                            if g_curr and g_other and not g_curr.IsEmpty() and not g_other.IsEmpty() and g_curr.Intersects(g_other):
+                                inter = g_curr.Intersection(g_other)
                                 if inter and not inter.IsEmpty() and inter.GetArea() > 1e-5:
                                     visited.add(other)
                                     queue.append(other)
@@ -153,7 +164,7 @@ class CalculateTrackNISAR:
 
             tracks = list(by_track.keys())
             combos = []
-            for r in range(1, min(len(tracks) + 1, 7)):
+            for r in range(1, len(tracks) + 1):
                 for combo in combinations(tracks, r):
                     if not _is_contiguous(combo):
                         continue
@@ -164,11 +175,18 @@ class CalculateTrackNISAR:
                         combo_dates.extend([t_dates[t][0], t_dates[t][1]])
                     inter = aoi_geom.Intersection(u_combo)
                     cov = (inter.GetArea() / aoi_area) * 100.0 if inter else 0.0
-                    span_days = (max(combo_dates) - min(combo_dates)).days
+                    span_days = (max(combo_dates) - min(combo_dates)).days if combo_dates else 0
                     combos.append((round(cov, 2), len(combo), span_days, cov, combo))
 
             if not combos:
-                return [it[1] for it in items]
+                single_tracks = []
+                for t in tracks:
+                    inter = aoi_geom.Intersection(t_geom[t])
+                    cov = (inter.GetArea() / aoi_area) * 100.0 if inter else 0.0
+                    single_tracks.append((cov, t))
+                single_tracks.sort(key=lambda x: -x[0])
+                best_t = single_tracks[0][1] if single_tracks else tracks[0]
+                return [it[1] for it in by_track[best_t]]
 
             # Criteria ranking (adopting calculate_belts_nisar.py):
             # 1) Maximum coverage rounded to 2 decimal places (-x[0], descending)
@@ -190,14 +208,20 @@ class CalculateTrackNISAR:
 
             return kept_imgs
         except Exception as e:
-            logging.warning(f"Could not calculate optimal NISAR track selection: {e}")
-            return [it[1] for it in items]
+            logging.warning(f"Could not calculate optimal NISAR track selection ({e}); falling back to single best track.")
+            try:
+                best_t = max(by_track.keys(), key=lambda k: len(by_track[k]))
+                return [it[1] for it in by_track[best_t]]
+            except Exception:
+                return [it[1] for it in items]
 
     def _calculate_items_aoi_coverage(self, images: List[Dict]) -> float:
+        if not images:
+            return 0.0
         try:
             aoi_geom = self._get_aoi_geom_4326()
             if aoi_geom is None or aoi_geom.GetArea() <= 0:
-                return 100.0
+                return 0.0
             aoi_area = aoi_geom.GetArea()
 
             u = ogr.Geometry(ogr.wkbMultiPolygon)
@@ -214,11 +238,13 @@ class CalculateTrackNISAR:
                             g = g_shrunk
                         u = u.Union(g)
             if not has_any_geom:
-                return 100.0
+                return 0.0
+            u = u.Buffer(0.0)
             inter = aoi_geom.Intersection(u)
             return (inter.GetArea() / aoi_area) * 100.0 if inter else 0.0
-        except Exception:
-            return 100.0
+        except Exception as e:
+            logging.warning(f"Could not calculate AOI coverage ({e}); reporting 0.0% coverage.")
+            return 0.0
 
     def _group_images(self, raw_list: List[Dict]) -> Dict[str, Dict]:
         mode = str(self.configuration.get("grouping_mode", "cycle")).lower()
@@ -280,7 +306,8 @@ class CalculateTrackNISAR:
             for c_idx, items in sorted(cycle_buckets.items()):
                 filtered_imgs = self._filter_cycle_tracks(items, min_aoi_cov)
                 if not filtered_imgs:
-                    filtered_imgs = [it[1] for it in items]
+                    logging.warning(f"Skipping Cycle {c_idx}: no contiguous tracks could be selected.")
+                    continue
 
                 cov = self._calculate_items_aoi_coverage(filtered_imgs)
 
