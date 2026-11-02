@@ -318,6 +318,7 @@ class CalculateTrackNISAR:
         password = self.configuration.get("earthdata_password")
 
         token = getattr(self.session, "token", None) or self.configuration.get("earthdata_token")
+        cookie_jar = getattr(self.session, "cookie_jar", None) or (AUX_DIR / "urs_cookies.txt")
 
         for period_key, period_info in self.images_by_period.items():
             date_str = period_key
@@ -344,14 +345,19 @@ class CalculateTrackNISAR:
             if not extracted_scene_dirs:
                 threads = int(self.configuration.get("threads", 4))
                 if len(images) > 1 and threads > 1:
+                    import time
                     from concurrent.futures import ThreadPoolExecutor
 
-                    def _extract_single(img):
+                    def _extract_single(item):
+                        idx, img = item
+                        if idx > 0:
+                            time.sleep(min(idx * 2.0, 6.0))
                         try:
                             extractor = DownloadAndExtractGCOV(
                                 product=img,
                                 temp_dir=period_temp_dir,
                                 session=self.session,
+                                cookie_jar=cookie_jar,
                                 token=token,
                                 username=username,
                                 password=password,
@@ -366,7 +372,7 @@ class CalculateTrackNISAR:
 
                     max_workers = min(len(images), threads)
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        results = list(executor.map(_extract_single, images))
+                        results = list(executor.map(_extract_single, enumerate(images)))
                     extracted_scene_dirs = [r for r in results if r is not None]
                 else:
                     for img in images:
@@ -375,6 +381,7 @@ class CalculateTrackNISAR:
                                 product=img,
                                 temp_dir=period_temp_dir,
                                 session=self.session,
+                                cookie_jar=cookie_jar,
                                 token=token,
                                 username=username,
                                 password=password,

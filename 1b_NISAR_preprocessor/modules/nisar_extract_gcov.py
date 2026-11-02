@@ -35,6 +35,11 @@ except ImportError:
     h5py = None
     HAS_H5PY = False
 
+_MODULES_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _MODULES_DIR.parent.parent
+AUX_DIR = _PROJECT_ROOT / "auxiliary_files"
+
+
 
 class DownloadAndExtractGCOV:
     """
@@ -47,6 +52,7 @@ class DownloadAndExtractGCOV:
         product: Dict,
         temp_dir: Path,
         session=None,
+        cookie_jar: Optional[Path] = None,
         token: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
@@ -57,6 +63,7 @@ class DownloadAndExtractGCOV:
         self.temp_dir = Path(temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.session = session
+        self.cookie_jar = cookie_jar or getattr(session, "cookie_jar", None) or (self.temp_dir / "urs_cookies.txt")
         self.token = token or getattr(session, "token", None) or product.get("token")
         self.username = username
         self.password = password
@@ -208,12 +215,82 @@ class DownloadAndExtractGCOV:
         band.FlushCache()
         ds = None
 
+    def _download_h5(self, url: str, dest_path: Path) -> Optional[Path]:
+        """
+        Downloads HDF5 archive from NASA Earthdata Cloud / ASF DAAC using curl over HTTP/2,
+        with authenticated TEA cookie jar, Cache-Control bypass, and automatic redirect to CloudFront S3.
+        """
+        import subprocess
+
+        temp_part = dest_path.with_suffix(f"{dest_path.suffix}.part")
+        try:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            if not shutil.which("curl"):
+                return self._download_h5_fallback(url, dest_path)
+
+            cookie_jar = self.cookie_jar
+            if not cookie_jar or not Path(cookie_jar).exists():
+                aux_jar = AUX_DIR / "urs_cookies.txt"
+                if aux_jar.exists() and aux_jar.stat().st_size > 50:
+                    cookie_jar = aux_jar
+                    self.cookie_jar = aux_jar
+
+            cmd = [
+                "curl", "-s", "-S", "-L",
+                "-H", "Cache-Control: no-cache",
+                "-H", "Pragma: no-cache",
+                "--retry", "3",
+                "--retry-delay", "2",
+                "--connect-timeout", "30",
+                "--max-time", "1200",
+            ]
+            if cookie_jar and Path(cookie_jar).exists():
+                cmd.extend(["-b", str(cookie_jar)])
+            elif self.token:
+                cmd.extend(["-H", f"Authorization: Bearer {self.token}"])
+
+            cmd.extend([url, "-o", str(temp_part)])
+
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                logging.warning(f"curl download failed for {dest_path.name}: {res.stderr.strip()}; attempting fallback...")
+                if temp_part.exists():
+                    temp_part.unlink()
+                return self._download_h5_fallback(url, dest_path)
+
+            if temp_part.exists() and temp_part.stat().st_size > 10 * 1024 * 1024:
+                with open(temp_part, "rb") as f:
+                    magic = f.read(8)
+                if magic == b"\x89HDF\r\n\x1a\n":
+                    temp_part.replace(dest_path)
+                    logging.info(f"Successfully downloaded {dest_path.name} ({dest_path.stat().st_size} bytes)")
+                    return dest_path
+                else:
+                    logging.error(f"Downloaded file {dest_path.name} invalid HDF5 header: {magic}")
+                    temp_part.unlink()
+                    return self._download_h5_fallback(url, dest_path)
+            else:
+                if temp_part.exists():
+                    temp_part.unlink()
+                return self._download_h5_fallback(url, dest_path)
+        except Exception as e:
+            logging.error(f"Download exception for {url}: {e}")
+            if temp_part.exists():
+                try:
+                    temp_part.unlink()
+                except Exception:
+                    pass
+            return self._download_h5_fallback(url, dest_path)
+
     def _download_h5_fallback(self, url: str, dest_path: Path) -> Optional[Path]:
         """
         Downloads HDF5 archive from NASA Earthdata Cloud / ASF DAAC using requests streaming,
-        supporting EDL Bearer token authorization and HTTP basic auth with redirect preservation.
+        supporting EDL Bearer token authorization, TEA token warming with backoff retries,
+        cross-domain redirect preservation to CloudFront S3, and HDF5 magic bytes verification.
         """
+        import time
         import requests
+
         temp_part = dest_path.with_suffix(f"{dest_path.suffix}.part")
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -232,36 +309,74 @@ class DownloadAndExtractGCOV:
                     pass
 
             req_session = self.session if self.session is not None else requests.Session()
-            req_headers = {"User-Agent": "AIML-CropMapper-Cloud/2.0"}
+            browser_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            req_headers = {
+                "User-Agent": browser_ua,
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache"
+            }
             if token:
                 req_headers["Authorization"] = f"Bearer {token}"
 
-            auth = (self.username, self.password) if (not token and self.username and self.password) else None
+            logging.info(f"Direct TEA streaming download from {url}...")
+            redirect_url = None
+            max_tea_retries = 8
+            for attempt in range(max_tea_retries):
+                try:
+                    r = req_session.get(url, headers=req_headers, allow_redirects=False, timeout=30)
+                    if r.status_code == 303:
+                        redirect_url = r.headers.get("Location")
+                        if r.cookies:
+                            req_session.cookies.update(r.cookies)
+                        break
+                    elif r.status_code == 200:
+                        # Direct content returned
+                        redirect_url = url
+                        break
+                    elif r.status_code in (400, 429, 500, 502, 503, 504):
+                        sleep_s = min(2.0 * (attempt + 1), 15.0)
+                        logging.info(f"TEA endpoint warming/retry for {dest_path.name} (HTTP {r.status_code}); retrying in {sleep_s:.1f}s...")
+                        time.sleep(sleep_s)
+                    else:
+                        logging.warning(f"Unexpected HTTP status {r.status_code} from TEA: {r.text[:200]}")
+                        time.sleep(2)
+                except Exception as e:
+                    logging.warning(f"TEA download attempt {attempt+1} exception: {e}")
+                    time.sleep(2)
 
-            logging.info(f"Fallback streaming download from {url}...")
-            with req_session.get(url, headers=req_headers, auth=auth, stream=True, allow_redirects=True, timeout=300) as resp:
-                if resp.status_code != 200:
-                    logging.error(f"HTTP fallback download failed for {url}: HTTP {resp.status_code}")
+            if not redirect_url:
+                logging.error(f"Failed to acquire signed redirect URL from TEA for {url}")
+                return None
+
+            # Stream from CloudFront S3 signed URL without Authorization header to avoid signature mismatch
+            s3_headers = {"User-Agent": browser_ua}
+            with requests.get(redirect_url, headers=s3_headers, stream=True, timeout=600) as stream_resp:
+                if stream_resp.status_code != 200:
+                    logging.error(f"CloudFront S3 download failed for {dest_path.name}: HTTP {stream_resp.status_code}")
                     return None
 
                 first_chunk = True
                 with open(temp_part, "wb") as out_f:
-                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    for chunk in stream_resp.iter_content(chunk_size=8 * 1024 * 1024):
                         if first_chunk:
                             first_chunk = False
                             if len(chunk) >= 8 and chunk[:8] != b"\x89HDF\r\n\x1a\n":
-                                logging.warning(f"Downloaded stream for {url} missing HDF5 header: {chunk[:20]}")
+                                logging.error(f"Downloaded stream for {url} missing HDF5 magic header: {chunk[:20]}")
+                                if temp_part.exists():
+                                    temp_part.unlink()
+                                return None
                         out_f.write(chunk)
 
-            if temp_part.exists() and temp_part.stat().st_size > 1024:
+            if temp_part.exists() and temp_part.stat().st_size > 10 * 1024 * 1024:
                 temp_part.replace(dest_path)
+                logging.info(f"Successfully downloaded {dest_path.name} ({dest_path.stat().st_size} bytes)")
                 return dest_path
             else:
                 if temp_part.exists():
                     temp_part.unlink()
                 return None
         except Exception as e:
-            logging.error(f"HTTP fallback download exception for {url}: {e}")
+            logging.error(f"HTTP streaming download exception for {url}: {e}")
             if temp_part.exists():
                 try:
                     temp_part.unlink()
@@ -421,22 +536,32 @@ class DownloadAndExtractGCOV:
             else:
                 logging.info(f"Downloading NISAR granule: {title}")
                 expected_h5 = self.temp_dir / f"{title}.h5"
-                if asf_prod is not None:
-                    try:
-                        p_fn = asf_prod.properties.get("fileName")
-                        asf_prod.download(path=str(self.temp_dir), session=self.session)
-                        if expected_h5.exists() and expected_h5.stat().st_size > 1024:
-                            h5_path = expected_h5
-                        elif p_fn and (self.temp_dir / p_fn).exists() and (self.temp_dir / p_fn).stat().st_size > 1024:
-                            h5_path = self.temp_dir / p_fn
-                    except Exception as e:
-                        logging.warning(f"asf_search download failed for {title} ({e}); trying fallback download...")
+                p_fn = asf_prod.properties.get("fileName") if asf_prod else f"{title}.h5"
+                target_dest = self.temp_dir / p_fn
 
+                # Check if granule is already fully downloaded in temp_dir
+                if target_dest.exists() and target_dest.stat().st_size > 10 * 1024 * 1024:
+                    h5_path = target_dest
+                elif expected_h5.exists() and expected_h5.stat().st_size > 10 * 1024 * 1024:
+                    h5_path = expected_h5
+
+                # 1. Primary method: high-speed curl / TEA HTTP/2 streaming download
                 if (h5_path is None or not h5_path.exists()) and self.product.get("url"):
-                    h5_path = self._download_h5_fallback(self.product["url"], expected_h5)
+                    h5_path = self._download_h5(self.product["url"], target_dest)
+
+                # 2. Secondary fallback: asf_prod.download with primed session
+                if (h5_path is None or not h5_path.exists()) and asf_prod is not None:
+                    try:
+                        asf_prod.download(path=str(self.temp_dir), session=self.session)
+                        if target_dest.exists() and target_dest.stat().st_size > 10 * 1024 * 1024:
+                            h5_path = target_dest
+                        elif expected_h5.exists() and expected_h5.stat().st_size > 10 * 1024 * 1024:
+                            h5_path = expected_h5
+                    except Exception as e:
+                        logging.warning(f"asf_search download fallback also failed for {title}: {e}")
 
                 if h5_path is None or not h5_path.exists():
-                    candidates = [f for f in self.temp_dir.glob(f"*{title}*.h5") if f.stat().st_size > 1024]
+                    candidates = [f for f in self.temp_dir.glob(f"*{title}*.h5") if f.stat().st_size > 10 * 1024 * 1024]
                     if candidates:
                         h5_path = candidates[0]
 

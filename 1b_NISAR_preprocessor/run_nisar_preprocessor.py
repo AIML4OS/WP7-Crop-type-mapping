@@ -151,10 +151,82 @@ class NISARPreprocessorPipeline:
         self.start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.date(2025, 2, 1)
         self.end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else datetime.date(2025, 10, 15)
 
+    def _ensure_netrc(self, username: Optional[str] = None, password: Optional[str] = None) -> Path:
+        """
+        Ensures ~/.netrc contains machine urs.earthdata.nasa.gov credentials with mode 0600.
+        """
+        netrc_path = Path.home() / ".netrc"
+        has_urs = False
+        if netrc_path.exists():
+            try:
+                with open(netrc_path, "r", encoding="utf-8") as f:
+                    has_urs = "urs.earthdata.nasa.gov" in f.read()
+            except Exception:
+                pass
+
+        u = username or os.environ.get("EARTHDATA_USERNAME") or self.config.get("earthdata_username")
+        p = password or os.environ.get("EARTHDATA_PASSWORD") or self.config.get("earthdata_password")
+        if not has_urs and u and p and "YOUR_" not in u:
+            try:
+                with open(netrc_path, "a", encoding="utf-8") as f:
+                    f.write(f"\nmachine urs.earthdata.nasa.gov login {u} password {p}\n")
+                netrc_path.chmod(0o600)
+            except Exception as e:
+                logging.debug(f"Could not update ~/.netrc: {e}")
+        return netrc_path
+
+    def _prime_tea_cookie_jar(self, netrc_path: Path) -> Optional[Path]:
+        """
+        Primes NASA Earthdata Cloud Thin Egress App (TEA) session cookie jar via OAuth authorize,
+        storing the 7-day `asf-urs` cookie in auxiliary_files or temp_dir.
+        """
+        import shutil
+        import subprocess
+
+        if not shutil.which("curl"):
+            return None
+
+        cookie_jar = AUX_DIR / "urs_cookies.txt"
+        cookie_jar.parent.mkdir(parents=True, exist_ok=True)
+        if cookie_jar.exists() and cookie_jar.stat().st_size > 50:
+            try:
+                with open(cookie_jar, "r", encoding="utf-8") as f:
+                    if "asf-urs" in f.read():
+                        return cookie_jar
+            except Exception:
+                pass
+
+        oauth_url = (
+            "https://urs.earthdata.nasa.gov/oauth/authorize?"
+            "client_id=qpa3q_b7OJ32gGjwA9DxHg&"
+            "response_type=code&"
+            "redirect_uri=https://nisar.asf.earthdatacloud.nasa.gov/login"
+        )
+        cmd = [
+            "curl", "-s", "-S", "-L",
+            "--netrc-file", str(netrc_path),
+            "-c", str(cookie_jar),
+            oauth_url,
+            "-o", "/dev/null"
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if res.returncode == 0 and cookie_jar.exists():
+                with open(cookie_jar, "r", encoding="utf-8") as f:
+                    if "asf-urs" in f.read():
+                        logging.info("Successfully primed NASA Earthdata Cloud TEA session (asf-urs cookie active).")
+                        return cookie_jar
+        except Exception as e:
+            logging.debug(f"TEA cookie priming notice: {e}")
+        return None
+
     def _authenticate_earthdata(self):
         token = os.environ.get("EARTHDATA_TOKEN") or self.config.get("earthdata_token")
         username = os.environ.get("EARTHDATA_USERNAME") or self.config.get("earthdata_username")
         password = os.environ.get("EARTHDATA_PASSWORD") or self.config.get("earthdata_password")
+
+        netrc_path = self._ensure_netrc(username, password)
+        cookie_jar = self._prime_tea_cookie_jar(netrc_path)
 
         extended_domains = [
             "asf.alaska.edu",
@@ -163,6 +235,8 @@ class NISARPreprocessorPipeline:
             "nasa.gov",
             "alaska.edu"
         ]
+
+        browser_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
         if not HAS_ASF:
             logging.warning("asf_search package not installed. Cannot initialize NASA Earthdata session.")
@@ -173,8 +247,10 @@ class NISARPreprocessorPipeline:
             try:
                 logging.info("Authenticating with NASA Earthdata using provided Bearer token...")
                 session = asf.ASFSession(auth_domains=extended_domains)
+                session.headers["User-Agent"] = browser_ua
                 session.auth_with_token(token)
                 session.token = token
+                session.cookie_jar = cookie_jar
                 self.config["earthdata_token"] = token
                 logging.info("Successfully authenticated NASA Earthdata session with Bearer token.")
                 return session
@@ -189,13 +265,16 @@ class NISARPreprocessorPipeline:
             try:
                 from requests.auth import HTTPBasicAuth
                 init_session = asf.ASFSession()
+                init_session.headers["User-Agent"] = browser_ua
                 init_session.auth = HTTPBasicAuth(username, password)
                 retrieved_token = init_session._get_urs_access_token()
                 init_session.auth = None
                 if retrieved_token:
                     session = asf.ASFSession(auth_domains=extended_domains)
+                    session.headers["User-Agent"] = browser_ua
                     session.auth_with_token(retrieved_token)
                     session.token = retrieved_token
+                    session.cookie_jar = cookie_jar
                     self.config["earthdata_token"] = retrieved_token
                     logging.info(f"Successfully authenticated NASA Earthdata as user: {username} (EDL Bearer token active)")
                     return session
@@ -206,7 +285,9 @@ class NISARPreprocessorPipeline:
             try:
                 logging.info(f"Authenticating with NASA Earthdata as user: {username}")
                 session = asf.ASFSession(auth_domains=extended_domains)
+                session.headers["User-Agent"] = browser_ua
                 session.auth_with_creds(username, password)
+                session.cookie_jar = cookie_jar
                 return session
             except Exception as e:
                 logging.warning(f"NASA Earthdata asf_search session auth warning: {e}")
