@@ -357,6 +357,15 @@ class Sentinel2Pipeline:
             if orbits:
                 logging.info(f"\n>>> Processing country {self.country} per-orbit across {len(orbits)} orbit(s): {orbits} <<<")
                 for orb in orbits:
+                    track_name = f"{self.country}/orbit_{orb}"
+                    track_dir = BASE_DIR / track_name
+                    if not self.overwrite:
+                        s2_stacks = list((track_dir / "1_input_stacks").glob("*_S2_timeseries.tif"))
+                        if s2_stacks and any(s.stat().st_size > 1024 * 1024 * 1024 for s in s2_stacks):
+                            complete_stack = next(s for s in s2_stacks if s.stat().st_size > 1024 * 1024 * 1024)
+                            logging.info(f"\n[SKIP] Sentinel-2 stack already exists for {track_name}: {complete_stack.name} ({complete_stack.stat().st_size / (1024**3):.1f} GB). Skipping orbit {orb}.")
+                            continue
+
                     sub_pipe = Sentinel2Pipeline(
                         country=self.country,
                         orbit=orb,

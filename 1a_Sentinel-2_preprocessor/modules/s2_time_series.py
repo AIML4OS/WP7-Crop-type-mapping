@@ -164,10 +164,11 @@ def apply_whittaker_smoothing_to_tile(
 
     T = len(day_folders)
 
-    for band in bands:
+    for b_idx, band in enumerate(bands, start=1):
         band_files = [df / f"{band}.tif" for df in day_folders]
         if not all(bf.exists() for bf in band_files):
             continue
+        logging.info(f"    [WHITTAKER SMOOTHING] {tile_synthetic_dir.parent.name}: Band {band} ({b_idx}/{len(bands)})...")
 
         ds_list = [gdal.Open(str(bf), gdal.GA_Update) for bf in band_files]
         if any(ds is None for ds in ds_list):
@@ -673,11 +674,19 @@ def generate_s2_time_series_for_tile(
             out_ds = None
 
     # Whittaker multi-temporal smoothing across the DOY sequence
+    whittaker_flag = result_synthetic_dir / ".whittaker_done"
     if enable_whittaker and len(doys) >= 4:
-        try:
-            apply_whittaker_smoothing_to_tile(result_synthetic_dir, doys, bands=S2_SPECTRAL_BANDS, lmbda=whittaker_lambda)
-        except Exception as e:
-            logging.warning(f"Whittaker smoothing failed for {tile_name} ({e}), keeping raw synthetic DOY interpolation.")
+        if not overwrite and whittaker_flag.exists():
+            logging.info(f"Whittaker smoothing already completed for {clean_tile}. Skipping.")
+        else:
+            try:
+                apply_whittaker_smoothing_to_tile(result_synthetic_dir, doys, bands=S2_SPECTRAL_BANDS, lmbda=whittaker_lambda)
+                try:
+                    whittaker_flag.touch(exist_ok=True)
+                except Exception:
+                    pass
+            except Exception as e:
+                logging.warning(f"Whittaker smoothing failed for {tile_name} ({e}), keeping raw synthetic DOY interpolation.")
 
     return True
 

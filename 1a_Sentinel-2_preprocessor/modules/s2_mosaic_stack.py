@@ -408,6 +408,13 @@ def mosaic_stack_clip_single_track(
     out_final_dir.mkdir(parents=True, exist_ok=True)
     out_proc_dir.mkdir(parents=True, exist_ok=True)
 
+    if not overwrite:
+        existing_stacks = list(out_proc_dir.glob(f"{sanitized_track}*_S2_timeseries.tif"))
+        if existing_stacks and any(s.stat().st_size > 1024 * 1024 * 1024 for s in existing_stacks):
+            complete_stack = next(s for s in existing_stacks if s.stat().st_size > 1024 * 1024 * 1024)
+            logging.info(f"Sentinel-2 multi-temporal stack already exists for {track}: {complete_stack.name} ({complete_stack.stat().st_size / (1024**3):.1f} GB). Skipping Stage 3 (use --overwrite to force rebuild).")
+            return
+
     shp_cutline, clip_geom = prepare_orbit_cutline_shapefile(country_code, norm_track, out_final_dir, target_epsg=target_epsg)
 
     ref_proj, res_x, res_y = (None, 10.0, 10.0)
@@ -472,16 +479,18 @@ def mosaic_stack_clip_single_track(
     }
     force_rewarp = overwrite
     if not force_rewarp:
-        if not sig_file.exists():
-            force_rewarp = True
-        else:
+        if sig_file.exists():
             try:
                 old_sig = _json.loads(sig_file.read_text(encoding="utf-8"))
                 if old_sig != current_sig:
                     logging.info(f"Track {track}: tile set or clipping geometry changed ({old_sig.get('tiles')} -> {selected_tiles}); rebuilding DOY mosaics.")
                     force_rewarp = True
             except Exception:
-                force_rewarp = True
+                pass
+        try:
+            sig_file.write_text(_json.dumps(current_sig, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     year = None
     for syn_d in synthetic_dirs:
