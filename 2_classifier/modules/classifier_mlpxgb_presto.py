@@ -1963,6 +1963,9 @@ class ProcessingPipelineS1S2:
         agrimasks_dir = self.aux_dir / "raster_files" / "AgriMasks" / self.country
         samples_dir = self.aux_dir / "shapefiles_samples" / self.country
         candidates = [
+            samples_dir / "gewaspercelen_concept_2026.gpkg",
+            samples_dir / "brpgewaspercelen_definitief_2026.gpkg",
+            samples_dir / "brpgewaspercelen_definitief_2025.gpkg",
             agrimasks_dir / "brpgewaspercelen_definitief_2025.gpkg",
             agrimasks_dir / "lpis.gpkg",
             agrimasks_dir / "lpis.shp",
@@ -1970,9 +1973,6 @@ class ProcessingPipelineS1S2:
             samples_dir / "lpis.shp",
             samples_dir / "parcels.gpkg",
             samples_dir / "parcels.shp",
-            samples_dir / "samples_all.shp",
-            samples_dir / "samples_all.gpkg",
-            samples_dir / "samples.shp",
             self.aux_dir / "shapefiles_samples" / f"{self.country}_{self.sanitized_track}" / "lpis.shp",
             self.base_dir / self.track / "lpis.shp",
             self.base_dir / self.track / "parcels.gpkg"
@@ -1980,11 +1980,18 @@ class ProcessingPipelineS1S2:
         for c in candidates:
             if c.exists():
                 return c
-        if agrimasks_dir.exists():
-            gpkgs = list(agrimasks_dir.glob("*.gpkg"))
-            if gpkgs: return gpkgs[0]
-            shps = list(agrimasks_dir.glob("*.shp"))
-            if shps: return shps[0]
+        # Search for national parcel gpkgs/shps (prioritize newest year, excluding point sample files)
+        for search_dir in (samples_dir, agrimasks_dir):
+            if search_dir.exists():
+                gpkgs = sorted(list(search_dir.glob("*.gpkg")), key=lambda f: f.name, reverse=True)
+                if gpkgs:
+                    return gpkgs[0]
+                shps = [
+                    s for s in search_dir.glob("*.shp")
+                    if not s.stem.startswith("sample") and not s.stem.startswith("control") and not s.stem.startswith("learn") and not "2025_sample" in s.stem
+                ]
+                if shps:
+                    return shps[0]
         return None
 
     def _is_artifact_stale(self, target_path: Path, dep_paths: list, expected_dims: Optional[Tuple[int, int]] = None) -> bool:
