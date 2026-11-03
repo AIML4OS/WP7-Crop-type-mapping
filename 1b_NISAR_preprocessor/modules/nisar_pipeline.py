@@ -533,19 +533,24 @@ class CalculateTrackNISAR:
         )
 
         if stacked and stacked.exists():
-            # Create canonical aliases in 1_input_stacks/
+            # Create canonical relative symlink in 1_input_stacks/ (e.g. NL_orbit_37_NISAR_timeseries.tif -> ...)
+            # Using relative symlink avoids confusing users with duplicated file sizes and saves disk space
+            if canonical_tif.resolve() != stacked.resolve():
+                try:
+                    if canonical_tif.is_symlink() or canonical_tif.exists():
+                        canonical_tif.unlink()
+                    canonical_tif.symlink_to(stacked.name)
+                except Exception as e:
+                    logging.warning(f"Could not create canonical symlink {canonical_tif}: {e}")
+
+            # Clean up any legacy hardlink aliases that may confuse directory listings
             sym_date_tif = self.dirs["stacks"] / f"{prefix}_{s_str}_{e_str}_NISAR_GCOV_L_timeseries.tif"
-            for alias_tif in (canonical_tif, legacy_gcov_tif, sym_date_tif):
-                if alias_tif.resolve() != stacked.resolve():
+            for stale_alias in (legacy_gcov_tif, sym_date_tif):
+                if stale_alias.exists() and stale_alias.resolve() == stacked.resolve() and not stale_alias.is_symlink():
                     try:
-                        if alias_tif.exists():
-                            alias_tif.unlink()
-                        os.link(str(stacked), str(alias_tif))
+                        stale_alias.unlink()
                     except Exception:
-                        try:
-                            shutil.copy2(str(stacked), str(alias_tif))
-                        except Exception:
-                            pass
+                        pass
 
             # Only link to shared country NISAR pool `workingDirs/<COUNTRY>/NISAR/<COUNTRY>_NISAR_timeseries.tif`
             # when this stack covers the full country (not clipped to a single orbit_X).
@@ -555,11 +560,12 @@ class CalculateTrackNISAR:
                 shared_tif = shared_nisar_dir / f"{self.country_code}_NISAR_timeseries.tif"
                 if shared_tif.resolve() != stacked.resolve():
                     try:
-                        if shared_tif.exists():
+                        if shared_tif.is_symlink() or shared_tif.exists():
                             shared_tif.unlink()
-                        os.link(str(stacked), str(shared_tif))
-                    except Exception:
-                        pass
+                        rel_target = os.path.relpath(stacked, shared_nisar_dir)
+                        shared_tif.symlink_to(rel_target)
+                    except Exception as e:
+                        logging.warning(f"Could not create shared NISAR symlink {shared_tif}: {e}")
 
         return stacked
 

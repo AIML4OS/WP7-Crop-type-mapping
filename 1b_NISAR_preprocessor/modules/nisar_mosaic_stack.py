@@ -705,7 +705,16 @@ def stack_nisar_timeseries(
         rows,
         total_bands,
         gdal.GDT_Float32,
-        options=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=YES", "NUM_THREADS=ALL_CPUS"]
+        options=[
+            "COMPRESS=DEFLATE",
+            "PREDICTOR=3",
+            "INTERLEAVE=BAND",
+            "TILED=YES",
+            "BLOCKXSIZE=512",
+            "BLOCKYSIZE=512",
+            "BIGTIFF=YES",
+            "NUM_THREADS=ALL_CPUS"
+        ]
     )
     out_ds.SetGeoTransform(gt)
     out_ds.SetProjection(proj)
@@ -789,6 +798,8 @@ def stack_nisar_timeseries(
         ds_ovr = gdal.Open(str(output_stack_tif), gdal.GA_Update)
         if ds_ovr is not None:
             gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
+            gdal.SetConfigOption("PREDICTOR_OVERVIEW", "3")
+            gdal.SetConfigOption("INTERLEAVE_OVERVIEW", "BAND")
             gdal.SetConfigOption("GDAL_NUM_THREADS", "ALL_CPUS")
             ds_ovr.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
             ds_ovr.FlushCache()
