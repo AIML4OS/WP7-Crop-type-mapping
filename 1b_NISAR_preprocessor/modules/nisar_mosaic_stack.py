@@ -20,6 +20,7 @@ import datetime
 import logging
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -595,7 +596,8 @@ class MosaicNISAR:
                     fallback_opts_dict["cropToCutline"] = False
                 fallback_opts = gdal.WarpOptions(
                     **fallback_opts_dict,
-                    creationOptions=["COMPRESS=DEFLATE", "BIGTIFF=YES", "TILED=YES", "NUM_THREADS=ALL_CPUS"]
+                    creationOptions=["COMPRESS=DEFLATE", "BIGTIFF=YES", "TILED=YES", "NUM_THREADS=ALL_CPUS"],
+                    callback=gdal.TermProgress_nocb
                 )
                 gdal.Warp(str(output_file), all_sources, options=fallback_opts)
                 if output_file.exists():
@@ -721,6 +723,7 @@ def stack_nisar_timeseries(
 
     band_idx = 1
     tile_h = 4096
+    logging.info(f"Assembling {total_bands}-band multi-temporal BigTIFF stack ({cols}x{rows} px, Float32)...")
     for d_dir in date_dirs:
         try:
             dt_obj = datetime.datetime.strptime(d_dir.name, "%Y%m%d").date()
@@ -778,11 +781,16 @@ def stack_nisar_timeseries(
                             db_arr[zero_db] = 1e-3
                             arr = db_arr
                         out_band.WriteArray(arr, 0, y)
+                        pct = int(((band_idx - 1) + (y + cur_h) / rows) / total_bands * 100)
+                        sys.stdout.write(f"\r  -> Stacking progress: {pct:3d}% | Band {band_idx:02d}/{total_bands:02d} ({desc})")
+                        sys.stdout.flush()
                     warped_ds = None
                     src_ds = None
             out_band.FlushCache()
             band_idx += 1
 
+    sys.stdout.write(f"\r  -> Stacking progress: 100% | All {total_bands} bands written successfully.\n")
+    sys.stdout.flush()
     out_ds.FlushCache()
     out_ds = None
 
@@ -801,9 +809,10 @@ def stack_nisar_timeseries(
             gdal.SetConfigOption("PREDICTOR_OVERVIEW", "3")
             gdal.SetConfigOption("INTERLEAVE_OVERVIEW", "BAND")
             gdal.SetConfigOption("GDAL_NUM_THREADS", "ALL_CPUS")
-            ds_ovr.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64])
+            ds_ovr.BuildOverviews("AVERAGE", [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb)
             ds_ovr.FlushCache()
             ds_ovr = None
+            print()
 
     if cleanup_mosaics and output_stack_tif.exists() and output_stack_tif.stat().st_size > 1024 * 1024:
         try:
