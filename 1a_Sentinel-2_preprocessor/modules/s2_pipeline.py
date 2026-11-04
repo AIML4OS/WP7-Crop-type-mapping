@@ -21,6 +21,7 @@ Execution examples:
 
 import argparse
 import datetime
+import json
 import logging
 import os
 import pathlib
@@ -46,6 +47,24 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
+DEFAULT_ENABLE_WHITTAKER = True
+DEFAULT_WHITTAKER_LAMBDA = 15.0
+try:
+    _root_dir = Path(__file__).resolve().parent.parent
+    _cfg_paths = [
+        _root_dir / "config_s2.json",
+        Path(__file__).resolve().parent / "config_s2.json"
+    ]
+    for _cp in _cfg_paths:
+        if _cp.exists():
+            with open(_cp, 'r', encoding='utf-8') as _f:
+                _cfg_data = json.load(_f)
+                if "whittaker_smoothing" in _cfg_data and isinstance(_cfg_data["whittaker_smoothing"], dict):
+                    DEFAULT_ENABLE_WHITTAKER = bool(_cfg_data["whittaker_smoothing"].get("enabled", True))
+                    DEFAULT_WHITTAKER_LAMBDA = float(_cfg_data["whittaker_smoothing"].get("lambda", 15.0))
+            break
+except Exception:
+    pass
 
 import shutil
 
@@ -88,8 +107,8 @@ def run_s2_pipeline_for_orbit(
     threads: int = 4,
     all_scenes_cache: Optional[list] = None,
     overwrite: bool = False,
-    enable_whittaker: bool = True,
-    whittaker_lambda: float = 15.0
+    enable_whittaker: bool = DEFAULT_ENABLE_WHITTAKER,
+    whittaker_lambda: float = DEFAULT_WHITTAKER_LAMBDA
 ):
     track_name = f"{country_code}/orbit_{orbit_num}"
     logging.info(f"\n################################################################################")
@@ -170,8 +189,8 @@ def run_s2_pipeline_for_track(
     threads: int = 4,
     all_scenes_cache: Optional[list] = None,
     overwrite: bool = False,
-    enable_whittaker: bool = True,
-    whittaker_lambda: float = 15.0
+    enable_whittaker: bool = DEFAULT_ENABLE_WHITTAKER,
+    whittaker_lambda: float = DEFAULT_WHITTAKER_LAMBDA
 ):
     orbit_match = re.search(r'orbit_(\d+)', track_name)
     orbit_num = int(orbit_match.group(1)) if orbit_match else 0
@@ -205,8 +224,8 @@ def run_s2_master_pipeline(
     threads: int = 8,
     repo_path: Optional[str] = None,
     overwrite: bool = False,
-    enable_whittaker: bool = True,
-    whittaker_lambda: float = 15.0
+    enable_whittaker: bool = DEFAULT_ENABLE_WHITTAKER,
+    whittaker_lambda: float = DEFAULT_WHITTAKER_LAMBDA
 ):
     country_code = country.upper() if country else (track.split('/')[0].upper() if track else "PL")
 
@@ -324,9 +343,10 @@ def main():
     parser.add_argument('--threads', type=int, default=8, help="Worker threads (default: 8)")
     parser.add_argument('--repo_path', type=str, default=None, help="Override CREODIAS repository path")
     parser.add_argument('--overwrite', action='store_true', help="Force overwrite of existing mosaics/stacks")
-    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', default=True, help="Enable Whittaker smoothing across DOYs (default: True)")
+    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', help=f"Enable Whittaker smoothing across DOYs (default: {DEFAULT_ENABLE_WHITTAKER})")
     parser.add_argument('--no_whittaker', dest='whittaker', action='store_false', help="Disable Whittaker smoothing")
-    parser.add_argument('--whittaker_lambda', type=float, default=15.0, help="Smoothing penalty lambda for Whittaker (default: 15.0)")
+    parser.set_defaults(whittaker=DEFAULT_ENABLE_WHITTAKER)
+    parser.add_argument('--whittaker_lambda', type=float, default=DEFAULT_WHITTAKER_LAMBDA, help=f"Smoothing penalty lambda for Whittaker (default: {DEFAULT_WHITTAKER_LAMBDA})")
     parser.add_argument('--username', default=download_cdse.CDSE_USERNAME, help="CDSE Username")
     parser.add_argument('--password', default=download_cdse.CDSE_PASSWORD, help="CDSE Password")
 

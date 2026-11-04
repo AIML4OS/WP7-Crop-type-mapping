@@ -14,6 +14,7 @@ Usage examples:
 import argparse
 import datetime
 import glob
+import json
 import logging
 import os
 import pathlib
@@ -31,6 +32,25 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
 DEFAULT_DOYS = [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]
 S2_SPECTRAL_BANDS = ['B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B8A', 'B11', 'B12']
+
+DEFAULT_ENABLE_WHITTAKER = True
+DEFAULT_WHITTAKER_LAMBDA = 15.0
+try:
+    _root_dir = Path(__file__).resolve().parent.parent
+    _cfg_paths = [
+        _root_dir / "config_s2.json",
+        Path(__file__).resolve().parent / "config_s2.json"
+    ]
+    for _cp in _cfg_paths:
+        if _cp.exists():
+            with open(_cp, 'r', encoding='utf-8') as _f:
+                _cfg_data = json.load(_f)
+                if "whittaker_smoothing" in _cfg_data and isinstance(_cfg_data["whittaker_smoothing"], dict):
+                    DEFAULT_ENABLE_WHITTAKER = bool(_cfg_data["whittaker_smoothing"].get("enabled", True))
+                    DEFAULT_WHITTAKER_LAMBDA = float(_cfg_data["whittaker_smoothing"].get("lambda", 15.0))
+            break
+except Exception:
+    pass
 
 REGIONAL_DOYS = {
     'CONTINENTAL_CENTRAL': [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287],
@@ -51,7 +71,7 @@ def get_regional_doys(country_code: str) -> List[int]:
 
 def whittaker_smooth_series(
     y_stack: np.ndarray,
-    lmbda: float = 15.0,
+    lmbda: float = DEFAULT_WHITTAKER_LAMBDA,
     d: int = 2
 ) -> np.ndarray:
     """
@@ -143,7 +163,7 @@ def apply_whittaker_smoothing_to_tile(
     tile_synthetic_dir: Path,
     doys: List[int],
     bands: List[str] = S2_SPECTRAL_BANDS,
-    lmbda: float = 15.0,
+    lmbda: float = DEFAULT_WHITTAKER_LAMBDA,
     max_block_size: int = 2048
 ) -> bool:
     """
@@ -375,8 +395,8 @@ def generate_s2_time_series_for_tile(
     result_synthetic_dir: Path,
     doys: List[int],
     overwrite: bool = False,
-    enable_whittaker: bool = True,
-    whittaker_lambda: float = 15.0
+    enable_whittaker: bool = DEFAULT_ENABLE_WHITTAKER,
+    whittaker_lambda: float = DEFAULT_WHITTAKER_LAMBDA
 ) -> bool:
     clean_tile = tile_name.upper().lstrip('T')
     b02_paths = list(tile_tif_dir.glob("**/*_B02*.tif"))
@@ -738,8 +758,8 @@ def run_time_series_for_dir(
     doys: List[int],
     max_workers: int = 8,
     overwrite: bool = False,
-    enable_whittaker: bool = True,
-    whittaker_lambda: float = 15.0,
+    enable_whittaker: bool = DEFAULT_ENABLE_WHITTAKER,
+    whittaker_lambda: float = DEFAULT_WHITTAKER_LAMBDA,
     target_geom_4326=None,
     allowed_tiles: Optional[set] = None
 ):
@@ -792,8 +812,8 @@ def run_time_series_for_track(
     doys: Optional[List[int]] = None,
     max_workers: int = 8,
     overwrite: bool = False,
-    enable_whittaker: bool = True,
-    whittaker_lambda: float = 15.0
+    enable_whittaker: bool = DEFAULT_ENABLE_WHITTAKER,
+    whittaker_lambda: float = DEFAULT_WHITTAKER_LAMBDA
 ):
     norm_track = track.replace('\\', '/')
     country_part = norm_track.split('/')[0].upper()
@@ -839,8 +859,8 @@ def run_time_series(
     doys: Optional[List[int]] = None,
     max_workers: int = 4,
     overwrite: bool = False,
-    enable_whittaker: bool = True,
-    whittaker_lambda: float = 15.0
+    enable_whittaker: bool = DEFAULT_ENABLE_WHITTAKER,
+    whittaker_lambda: float = DEFAULT_WHITTAKER_LAMBDA
 ):
     if track:
         run_time_series_for_track(track, doys, max_workers, overwrite, enable_whittaker, whittaker_lambda)
@@ -879,9 +899,10 @@ def main():
     parser.add_argument('--doys', nargs='+', type=int, default=None, help="DOY targets (default: auto-detected regional profile)")
     parser.add_argument('--threads', type=int, default=4, help="Worker threads (default: 4)")
     parser.add_argument('--overwrite', action='store_true', help="Force re-generation of existing synthetic series")
-    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', default=True, help="Enable Whittaker smoothing (default: True)")
+    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', help=f"Enable Whittaker smoothing (default: {DEFAULT_ENABLE_WHITTAKER})")
     parser.add_argument('--no_whittaker', dest='whittaker', action='store_false', help="Disable Whittaker smoothing")
-    parser.add_argument('--whittaker_lambda', type=float, default=15.0, help="Smoothing penalty lambda for Whittaker (default: 15.0)")
+    parser.set_defaults(whittaker=DEFAULT_ENABLE_WHITTAKER)
+    parser.add_argument('--whittaker_lambda', type=float, default=DEFAULT_WHITTAKER_LAMBDA, help=f"Smoothing penalty lambda for Whittaker (default: {DEFAULT_WHITTAKER_LAMBDA})")
 
     args = parser.parse_args()
 

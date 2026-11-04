@@ -308,8 +308,17 @@ class Sentinel2Pipeline:
             self.doys = doys
         self.threads = threads
         self.overwrite = overwrite
-        self.enable_whittaker = DEFAULT_ENABLE_WHITTAKER if enable_whittaker is None else bool(enable_whittaker)
-        self.whittaker_lambda = DEFAULT_WHITTAKER_LAMBDA if whittaker_lambda is None else float(whittaker_lambda)
+        if enable_whittaker is None:
+            self.enable_whittaker = DEFAULT_ENABLE_WHITTAKER
+        elif isinstance(enable_whittaker, str):
+            self.enable_whittaker = enable_whittaker.strip().lower() in ("true", "1", "yes", "y", "t")
+        else:
+            self.enable_whittaker = bool(enable_whittaker)
+
+        if whittaker_lambda is None:
+            self.whittaker_lambda = DEFAULT_WHITTAKER_LAMBDA
+        else:
+            self.whittaker_lambda = float(whittaker_lambda)
         self.source_mode = source
         self.source = detect_s2_source(self.start_date, self.end_date) if source == "auto" else source.lower()
         if source == "auto" and self.start_date and self.end_date:
@@ -663,8 +672,9 @@ Examples:
     parser.add_argument('--doys', nargs='+', type=int, default=None, help="Target DOYs list (default: auto-detected regional profile)")
     parser.add_argument('--threads', type=int, default=8, help="Worker threads for parallel processing (default: 8)")
     parser.add_argument('--overwrite', action='store_true', help="Force re-generation of existing intermediate and final stacks")
-    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', default=DEFAULT_ENABLE_WHITTAKER, help=f"Enable Whittaker smoothing across DOYs (default: {DEFAULT_ENABLE_WHITTAKER})")
+    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', help=f"Enable Whittaker smoothing across DOYs (default: {DEFAULT_ENABLE_WHITTAKER})")
     parser.add_argument('--no_whittaker', dest='whittaker', action='store_false', help="Disable Whittaker smoothing")
+    parser.set_defaults(whittaker=DEFAULT_ENABLE_WHITTAKER)
     parser.add_argument('--whittaker_lambda', type=float, default=DEFAULT_WHITTAKER_LAMBDA, help=f"Smoothing penalty lambda for Whittaker (default: {DEFAULT_WHITTAKER_LAMBDA})")
 
     args = parser.parse_args()
