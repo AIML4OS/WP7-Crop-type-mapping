@@ -96,6 +96,36 @@ def safe_list_safes(day_path: pathlib.Path, max_retries: int = 2) -> list[pathli
     return []
 
 
+def _is_valid_safe(safe_dir: pathlib.Path) -> bool:
+    """Verify that a candidate SAFE folder exists, is an accessible directory,
+    has an accessible manifest, accessible annotation/ and measurement/ directories,
+    and that measurement/ contains at least one non-empty TIFF (>10MB)."""
+    try:
+        if not safe_is_dir(safe_dir):
+            return False
+        manifest_std = safe_dir / "manifest.safe"
+        manifest_upper = safe_dir / "manifest.SAFE"
+        if not (safe_exists(manifest_std) or safe_exists(manifest_upper)):
+            return False
+        ann_dir = safe_dir / "annotation"
+        if not safe_is_dir(ann_dir):
+            return False
+        ann_xmls = [f for f in ann_dir.iterdir() if f.suffix.lower() == ".xml"]
+        if not ann_xmls:
+            return False
+        meas_dir = safe_dir / "measurement"
+        if not safe_is_dir(meas_dir):
+            return False
+        tiffs = [f for f in meas_dir.iterdir() if f.suffix.lower() in (".tiff", ".tif")]
+        if not tiffs:
+            return False
+        has_valid_tiff = any(safe_file_size(f) >= 10 * 1024 * 1024 for f in tiffs)
+        if not has_valid_tiff:
+            return False
+        return True
+    except (OSError, Exception):
+        return False
+
 
 # Repository where raw .SAFE data is stored
 _DEFAULT_S1_REPO = "/eodata/Sentinel-1/SAR/IW_GRDH_1S" if (os.name != "nt" or safe_exists("/eodata")) else r"Y:\Sentinel-1\SAR\IW_GRDH_1S"
@@ -783,11 +813,15 @@ class LocalSentinel1Finder:
             picked = None
             for k in order:
                 cand = kinds.get(k)
-                if cand is not None and (safe_exists(cand / "manifest.safe") or safe_exists(cand / "manifest.SAFE")):
+                if cand is not None and _is_valid_safe(cand):
                     picked = cand
                     break
             if picked is None:
-                picked = kinds.get(order[0]) or kinds.get(order[1])
+                for k in order:
+                    cand = kinds.get(k)
+                    if cand is not None and (safe_exists(cand / "manifest.safe") or safe_exists(cand / "manifest.SAFE")):
+                        picked = cand
+                        break
             if picked is not None:
                 chosen.append(picked)
         return chosen
@@ -907,6 +941,9 @@ class LocalSentinel1Finder:
                             continue
 
                         if prod_geom.Intersects(target_geom):
+                            if not _is_valid_safe(safe_dir):
+                                logging.warning(f"   [SKIP] Corrupt or incomplete SAFE structure on repository: {safe_dir.name}")
+                                continue
                             logging.info(f"   -> MATCH: {safe_dir.name}")
                             day_products.append(safe_dir)
                             day_footprints.append(prod_geom)

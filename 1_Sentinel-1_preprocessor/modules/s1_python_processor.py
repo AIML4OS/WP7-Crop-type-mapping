@@ -34,6 +34,7 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import sys
+import time
 import math
 import json
 import shutil
@@ -609,7 +610,53 @@ class S1SliceProduct:
         strip_h = 2048
         for y0 in range(0, height, strip_h):
             h = min(strip_h, height - y0)
-            dn = band.ReadAsArray(0, y0, width, h).astype(np.float32)
+
+            # Retry loop with exponential backoff to handle transient s3fs/FUSE socket drops
+            dn_raw = None
+            max_read_attempts = 3
+            for attempt in range(1, max_read_attempts + 1):
+                try:
+                    dn_raw = band.ReadAsArray(0, y0, width, h)
+                    if dn_raw is not None:
+                        break
+                    logging.warning(
+                        f"band.ReadAsArray returned None at y0={y0}, h={h} "
+                        f"(attempt {attempt}/{max_read_attempts}). Retrying..."
+                    )
+                except Exception as read_err:
+                    logging.warning(
+                        f"band.ReadAsArray exception at y0={y0}, h={h} "
+                        f"(attempt {attempt}/{max_read_attempts}): {read_err}. Retrying..."
+                    )
+                    if attempt == max_read_attempts:
+                        raise
+
+                # Release dataset and band handles so GDAL flushes block cache and resets file/socket descriptor
+                band = None
+                ds = None
+                time.sleep(1.0 * (2 ** (attempt - 1)))
+                for reopen_try in range(3):
+                    try:
+                        ds = gdal.Open(str(self.measurement_tiff), gdal.GA_ReadOnly)
+                        if ds is not None:
+                            band = ds.GetRasterBand(1)
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+
+                if band is None:
+                    logging.warning(
+                        f"Could not re-open {self.measurement_tiff} on retry attempt {attempt}"
+                    )
+
+            if dn_raw is None:
+                raise RuntimeError(
+                    f"Failed to read strip at y0={y0}, h={h} from {self.measurement_tiff} "
+                    f"after {max_read_attempts} attempts."
+                )
+
+            dn = dn_raw.astype(np.float32)
             valid = dn > 0
 
             # GRD Border Noise Removal along near/far range margins and top/bottom lines (if requested)

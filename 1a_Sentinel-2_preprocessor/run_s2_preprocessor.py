@@ -44,7 +44,7 @@ import pathlib
 import re
 import sys
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 
 # Ensure local and modules imports work cleanly
 script_dir = Path(__file__).resolve().parent
@@ -138,15 +138,109 @@ COUNTRY_ORBITS = {
 }
 
 
-def detect_s2_source() -> str:
-    """Auto-detects whether CREODIAS local mount is available or CDSE API should be used."""
-    local_repo = os.environ.get("S2_REPO_PATH", r"Y:\Sentinel-2\MSI\L2A")
-    eodata_path = Path("/eodata/Sentinel-2")
+def safe_exists(p) -> bool:
+    """Safely check if path exists, catching OSError (including Errno 5 / EIO on FUSE/s3fs mounts)."""
+    if p is None:
+        return False
     try:
-        if (Path(local_repo).is_dir() if local_repo else False) or eodata_path.is_dir():
-            return "creodias"
+        return Path(p).exists()
     except OSError:
-        pass
+        return False
+    except Exception:
+        return False
+
+
+def safe_is_dir(p) -> bool:
+    """Safely check if path is a directory, catching OSError."""
+    if p is None:
+        return False
+    try:
+        return Path(p).is_dir()
+    except OSError:
+        return False
+    except Exception:
+        return False
+
+
+def detect_s2_source(
+    start_date: Optional[Union[datetime.date, str]] = None,
+    end_date: Optional[Union[datetime.date, str]] = None
+) -> str:
+    """
+    Auto-detects whether CREODIAS local mount is available or CDSE API should be used.
+    Checks if the requested year(s) exist and are accessible under /eodata/Sentinel-2/MSI/L2A/{year}
+    (or under local S2_REPO_PATH). If any requested year is missing, unreadable, or contains
+    broken mount points on /eodata, defaults to "cdse".
+    """
+    local_repo_str = os.environ.get(
+        "S2_REPO_PATH",
+        "/eodata/Sentinel-2/MSI/L2A" if (os.name != "nt" or safe_exists("/eodata")) else r"Y:\Sentinel-2\MSI\L2A"
+    )
+    local_repo = Path(local_repo_str)
+    eodata_repo = Path("/eodata/Sentinel-2/MSI/L2A")
+
+    # Determine years to check
+    years_to_check = set()
+    for d in (start_date, end_date):
+        if d is not None:
+            if isinstance(d, str):
+                try:
+                    d = datetime.datetime.strptime(d.strip(), "%Y-%m-%d").date()
+                except Exception:
+                    d = None
+            if isinstance(d, (datetime.date, datetime.datetime)):
+                years_to_check.add(d.year)
+
+    if start_date and end_date:
+        try:
+            s_d = datetime.datetime.strptime(start_date.strip(), "%Y-%m-%d").date() if isinstance(start_date, str) else start_date
+            e_d = datetime.datetime.strptime(end_date.strip(), "%Y-%m-%d").date() if isinstance(end_date, str) else end_date
+            if isinstance(s_d, (datetime.date, datetime.datetime)) and isinstance(e_d, (datetime.date, datetime.datetime)):
+                for y in range(min(s_d.year, e_d.year), max(s_d.year, e_d.year) + 1):
+                    years_to_check.add(y)
+        except Exception:
+            pass
+
+    if not years_to_check:
+        curr_year = datetime.date.today().year
+        years_to_check = {curr_year, curr_year - 1}
+
+    def _year_accessible(base_dir: Path, year: int) -> bool:
+        y_dir = base_dir / str(year)
+        try:
+            if not y_dir.is_dir():
+                return False
+            # On CREODIAS local storage (/eodata or Y: drive), Sentinel-2 L2A is not available on disk for year >= 2025
+            base_str = str(base_dir).lower()
+            if year >= 2025 and (base_str.startswith("/eodata") or base_str.startswith("y:") or "sentinel-2" in base_str):
+                return False
+            entries = os.listdir(str(y_dir))
+            if not entries:
+                return False
+            # Probe a sample entry inside y_dir to ensure files are actually readable and not broken FUSE stubs
+            for m in sorted(entries):
+                m_dir = y_dir / m
+                if m_dir.is_dir():
+                    days = os.listdir(str(m_dir))
+                    if days:
+                        first_day = m_dir / sorted(days)[0]
+                        if first_day.is_dir():
+                            safes = os.listdir(str(first_day))
+                            if safes:
+                                (first_day / safes[0]).stat()
+                                return True
+            return False
+        except (OSError, Exception):
+            return False
+
+    for base in [local_repo, eodata_repo]:
+        try:
+            if safe_is_dir(base):
+                if all(_year_accessible(base, y) for y in sorted(years_to_check)):
+                    return "creodias"
+        except (OSError, Exception):
+            continue
+
     return "cdse"
 
 
@@ -210,8 +304,10 @@ class Sentinel2Pipeline:
         self.threads = threads
         self.overwrite = overwrite
         self.enable_whittaker = enable_whittaker
-        self.whittaker_lambda = whittaker_lambda
-        self.source = detect_s2_source() if source == "auto" else source.lower()
+        self.source_mode = source
+        self.source = detect_s2_source(self.start_date, self.end_date) if source == "auto" else source.lower()
+        if source == "auto" and self.start_date and self.end_date:
+            logging.info(f"Auto-detected Sentinel-2 data source: {self.source.upper()} for requested dates {self.start_date_str} to {self.end_date_str}")
 
         if self.orbit:
             self.track = f"{self.country}/orbit_{self.orbit}"
@@ -238,6 +334,10 @@ class Sentinel2Pipeline:
                 break
             except ValueError:
                 print(" [ERROR] Invalid date format! Please enter date as YYYY-MM-DD.")
+
+        if getattr(self, "source_mode", "auto") == "auto":
+            self.source = detect_s2_source(self.start_date, self.end_date)
+            logging.info(f"Auto-detected Sentinel-2 data source: {self.source.upper()} for requested dates {self.start_date_str} to {self.end_date_str}")
 
     def stage_1_download_extract(self):
         """Stage 1: Download or Extract L2A bands with SCL cloud masking into shared country S2 pool."""

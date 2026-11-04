@@ -554,14 +554,38 @@ def safe_file_size(p) -> int:
 
 
 def _is_valid_eodata_safe(safe_dir: pathlib.Path) -> bool:
-    """Verify that a candidate /eodata SAFE folder exists, is a directory, and has an accessible manifest."""
+    """Verify that a candidate /eodata SAFE folder exists, is an accessible directory,
+    has an accessible manifest, accessible annotation/ and measurement/ directories,
+    and that measurement/ contains at least one non-empty TIFF (>10MB)."""
     try:
         if not safe_is_dir(safe_dir):
             return False
-        # Manifest check confirms directory is actually accessible and not an unreadable FUSE mount error
+        # 1. Manifest check confirms directory is actually accessible and not an unreadable FUSE mount error
         manifest_std = safe_dir / "manifest.safe"
         manifest_upper = safe_dir / "manifest.SAFE"
-        return safe_exists(manifest_std) or safe_exists(manifest_upper)
+        if not (safe_exists(manifest_std) or safe_exists(manifest_upper)):
+            return False
+
+        # 2. Annotation check confirms annotation folder and XMLs exist and are readable
+        ann_dir = safe_dir / "annotation"
+        if not safe_is_dir(ann_dir):
+            return False
+        ann_xmls = [f for f in ann_dir.iterdir() if f.suffix.lower() == ".xml"]
+        if not ann_xmls:
+            return False
+
+        # 3. Measurement check confirms measurement folder and non-empty TIFF (>10MB) exist
+        meas_dir = safe_dir / "measurement"
+        if not safe_is_dir(meas_dir):
+            return False
+        tiffs = [f for f in meas_dir.iterdir() if f.suffix.lower() in (".tiff", ".tif")]
+        if not tiffs:
+            return False
+        has_valid_tiff = any(safe_file_size(f) >= 10 * 1024 * 1024 for f in tiffs)
+        if not has_valid_tiff:
+            return False
+
+        return True
     except OSError:
         return False
     except Exception:
@@ -734,10 +758,8 @@ class CDSESentinel1Finder:
 
                 local_safe_path = self.download_dir / safe_folder_name
                 
-                # Check if already downloaded and extracted (verify manifest exists and is complete)
-                has_cached_safe = safe_is_dir(local_safe_path) and (
-                    safe_exists(local_safe_path / "manifest.safe") or safe_exists(local_safe_path / "manifest.SAFE")
-                )
+                # Check if already downloaded and extracted (verify complete SAFE structure)
+                has_cached_safe = _is_valid_eodata_safe(local_safe_path)
 
                 if has_cached_safe:
                     logging.info(f"Using cached SAFE folder: {local_safe_path}")

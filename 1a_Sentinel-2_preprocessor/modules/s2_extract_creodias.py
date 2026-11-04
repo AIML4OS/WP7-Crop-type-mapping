@@ -966,6 +966,14 @@ def process_orbit_creodias_s2(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         list(executor.map(_worker_convert_creodias, scenes_to_process))
 
+    if total_scenes > 0 and success_count == 0:
+        err_msg = (
+            f"Sentinel-2 extraction failed for track {track_name}: 0 out of {total_scenes} products succeeded. "
+            f"The source repository at {S2_REPO_PATH} may be corrupt, inaccessible, or lacking readable product files."
+        )
+        logging.error(err_msg)
+        raise RuntimeError(err_msg)
+
     logging.info(f"SUCCESS: Sentinel-2 extraction & conversion completed for track {track_name}! ({success_count}/{total_scenes} succeeded)")
 
 
@@ -1040,6 +1048,14 @@ def process_country_creodias_s2(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         list(executor.map(_worker_convert_creodias, scenes_to_process))
+
+    if total_scenes > 0 and success_count == 0:
+        err_msg = (
+            f"Sentinel-2 extraction failed for country {country_code}: 0 out of {total_scenes} products succeeded. "
+            f"The source repository at {S2_REPO_PATH} may be corrupt, inaccessible, or lacking readable product files."
+        )
+        logging.error(err_msg)
+        raise RuntimeError(err_msg)
 
     logging.info(f"SUCCESS: Sentinel-2 extraction & conversion completed for country {country_code}! ({success_count}/{total_scenes} succeeded)\n")
 
