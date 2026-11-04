@@ -87,7 +87,9 @@ def run_s2_pipeline_for_orbit(
     doys: list = time_series.DEFAULT_DOYS,
     threads: int = 4,
     all_scenes_cache: Optional[list] = None,
-    overwrite: bool = False
+    overwrite: bool = False,
+    enable_whittaker: bool = True,
+    whittaker_lambda: float = 15.0
 ):
     track_name = f"{country_code}/orbit_{orbit_num}"
     logging.info(f"\n################################################################################")
@@ -137,7 +139,10 @@ def run_s2_pipeline_for_orbit(
         time_series.run_time_series_for_track(
             track=track_name,
             doys=doys,
-            max_workers=threads
+            max_workers=threads,
+            overwrite=overwrite,
+            enable_whittaker=enable_whittaker,
+            whittaker_lambda=whittaker_lambda
         )
 
         # Step 3: Mosaic, Reproject, Clip, and Stack
@@ -164,7 +169,9 @@ def run_s2_pipeline_for_track(
     doys: list = time_series.DEFAULT_DOYS,
     threads: int = 4,
     all_scenes_cache: Optional[list] = None,
-    overwrite: bool = False
+    overwrite: bool = False,
+    enable_whittaker: bool = True,
+    whittaker_lambda: float = 15.0
 ):
     orbit_match = re.search(r'orbit_(\d+)', track_name)
     orbit_num = int(orbit_match.group(1)) if orbit_match else 0
@@ -179,7 +186,9 @@ def run_s2_pipeline_for_track(
         doys=doys,
         threads=threads,
         all_scenes_cache=all_scenes_cache,
-        overwrite=overwrite
+        overwrite=overwrite,
+        enable_whittaker=enable_whittaker,
+        whittaker_lambda=whittaker_lambda
     )
 
 
@@ -195,7 +204,9 @@ def run_s2_master_pipeline(
     doys: list = time_series.DEFAULT_DOYS,
     threads: int = 8,
     repo_path: Optional[str] = None,
-    overwrite: bool = False
+    overwrite: bool = False,
+    enable_whittaker: bool = True,
+    whittaker_lambda: float = 15.0
 ):
     country_code = country.upper() if country else (track.split('/')[0].upper() if track else "PL")
 
@@ -213,7 +224,9 @@ def run_s2_master_pipeline(
             cloud_cover=cloud_cover,
             doys=doys,
             threads=threads,
-            overwrite=overwrite
+            overwrite=overwrite,
+            enable_whittaker=enable_whittaker,
+            whittaker_lambda=whittaker_lambda
         )
     else:
         if orbit is not None:
@@ -228,7 +241,9 @@ def run_s2_master_pipeline(
                 cloud_cover=cloud_cover,
                 doys=doys,
                 threads=threads,
-                overwrite=overwrite
+                overwrite=overwrite,
+                enable_whittaker=enable_whittaker,
+                whittaker_lambda=whittaker_lambda
             )
         else:
             orbits = extract_creodias.discover_s1_orbits(country_code)
@@ -249,7 +264,9 @@ def run_s2_master_pipeline(
                         cloud_cover=cloud_cover,
                         doys=doys,
                         threads=threads,
-                        overwrite=overwrite
+                        overwrite=overwrite,
+                        enable_whittaker=enable_whittaker,
+                        whittaker_lambda=whittaker_lambda
                     )
             else:
                 # Fallback if no orbits configured
@@ -277,7 +294,9 @@ def run_s2_master_pipeline(
                         country=country_code,
                         doys=doys,
                         max_workers=threads,
-                        overwrite=overwrite
+                        overwrite=overwrite,
+                        enable_whittaker=enable_whittaker,
+                        whittaker_lambda=whittaker_lambda
                     )
                     mosaic_stack.mosaic_stack_clip_s2(
                         country=country_code,
@@ -305,6 +324,9 @@ def main():
     parser.add_argument('--threads', type=int, default=8, help="Worker threads (default: 8)")
     parser.add_argument('--repo_path', type=str, default=None, help="Override CREODIAS repository path")
     parser.add_argument('--overwrite', action='store_true', help="Force overwrite of existing mosaics/stacks")
+    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', default=True, help="Enable Whittaker smoothing across DOYs (default: True)")
+    parser.add_argument('--no_whittaker', dest='whittaker', action='store_false', help="Disable Whittaker smoothing")
+    parser.add_argument('--whittaker_lambda', type=float, default=15.0, help="Smoothing penalty lambda for Whittaker (default: 15.0)")
     parser.add_argument('--username', default=download_cdse.CDSE_USERNAME, help="CDSE Username")
     parser.add_argument('--password', default=download_cdse.CDSE_PASSWORD, help="CDSE Password")
 
@@ -330,7 +352,9 @@ def main():
         doys=args.doys,
         threads=args.threads,
         repo_path=args.repo_path,
-        overwrite=args.overwrite
+        overwrite=args.overwrite,
+        enable_whittaker=args.whittaker,
+        whittaker_lambda=args.whittaker_lambda
     )
 
 

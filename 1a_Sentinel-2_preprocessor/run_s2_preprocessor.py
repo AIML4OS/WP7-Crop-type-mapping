@@ -63,6 +63,8 @@ logging.basicConfig(
 _PROJECT_ROOT = script_dir.parent
 BASE_DIR = Path(os.environ.get("AIML_WORKING_DIR", str(_PROJECT_ROOT / "workingDirs")))
 AUX_DIR = Path(os.environ.get("AIML_AUX_DIR", str(_PROJECT_ROOT / "auxiliary_files")))
+DEFAULT_ENABLE_WHITTAKER = True
+DEFAULT_WHITTAKER_LAMBDA = 15.0
 try:
     _cfg_path = script_dir / "config_s2.json"
     if _cfg_path.exists():
@@ -73,6 +75,9 @@ try:
                     BASE_DIR = Path(_cfg_data["paths"]["working_dir"])
                 if "AIML_AUX_DIR" not in os.environ and "aux_dir" in _cfg_data["paths"]:
                     AUX_DIR = Path(_cfg_data["paths"]["aux_dir"])
+            if "whittaker_smoothing" in _cfg_data and isinstance(_cfg_data["whittaker_smoothing"], dict):
+                DEFAULT_ENABLE_WHITTAKER = bool(_cfg_data["whittaker_smoothing"].get("enabled", True))
+                DEFAULT_WHITTAKER_LAMBDA = float(_cfg_data["whittaker_smoothing"].get("lambda", 15.0))
 except Exception:
     pass
 os.environ.setdefault("AIML_WORKING_DIR", str(BASE_DIR))
@@ -286,8 +291,8 @@ class Sentinel2Pipeline:
         doys: Optional[List[int]] = None,
         threads: int = 8,
         overwrite: bool = False,
-        enable_whittaker: bool = True,
-        whittaker_lambda: float = 15.0
+        enable_whittaker: Optional[bool] = None,
+        whittaker_lambda: Optional[float] = None
     ):
         self.country = country.upper()
         self.orbit = orbit
@@ -303,7 +308,8 @@ class Sentinel2Pipeline:
             self.doys = doys
         self.threads = threads
         self.overwrite = overwrite
-        self.enable_whittaker = enable_whittaker
+        self.enable_whittaker = DEFAULT_ENABLE_WHITTAKER if enable_whittaker is None else bool(enable_whittaker)
+        self.whittaker_lambda = DEFAULT_WHITTAKER_LAMBDA if whittaker_lambda is None else float(whittaker_lambda)
         self.source_mode = source
         self.source = detect_s2_source(self.start_date, self.end_date) if source == "auto" else source.lower()
         if source == "auto" and self.start_date and self.end_date:
@@ -493,19 +499,22 @@ class Sentinel2Pipeline:
 def interactive_menu(pipeline: Sentinel2Pipeline):
     while True:
         range_str = f"{pipeline.start_date_str} to {pipeline.end_date_str}" if (pipeline.start_date and pipeline.end_date) else "[NOT SET - REQUIRED]"
+        whitt_status = f"ENABLED (lambda={pipeline.whittaker_lambda})" if pipeline.enable_whittaker else "DISABLED"
         menu_text = f"""
 ============================================================
  Sentinel-2 Multi-Temporal Preprocessing Pipeline
- Track  : {pipeline.track}
- Source : [{pipeline.source.upper()}] (CREODIAS local / CDSE API)
- Range  : {range_str}
+ Track     : {pipeline.track}
+ Source    : [{pipeline.source.upper()}] (CREODIAS local / CDSE API)
+ Range     : {range_str}
+ Whittaker : {whitt_status}
 ============================================================
  [1] Stage 1: Ingestion & SCL cloud masking ({pipeline.source.upper()})
- [2] Stage 2: Multi-temporal synthetic DOY interpolation (14 dates)
+ [2] Stage 2: Multi-temporal synthetic DOY interpolation ({len(pipeline.doys)} dates)
  [3] Stage 3: Mosaicking, S1 grid matching & 126-band BigTIFF stack
  -----------------------------------------------------------
  [D] Change / Enter Acquisition Dates
  [S] Switch data source (Toggle: CREODIAS <-> CDSE)
+ [W] Toggle Whittaker temporal smoothing
  [A] Run all stages automatically (1 -> 2 -> 3)
  [Q] Quit
 ============================================================
@@ -519,6 +528,9 @@ def interactive_menu(pipeline: Sentinel2Pipeline):
             elif choice == 'S':
                 pipeline.source = 'cdse' if pipeline.source == 'creodias' else 'creodias'
                 print(f"\n    Data source switched to: {pipeline.source.upper()}")
+            elif choice == 'W':
+                pipeline.enable_whittaker = not pipeline.enable_whittaker
+                print(f"\n    Whittaker smoothing is now: {'ENABLED' if pipeline.enable_whittaker else 'DISABLED'}")
             elif choice == 'A': pipeline.run_all()
             elif choice == 'Q': break
         except (KeyboardInterrupt, EOFError):
@@ -614,7 +626,9 @@ def interactive_setup_wizard():
         orbit=selected_orbit,
         start_date=start_date,
         end_date=end_date,
-        source=source
+        source=source,
+        enable_whittaker=DEFAULT_ENABLE_WHITTAKER,
+        whittaker_lambda=DEFAULT_WHITTAKER_LAMBDA
     )
     interactive_menu(pipeline)
 
@@ -633,6 +647,9 @@ Examples:
 
   # Entire country automated run:
   python run_s2_preprocessor.py --country NL -s 2024-10-15 -e 2025-09-15 --stage A
+
+  # Entire country automated run with Whittaker temporal smoothing:
+  python run_s2_preprocessor.py --country IE --source cdse -s 2025-02-15 -e 2025-09-15 --enable_whittaker --whittaker_lambda 15.0 --stage A
 """
     )
     parser.add_argument('-t', '--track', default=None, help="Track identifier (e.g. NL/orbit_88, PL/orbit_22)")
@@ -646,9 +663,9 @@ Examples:
     parser.add_argument('--doys', nargs='+', type=int, default=None, help="Target DOYs list (default: auto-detected regional profile)")
     parser.add_argument('--threads', type=int, default=8, help="Worker threads for parallel processing (default: 8)")
     parser.add_argument('--overwrite', action='store_true', help="Force re-generation of existing intermediate and final stacks")
-    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', default=True, help="Enable Whittaker smoothing across DOYs (default: True)")
+    parser.add_argument('--enable_whittaker', dest='whittaker', action='store_true', default=DEFAULT_ENABLE_WHITTAKER, help=f"Enable Whittaker smoothing across DOYs (default: {DEFAULT_ENABLE_WHITTAKER})")
     parser.add_argument('--no_whittaker', dest='whittaker', action='store_false', help="Disable Whittaker smoothing")
-    parser.add_argument('--whittaker_lambda', type=float, default=15.0, help="Smoothing penalty lambda for Whittaker (default: 15.0)")
+    parser.add_argument('--whittaker_lambda', type=float, default=DEFAULT_WHITTAKER_LAMBDA, help=f"Smoothing penalty lambda for Whittaker (default: {DEFAULT_WHITTAKER_LAMBDA})")
 
     args = parser.parse_args()
 
