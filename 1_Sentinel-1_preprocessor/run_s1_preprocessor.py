@@ -182,36 +182,35 @@ def detect_s1_source() -> str:
 
 
 def discover_country_orbits(country_code: str) -> List[int]:
-    """Finds existing orbit folders or falls back to greedy optimal orbit registry."""
+    """Finds all optimal greedy orbits for country and combines with any existing local orbit folders."""
     c = country_code.upper()
-    found = set()
-    for b in [BASE_DIR, Path(r"D:/AIML_CropMapper_Cloud/workingDir")]:
-        c_dir = b / c
-        if c_dir.exists():
-            for d in c_dir.glob("orbit_*"):
-                m = re.search(r'orbit_(\d+)', d.name)
-                if m:
-                    has_slice = (d / "slice_assembly").exists() and any((d / "slice_assembly").iterdir())
-                    has_wrapped = (d / "wrapped").exists() and any((d / "wrapped").iterdir())
-                    has_final = (d / "S1_final_preprocessing").exists() and any((d / "S1_final_preprocessing").glob("*.dim"))
-                    has_stack = (d / "1_input_stacks").exists() and any((d / "1_input_stacks").glob("*.tif"))
-                    if has_slice or has_wrapped or has_final or has_stack:
-                        found.add(int(m.group(1)))
-    if found:
-        return sorted(list(found))
+    all_orbits = set()
 
+    # 1. Primary: load official greedy optimal orbits for this country
     greedy_path = AUX_DIR / "country_optimal_greedy_orbits_clean.json"
     if greedy_path.exists():
         try:
             with open(greedy_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if c in data and isinstance(data[c], dict) and data[c].get("orbits"):
-                return [int(o) for o in data[c]["orbits"]]
+                all_orbits.update(int(o) for o in data[c]["orbits"])
         except Exception:
             pass
 
-    if c in COUNTRY_ORBITS:
-        return COUNTRY_ORBITS[c]
+    if not all_orbits and c in COUNTRY_ORBITS:
+        all_orbits.update(COUNTRY_ORBITS[c])
+
+    # 2. Secondary: combine with any existing local orbit folders on disk
+    for b in [BASE_DIR, Path(r"D:/AIML_CropMapper_Cloud/workingDir")]:
+        c_dir = b / c
+        if c_dir.exists():
+            for d in c_dir.glob("orbit_*"):
+                m = re.search(r'orbit_(\d+)', d.name)
+                if m:
+                    all_orbits.add(int(m.group(1)))
+
+    if all_orbits:
+        return sorted(list(all_orbits))
 
     json_path = AUX_DIR / "country_orbits_complete.json"
     if json_path.exists():
