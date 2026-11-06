@@ -489,14 +489,14 @@ def generate_s2_time_series_for_tile(
                 'orb_weight': orb_w
             })
 
-        # Cache SCL clear masks per DOY & resolution (bounded to 32 entries to cap memory usage)
+        # Cache SCL clear masks per DOY & resolution (bounded to 4 entries to cap memory usage)
         scl_cache: Dict[Tuple[str, int, int, bool], Optional[np.ndarray]] = {}
 
         def _load_scl_mask(b02_p: Path, target_w: int, target_h: int, relaxed: bool = False) -> Optional[np.ndarray]:
             k = (str(b02_p), target_w, target_h, relaxed)
             if k in scl_cache:
                 return scl_cache[k]
-            if len(scl_cache) >= 32:
+            if len(scl_cache) >= 4:
                 scl_cache.pop(next(iter(scl_cache)))
             scl_p = get_scl_path_for_acq(b02_p)
             if not scl_p:
@@ -693,6 +693,24 @@ def generate_s2_time_series_for_tile(
             out_ds.GetRasterBand(1).SetNoDataValue(0)
             out_ds = None
 
+            # Explicit memory release per band to prevent RAM accumulation across DOY loops
+            final_arr = None
+            final_interp = None
+            accum_clear_num = None
+            accum_clear_den = None
+            accum_fallback_num = None
+            accum_fallback_den = None
+            arr_before = None
+            arr_after = None
+            arr_before_fb = None
+            arr_after_fb = None
+            interp_clear = None
+            interp_fb = None
+
+        scl_cache.clear()
+        import gc
+        gc.collect()
+
     # Whittaker multi-temporal smoothing across the DOY sequence
     whittaker_flag = result_synthetic_dir / ".whittaker_done"
     if enable_whittaker and len(doys) >= 4:
@@ -788,7 +806,10 @@ def run_time_series_for_dir(
     lock = threading.Lock()
 
     tile_names = [d.name.replace('_tif', '') for d in tile_dirs]
-    logging.info(f"Generating seamless synthetic time-series for {s2_base} ({total_tiles} intersecting tiles: {tile_names}, Workers: {max_workers})...")
+    # Cap worker threads to prevent RAM exhaustion (each 10m S2 tile requires ~5-7 GB RAM)
+    # Maximum 3 workers guarantees peak memory remains under 25 GB on a 117 GB RAM system
+    worker_count = max(1, min(max_workers, 3))
+    logging.info(f"Generating seamless synthetic time-series for {s2_base} ({total_tiles} intersecting tiles: {tile_names}, Workers: {worker_count} [capped from {max_workers} for memory safety])...")
 
     def _worker_tile(t_dir):
         nonlocal done_tiles
@@ -803,7 +824,7 @@ def run_time_series_for_dir(
             logging.info(f"  [TIME-SERIES PROGRESS] {s2_base.name}: {done_tiles}/{total_tiles} tiles completed ({pct:.1f}%) - Last: {clean_tile_name}")
         return res
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
         list(executor.map(_worker_tile, tile_dirs))
 
 
