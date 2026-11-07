@@ -274,7 +274,7 @@ def discover_s1_orbits(country_code: str) -> List[int]:
 
 
 def _extract_active_s1_raster_footprint(s1_tif_path: Path, target_epsg: int = 4326) -> Optional[ogr.Geometry]:
-    """Extracts the active (non-nodata) footprint polygon from a Sentinel-1 stack using a fast 256x256 overview."""
+    """Extracts the active (non-nodata) footprint polygon from a Sentinel-1 stack using a high-resolution overview."""
     try:
         ds = gdal.Open(str(s1_tif_path))
         if not ds:
@@ -285,8 +285,8 @@ def _extract_active_s1_raster_footprint(s1_tif_path: Path, target_epsg: int = 43
         proj_wkt = ds.GetProjection()
         nb = ds.RasterCount
 
-        ov_w = max(128, min(256, w // 20))
-        ov_h = max(128, min(256, h // 20))
+        ov_w = max(512, min(1024, w // 20))
+        ov_h = max(512, min(1024, h // 20))
         mask = np.zeros((ov_h, ov_w), dtype=np.uint8)
         for b_idx in sorted(set([1, max(1, nb // 2), nb])):
             arr = ds.GetRasterBand(b_idx).ReadAsArray(buf_xsize=ov_w, buf_ysize=ov_h)
@@ -711,7 +711,6 @@ def _query_cdse_odata_s2_scenes(
         # Deduplicate reprocessed versions of the exact same (tile, sensing_timestamp, orbit), keeping latest baseline/processing date
         dedup_map: Dict[Tuple[str, str, str], Dict] = {}
         repo_is_eodata = str(repo_path).startswith("/eodata")
-        intersecting_tiles_cache: Dict[str, bool] = {}
 
         for item in raw_items:
             name = item.get("Name", "")
@@ -729,21 +728,14 @@ def _query_cdse_odata_s2_scenes(
                 continue
 
             if target_geom is not None and not target_geom.IsEmpty():
-                if tile_upper in intersecting_tiles_cache:
-                    if not intersecting_tiles_cache[tile_upper]:
-                        continue
-                else:
-                    fp = item.get("GeoFootprint")
-                    if fp:
-                        try:
-                            fp_geom = ogr.CreateGeometryFromJson(json.dumps(fp))
-                            if fp_geom is not None:
-                                intersects = bool(fp_geom.Intersects(target_geom))
-                                intersecting_tiles_cache[tile_upper] = intersects
-                                if not intersects:
-                                    continue
-                        except Exception:
-                            pass
+                fp = item.get("GeoFootprint")
+                if fp:
+                    try:
+                        fp_geom = ogr.CreateGeometryFromJson(json.dumps(fp) if isinstance(fp, dict) else str(fp))
+                        if fp_geom is not None and not fp_geom.Intersects(target_geom):
+                            continue
+                    except Exception:
+                        pass
 
             cloud_pct = 0.0
             for att in item.get("Attributes", []):

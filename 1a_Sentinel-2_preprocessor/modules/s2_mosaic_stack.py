@@ -204,12 +204,24 @@ def prepare_orbit_cutline_shapefile(
     """
     try:
         import s2_extract_creodias as _ext
+        country_geom = _ext.get_country_geometry(country_code, target_epsg=target_epsg)
         orbit_match = re.search(r'orbit_(\d+)', norm_track)
         if orbit_match:
             orbit_num = int(orbit_match.group(1))
             clip_geom = _ext.get_s1_orbit_extent_geometry(country_code, orbit_num, target_epsg=target_epsg)
+            if clip_geom is not None and not clip_geom.IsEmpty() and country_geom is not None and not country_geom.IsEmpty():
+                try:
+                    # Buffer the active SAR raster footprint slightly before intersecting with country_geom,
+                    # preventing coastal serrations or discretization truncation
+                    buf = clip_geom.Buffer(1000.0)
+                    if buf is not None and not buf.IsEmpty():
+                        inter = buf.Intersection(country_geom)
+                        if inter is not None and not inter.IsEmpty():
+                            clip_geom = inter.MakeValid()
+                except Exception:
+                    pass
         else:
-            clip_geom = _ext.get_country_geometry(country_code, target_epsg=target_epsg)
+            clip_geom = country_geom
 
         if clip_geom is None or clip_geom.IsEmpty():
             return get_country_shapefile(country_code), None

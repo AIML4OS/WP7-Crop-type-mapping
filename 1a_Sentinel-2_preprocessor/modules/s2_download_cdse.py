@@ -245,7 +245,6 @@ class Sentinel2FinderCDSE:
         )
 
         products = []
-        intersecting_tiles_cache: Dict[str, bool] = {}
         try:
             while next_url:
                 resp = requests.get(next_url, timeout=45)
@@ -256,24 +255,16 @@ class Sentinel2FinderCDSE:
                     name = item['Name']
                     tile_match = re.search(r'_T([0-9]{2}[A-Z]{3})_', name)
                     tile_name = tile_match.group(1) if tile_match else "UNKNOWN"
-                    tile_upper = tile_name.upper()
 
                     if geom is not None and not geom.IsEmpty():
-                        if tile_upper in intersecting_tiles_cache:
-                            if not intersecting_tiles_cache[tile_upper]:
-                                continue
-                        else:
-                            fp = item.get('GeoFootprint')
-                            if fp:
-                                try:
-                                    fp_geom = ogr.CreateGeometryFromJson(json.dumps(fp))
-                                    if fp_geom is not None:
-                                        intersects = bool(fp_geom.Intersects(geom))
-                                        intersecting_tiles_cache[tile_upper] = intersects
-                                        if not intersects:
-                                            continue
-                                except Exception:
-                                    pass
+                        fp = item.get('GeoFootprint')
+                        if fp:
+                            try:
+                                fp_geom = ogr.CreateGeometryFromJson(json.dumps(fp) if isinstance(fp, dict) else str(fp))
+                                if fp_geom is not None and not fp_geom.Intersects(geom):
+                                    continue
+                            except Exception:
+                                pass
 
                     products.append({
                         'id': item['Id'],
