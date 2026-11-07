@@ -849,12 +849,13 @@ def run_time_series_for_track(
     allowed_tiles = None
     try:
         import s2_extract_creodias as _ext
-        if country_part in _ext.COUNTRY_MGRS_TILES:
-            allowed_tiles = set(t.upper().lstrip('T') for t in _ext.COUNTRY_MGRS_TILES[country_part])
+        c_up = country_part.upper()
+        if c_up in _ext.COUNTRY_MGRS_TILES:
+            allowed_tiles = set(t.upper().lstrip('T') for t in _ext.COUNTRY_MGRS_TILES[c_up])
         if orbit_num is not None:
-            target_geom = _ext.get_s1_orbit_extent_geometry(country_part, orbit_num, target_epsg=4326)
+            target_geom = _ext.get_s1_orbit_extent_geometry(c_up, orbit_num, target_epsg=4326)
         else:
-            target_geom = _ext.get_country_geometry(country_part, target_epsg=4326)
+            target_geom = _ext.get_country_geometry(c_up, target_epsg=4326)
     except Exception:
         pass
 

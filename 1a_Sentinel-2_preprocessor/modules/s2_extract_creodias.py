@@ -285,8 +285,8 @@ def _extract_active_s1_raster_footprint(s1_tif_path: Path, target_epsg: int = 43
         proj_wkt = ds.GetProjection()
         nb = ds.RasterCount
 
-        ov_w = max(512, min(1024, w // 20))
-        ov_h = max(512, min(1024, h // 20))
+        ov_w = min(w, max(512, min(1024, w // 20))) if w >= 512 else w
+        ov_h = min(h, max(512, min(1024, h // 20))) if h >= 512 else h
         mask = np.zeros((ov_h, ov_w), dtype=np.uint8)
         for b_idx in sorted(set([1, max(1, nb // 2), nb])):
             arr = ds.GetRasterBand(b_idx).ReadAsArray(buf_xsize=ov_w, buf_ysize=ov_h)
@@ -731,7 +731,8 @@ def _query_cdse_odata_s2_scenes(
                 fp = item.get("GeoFootprint")
                 if fp:
                     try:
-                        fp_geom = ogr.CreateGeometryFromJson(json.dumps(fp) if isinstance(fp, dict) else str(fp))
+                        fp_dict = fp.get('geometry', fp) if isinstance(fp, dict) else fp
+                        fp_geom = ogr.CreateGeometryFromJson(json.dumps(fp_dict) if isinstance(fp_dict, dict) else str(fp_dict))
                         if fp_geom is not None and not fp_geom.Intersects(target_geom):
                             continue
                     except Exception:
@@ -898,7 +899,7 @@ def process_orbit_creodias_s2(
 
     orbit_geom = get_s1_orbit_extent_geometry(country_code, orbit_num, target_epsg=4326)
     if all_scenes is None:
-        target_tiles = COUNTRY_MGRS_TILES.get(country_code, None)
+        target_tiles = COUNTRY_MGRS_TILES.get(country_code.upper(), None)
         all_scenes = scan_creodias_for_dates(
             S2_REPO_PATH, start_date, end_date,
             target_tiles=target_tiles,
@@ -986,7 +987,7 @@ def process_country_creodias_s2(
     logging.info(f"========================================================")
 
     country_geom = get_country_geometry(country_code, target_epsg=4326)
-    target_tiles = COUNTRY_MGRS_TILES.get(country_code, None)
+    target_tiles = COUNTRY_MGRS_TILES.get(country_code.upper(), None)
     all_scenes = scan_creodias_for_dates(
         S2_REPO_PATH, start_date, end_date,
         target_tiles=target_tiles,

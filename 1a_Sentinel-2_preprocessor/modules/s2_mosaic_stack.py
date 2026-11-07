@@ -213,7 +213,8 @@ def prepare_orbit_cutline_shapefile(
                 try:
                     # Buffer the active SAR raster footprint slightly before intersecting with country_geom,
                     # preventing coastal serrations or discretization truncation
-                    buf = clip_geom.Buffer(1000.0)
+                    buf_dist = (1000.0 / 111320.0) if target_epsg == 4326 else 1000.0
+                    buf = clip_geom.Buffer(buf_dist)
                     if buf is not None and not buf.IsEmpty():
                         inter = buf.Intersection(country_geom)
                         if inter is not None and not inter.IsEmpty():
@@ -233,6 +234,23 @@ def prepare_orbit_cutline_shapefile(
                 clip_geom = buf
         except Exception:
             pass
+
+        # Ensure clip_geom is strictly a Polygon or MultiPolygon without non-polygon slivers for shapefile layer
+        g_type = clip_geom.GetGeometryType() & ~ogr.wkb25Bit
+        if g_type not in (ogr.wkbPolygon, ogr.wkbMultiPolygon):
+            clean_mp = ogr.Geometry(ogr.wkbMultiPolygon)
+            if g_type == ogr.wkbGeometryCollection:
+                for i in range(clip_geom.GetGeometryCount()):
+                    sub_g = clip_geom.GetGeometryRef(i)
+                    if sub_g:
+                        sub_t = sub_g.GetGeometryType() & ~ogr.wkb25Bit
+                        if sub_t == ogr.wkbPolygon:
+                            clean_mp.AddGeometry(sub_g.Clone())
+                        elif sub_t == ogr.wkbMultiPolygon:
+                            for j in range(sub_g.GetGeometryCount()):
+                                clean_mp.AddGeometry(sub_g.GetGeometryRef(j).Clone())
+            if not clean_mp.IsEmpty():
+                clip_geom = clean_mp
 
         out_dir.mkdir(parents=True, exist_ok=True)
         cut_shp = out_dir / "_clean_orbit_cutline.shp"

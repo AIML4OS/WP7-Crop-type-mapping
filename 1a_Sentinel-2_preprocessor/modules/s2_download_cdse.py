@@ -260,7 +260,8 @@ class Sentinel2FinderCDSE:
                         fp = item.get('GeoFootprint')
                         if fp:
                             try:
-                                fp_geom = ogr.CreateGeometryFromJson(json.dumps(fp) if isinstance(fp, dict) else str(fp))
+                                fp_dict = fp.get('geometry', fp) if isinstance(fp, dict) else fp
+                                fp_geom = ogr.CreateGeometryFromJson(json.dumps(fp_dict) if isinstance(fp_dict, dict) else str(fp_dict))
                                 if fp_geom is not None and not fp_geom.Intersects(geom):
                                     continue
                             except Exception:
@@ -705,7 +706,7 @@ def process_country_cdse_s2(
         return
 
     # Filter scenes to target country MGRS tiles if defined, and check existing converted GeoTIFFs
-    target_tiles = set(COUNTRY_MGRS_TILES.get(country_code, []))
+    target_tiles = set(COUNTRY_MGRS_TILES.get(country_code.upper(), []))
     target_products = []
     for prod in products:
         tile_upper = prod['tile'].upper()
