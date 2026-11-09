@@ -249,6 +249,8 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
         candidate_suffixes = [
             f"_mlpxgb_presto_{seg_mode}",
             f"_presto_hybrid_{seg_mode}",
+            f"_mlp_{seg_mode}",
+            f"_xgb_{seg_mode}",
             f"_{seg_mode}",
             f"_{seg_mode}_masked",
             ""
@@ -322,11 +324,12 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
         )
         ds_conf_list.append(vrt_conf)
 
-    # --- Prepare output file ------------------------------------------------
+    # --- Prepare output files (National Crop Map + National Confidence Map) ---
     base_tr, base_country, _, _ = tracks[0]
     out_dir = base_dir / base_country / 'national_products'
     out_dir.mkdir(parents=True, exist_ok=True)
     out_tif = out_dir / f"{base_country}_national_crop_map{suffix}.tif"
+    out_conf_tif = out_dir / f"{base_country}_national_confidence{suffix}.tif"
     
     drv = gdal.GetDriverByName('GTiff')
     ds_out = drv.Create(str(out_tif), cols, rows, 1, gdal.GDT_Int32, 
@@ -335,11 +338,50 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
     ds_out.SetProjection(proj)
     band_out = ds_out.GetRasterBand(1)
     band_out.SetNoDataValue(0)
-    
+
+    ds_conf_out = drv.Create(str(out_conf_tif), cols, rows, 1, gdal.GDT_Float32,
+                             options=['COMPRESS=ZSTD', 'PREDICTOR=3', 'ZSTD_LEVEL=3', 'TILED=YES', 'BIGTIFF=YES', 'NUM_THREADS=ALL_CPUS'])
+    ds_conf_out.SetGeoTransform(gt_global)
+    ds_conf_out.SetProjection(proj)
+    band_conf_out = ds_conf_out.GetRasterBand(1)
+    band_conf_out.SetNoDataValue(0.0)
+
+    # Precompute smooth cross-track swath-edge feather weights (at 1/16 overview scale)
+    # so noisy outer range edges of an orbit yield smoothly to central-swath pixels of adjacent orbits
+    ov_scale = 16
+    ov_cols = max(64, int(math.ceil(cols / ov_scale)))
+    ov_rows = max(64, int(math.ceil(rows / ov_scale)))
+    orbit_edge_weights_ov = []
+    if len(tracks) >= 2:
+        from scipy.ndimage import distance_transform_edt
+        feather_ov_px = 16.0  # ~2.5 km smooth cosine taper at outer swath boundaries
+        for i in range(len(tracks)):
+            try:
+                ov_cls = ds_cls_list[i].GetRasterBand(1).ReadAsArray(0, 0, cols, rows, ov_cols, ov_rows)
+                nod = nodata_vals[i]
+                if ov_cls is not None:
+                    valid_ov = (ov_cls > 0) & (ov_cls != nod if nod is not None else True)
+                    swath_hull = np.zeros_like(valid_ov, dtype=bool)
+                    for r_idx in range(ov_rows):
+                        v_x = np.where(valid_ov[r_idx])[0]
+                        if len(v_x) > 0:
+                            swath_hull[r_idx, v_x[0]:v_x[-1] + 1] = True
+                    if np.any(swath_hull):
+                        dist_ov = distance_transform_edt(swath_hull).astype(np.float32)
+                        u_ramp = np.clip(dist_ov / feather_ov_px, 0.0, 1.0)
+                        w_ov = (0.25 + 0.75 * (0.5 - 0.5 * np.cos(np.pi * u_ramp))).astype(np.float32)
+                        orbit_edge_weights_ov.append(w_ov)
+                    else:
+                        orbit_edge_weights_ov.append(np.ones((ov_rows, ov_cols), dtype=np.float32))
+                else:
+                    orbit_edge_weights_ov.append(np.ones((ov_rows, ov_cols), dtype=np.float32))
+            except Exception:
+                orbit_edge_weights_ov.append(np.ones((ov_rows, ov_cols), dtype=np.float32))
+
     # --- Block by block processing ------------------------------------------
     gdal.SetCacheMax(4 * 1024 * 1024 * 1024)
     tile_size = 4096
-    print("Merging tracks block-by-block to conserve memory...")
+    print("Merging tracks block-by-block with swath-edge feathering to conserve memory...")
     
     for y in range(0, rows, tile_size):
         for x in range(0, cols, tile_size):
@@ -348,7 +390,11 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
             
             c_stack = []
             cf_stack = []
+            raw_cf_stack = []
             
+            ov_y_idx = np.clip((np.arange(y, y + ysize) * ov_rows) // max(rows, 1), 0, ov_rows - 1)
+            ov_x_idx = np.clip((np.arange(x, x + xsize) * ov_cols) // max(cols, 1), 0, ov_cols - 1)
+
             for i in range(len(tracks)):
                 c_arr = ds_cls_list[i].GetRasterBand(1).ReadAsArray(x, y, xsize, ysize)
                 cf_arr = ds_conf_list[i].GetRasterBand(1).ReadAsArray(x, y, xsize, ysize).astype(np.float32)
@@ -360,12 +406,20 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
                 else:
                     c_arr = c_arr.astype(np.int32)
                 cf_arr[c_arr <= 0] = np.nan
+                raw_cf_stack.append(np.where(np.isnan(cf_arr), 0.0, cf_arr))
+
+                if orbit_edge_weights_ov:
+                    w_sub = orbit_edge_weights_ov[i][ov_y_idx[:, None], ov_x_idx[None, :]]
+                    cf_weighted = cf_arr * w_sub
+                else:
+                    cf_weighted = cf_arr
                     
                 c_stack.append(c_arr)
-                cf_stack.append(cf_arr)
+                cf_stack.append(cf_weighted)
                 
             c_stack = np.stack(c_stack, axis=0)
             cf_stack = np.stack(cf_stack, axis=0)
+            raw_cf_stack = np.stack(raw_cf_stack, axis=0)
 
             method_norm = (method or 'confidence').lower()
             if method_norm == 'priority':
@@ -373,40 +427,55 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
                 valid_m = (c_stack > 0) & (~np.isnan(cf_stack))
                 idx = np.argmax(valid_m, axis=0)
                 final_block = np.take_along_axis(c_stack, idx[None, :, :], axis=0)[0]
-                final_block[~np.any(valid_m, axis=0)] = 0
+                final_conf_block = np.take_along_axis(raw_cf_stack, idx[None, :, :], axis=0)[0]
+                no_valid = ~np.any(valid_m, axis=0)
+                final_block[no_valid] = 0
+                final_conf_block[no_valid] = 0.0
             elif method_norm == 'majority':
                 # Majority vote across overlapping orbits, with max-confidence tie-breaking
                 cf_clean = np.where(np.isnan(cf_stack), -np.inf, cf_stack)
                 idx_conf = np.argmax(cf_clean, axis=0)
                 final_block = np.take_along_axis(c_stack, idx_conf[None, :, :], axis=0)[0]
-                final_block[np.all(np.isneginf(cf_clean), axis=0)] = 0
+                final_conf_block = np.take_along_axis(raw_cf_stack, idx_conf[None, :, :], axis=0)[0]
+                no_valid = np.all(np.isneginf(cf_clean), axis=0)
+                final_block[no_valid] = 0
+                final_conf_block[no_valid] = 0.0
                 valid_counts = np.sum(c_stack > 0, axis=0)
                 overlap_mask = valid_counts >= 2
                 if np.any(overlap_mask):
                     ov_classes = c_stack[:, overlap_mask]  # (K, N_ov)
                     ov_confs = np.where(np.isnan(cf_stack[:, overlap_mask]), 0.0, cf_stack[:, overlap_mask])
+                    ov_raw_confs = raw_cf_stack[:, overlap_mask]
                     u_classes = [int(u) for u in np.unique(ov_classes) if u > 0]
                     if len(u_classes) > 1:
                         best_cls = np.zeros(ov_classes.shape[1], dtype=np.int32)
+                        best_conf = np.zeros(ov_classes.shape[1], dtype=np.float32)
                         best_score = np.full(ov_classes.shape[1], -1.0, dtype=np.float32)
                         for uc in u_classes:
                             m_uc = (ov_classes == uc)
-                            # Score combines vote count (primary) + mean confidence (tie-breaker in [0, 1])
+                            # Score combines vote count (primary) + edge-weighted confidence (tie-breaker in [0, 1])
                             score_uc = np.sum(m_uc, axis=0).astype(np.float32) + np.max(np.where(m_uc, ov_confs, 0.0), axis=0) * 0.99
                             better = score_uc > best_score
                             best_score[better] = score_uc[better]
                             best_cls[better] = uc
+                            best_conf[better] = np.max(np.where(m_uc, ov_raw_confs, 0.0), axis=0)[better]
                         final_block[overlap_mask] = best_cls
+                        final_conf_block[overlap_mask] = best_conf
             else:
-                # Default: pixel-wise maximum confidence selection ('confidence')
+                # Default: pixel-wise maximum edge-feathered confidence selection ('confidence')
                 cf_stack[np.isnan(cf_stack)] = -np.inf
                 idx = np.argmax(cf_stack, axis=0)
                 final_block = np.take_along_axis(c_stack, idx[None, :, :], axis=0)[0]
-                final_block[np.all(np.isneginf(cf_stack), axis=0)] = 0
+                final_conf_block = np.take_along_axis(raw_cf_stack, idx[None, :, :], axis=0)[0]
+                no_valid = np.all(np.isneginf(cf_stack), axis=0)
+                final_block[no_valid] = 0
+                final_conf_block[no_valid] = 0.0
 
             band_out.WriteArray(final_block, x, y)
+            band_conf_out.WriteArray(final_conf_block, x, y)
 
     ds_out.FlushCache()
+    ds_conf_out.FlushCache()
 
     # --- apply morphological sieve filter to remove tiny seam slivers without erasing small parcels ---
     print("Applying masked Sieve Filter to remove 1-3 px orbit seam slivers while preserving all parcels and cropland mask...")
@@ -427,9 +496,13 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
     try:
         print("Building multi-scale pyramid overviews [2, 4, 8, 16, 32, 64]...")
         ds_out.BuildOverviews('NEAREST', [2, 4, 8, 16, 32, 64])
+        ds_conf_out.BuildOverviews('AVERAGE', [2, 4, 8, 16, 32, 64])
     except Exception:
         pass
+    ds_conf_out.FlushCache()
+    ds_conf_out = None
     print(f"Merged classification saved: {out_tif}")
+    print(f"Merged confidence saved:     {out_conf_tif}")
 
     # --- compute metrics & areas --------------------------------------------
     print("Calculating metrics and areas...")
@@ -511,14 +584,36 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
     valid_px = px_vals[valid_mask]
     valid_py = py_vals[valid_mask]
     valid_crop_ids = crop_ids[valid_mask].astype(int)
-    
-    # Read predictions locally per point to avoid full raster memory
     valid_preds = np.zeros(len(valid_px), dtype=int)
-    for i in range(len(valid_px)):
-        val = band_out.ReadAsArray(int(valid_px[i]), int(valid_py[i]), 1, 1)
-        if val is not None:
-            valid_preds[i] = val[0, 0]
-            
+
+    # Calculate true ground areas block-by-block with Web Mercator (EPSG:3857) latitude cos^2(phi) correction
+    # and simultaneously sample validation control points in vectorized tile blocks (zero 1x1 GDAL I/O overhead)
+    resx, resy = abs(gt_global[1]), abs(gt_global[5])
+    nominal_px_ha = (resx * resy) / 10000.0
+    is_web_mercator = ('3857' in str(proj)) or ('Pseudo-Mercator' in str(proj)) or ('Mercator' in str(proj) and abs(gt_global[3]) > 100000.0)
+    areas_ha_map = {}
+    for y in range(0, rows, tile_size):
+        ysize = min(tile_size, rows - y)
+        tile_px_ha = nominal_px_ha
+        if is_web_mercator:
+            y_merc = gt_global[3] + (y + 0.5 * ysize) * gt_global[5]
+            if abs(y_merc) > 1000.0:
+                # Exact spherical Mercator identity: cos^2(phi) = 1 / cosh^2(y / R)
+                tile_px_ha = nominal_px_ha / (math.cosh(y_merc / 6378137.0) ** 2)
+        in_y = (valid_py >= y) & (valid_py < y + ysize)
+        for x in range(0, cols, tile_size):
+            xsize = min(tile_size, cols - x)
+            block = band_out.ReadAsArray(x, y, xsize, ysize)
+            if block is None:
+                continue
+            in_tile = in_y & (valid_px >= x) & (valid_px < x + xsize)
+            if np.any(in_tile):
+                valid_preds[in_tile] = block[valid_py[in_tile] - y, valid_px[in_tile] - x]
+            unique, counts = np.unique(block, return_counts=True)
+            for u, c in zip(unique, counts):
+                if u != 0:
+                    areas_ha_map[int(u)] = areas_ha_map.get(int(u), 0.0) + float(c) * tile_px_ha
+
     final_mask = (valid_crop_ids > 0) & (valid_preds > 0)
 
     true_vals = valid_crop_ids[final_mask].tolist()
@@ -539,27 +634,6 @@ def run_merge_for_country(country: str, seg_mode: str = 'slic', suffix: str = ''
     exp   = (cm.sum(axis=0) * cm.sum(axis=1)).sum() / (total**2)
     oa    = np.trace(cm) / total
     kappa = (oa - exp) / (1 - exp) if (1 - exp) else np.nan
-
-    # Calculate true ground areas block-by-block with Web Mercator (EPSG:3857) latitude cos^2(phi) correction
-    resx, resy = abs(gt_global[1]), abs(gt_global[5])
-    nominal_px_ha = (resx * resy) / 10000.0
-    is_web_mercator = ('3857' in str(proj)) or ('Pseudo-Mercator' in str(proj)) or ('Mercator' in str(proj) and abs(gt_global[3]) > 100000.0)
-    areas_ha_map = {}
-    for y in range(0, rows, tile_size):
-        ysize = min(tile_size, rows - y)
-        tile_px_ha = nominal_px_ha
-        if is_web_mercator:
-            y_merc = gt_global[3] + (y + 0.5 * ysize) * gt_global[5]
-            if abs(y_merc) > 1000.0:
-                # Exact spherical Mercator identity: cos^2(phi) = 1 / cosh^2(y / R)
-                tile_px_ha = nominal_px_ha / (math.cosh(y_merc / 6378137.0) ** 2)
-        for x in range(0, cols, tile_size):
-            xsize = min(tile_size, cols - x)
-            block = band_out.ReadAsArray(x, y, xsize, ysize)
-            unique, counts = np.unique(block, return_counts=True)
-            for u, c in zip(unique, counts):
-                if u != 0:
-                    areas_ha_map[int(u)] = areas_ha_map.get(int(u), 0.0) + float(c) * tile_px_ha
 
     areas = [{
         'Class':   c,

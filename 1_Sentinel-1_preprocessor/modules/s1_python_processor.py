@@ -62,7 +62,7 @@ osr.UseExceptions()
 
 REGIONAL_DOY_PROFILES = {
     "MEDITERRANEAN": {
-        "countries": ["PT", "ES", "IT", "EL", "GR", "CY", "MT", "HR", "AL", "TR"],
+        "countries": ["PT", "ES", "IT", "EL", "GR", "CY", "MT", "HR", "AL", "TR", "ME", "MK"],
         "doys": [45, 65, 85, 105, 120, 135, 150, 165, 180, 200, 220, 240, 260, 280],
     },
     "NORTHERN": {
@@ -72,7 +72,7 @@ REGIONAL_DOY_PROFILES = {
     "CONTINENTAL": {
         "countries": [
             "PL", "NL", "DE", "FR", "BE", "LU", "AT", "CZ", "SK",
-            "HU", "RO", "BG", "SI", "DK", "IE", "UK", "CH", "RS", "ME", "MK", "LI"
+            "HU", "RO", "BG", "SI", "DK", "IE", "UK", "CH", "RS", "LI"
         ],
         "doys": [80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287],
     },
@@ -742,7 +742,7 @@ class S1SliceProduct:
             or max_y < self.gg_y3857.min() - margin
             or min_y > self.gg_y3857.max() + margin
         ):
-            return None, None, None
+            return None, None, None, None
 
         # Coarse grid dimensions
         ny_c = max(2, int(math.ceil(height / coarse_step)) + 1)
@@ -756,7 +756,7 @@ class S1SliceProduct:
         interp_vals = self._interp_linear(pts)
         nan_mask = np.isnan(interp_vals[:, 0])
         if np.all(nan_mask):
-            return None, None, None
+            return None, None, None, None
         if np.any(nan_mask):
             interp_vals[nan_mask] = self._interp_nearest(pts[nan_mask])
 
@@ -784,11 +784,11 @@ class S1SliceProduct:
 
         p_map = _bilerp(p_coarse)
         l_map = _bilerp(l_coarse)
+        inc_rad = np.deg2rad(np.clip(_bilerp(inc_coarse), 15.0, 65.0))
 
         # Apply Range-Doppler Terrain Correction foreshortening offset using DEM
         if dem_block is not None:
             h_ref = _bilerp(h_coarse)
-            inc_rad = np.deg2rad(np.clip(_bilerp(inc_coarse), 15.0, 65.0))
             delta_h = dem_block.astype(np.float32) - h_ref
             # Ground-range terrain foreshortening displacement in pixels
             delta_p = (delta_h / (self.range_pixel_spacing * np.tan(inc_rad))) * self.slant_range_sign
@@ -801,9 +801,13 @@ class S1SliceProduct:
             & (l_map <= float(self.num_lines))
         )
         if not np.any(in_bounds):
-            return None, None, None
+            return None, None, None, None
 
-        return l_map, p_map, in_bounds
+        # Radiometric incidence-angle normalization factor (gamma0 normalized to reference mid-swath 37.5 deg)
+        cos_ref = float(math.cos(math.radians(37.5)))
+        inc_norm_factor = (cos_ref / np.maximum(np.cos(inc_rad), 0.25)).astype(np.float32)
+
+        return l_map, p_map, in_bounds, inc_norm_factor
 
 
 # ==============================================================================
@@ -916,7 +920,15 @@ def process_date_slices_python(
     # Create output 2-band Float32 GeoTIFF
     tmp_tif = out_tif.with_suffix(".tif.tmp")
     driver = gdal.GetDriverByName("GTiff")
-    options = ["COMPRESS=DEFLATE", "TILED=YES", "BLOCKXSIZE=512", "BLOCKYSIZE=512", "BIGTIFF=YES"]
+    options = [
+        "COMPRESS=DEFLATE",
+        "PREDICTOR=3",
+        "TILED=YES",
+        "BLOCKXSIZE=512",
+        "BLOCKYSIZE=512",
+        "BIGTIFF=YES",
+        "NUM_THREADS=ALL_CPUS",
+    ]
     ds_out = driver.Create(str(tmp_tif), width, height, len(polarisations), gdal.GDT_Float32, options=options)
 
     srs_3857 = osr.SpatialReference()
@@ -950,7 +962,7 @@ def process_date_slices_python(
 
             for slice_dict in parsed_slices:
                 ref_prod = slice_dict[polarisations[0].upper()][0]
-                l_map, p_map, in_bounds = ref_prod.map_target_block_to_radar(
+                l_map, p_map, in_bounds, inc_norm_factor = ref_prod.map_target_block_to_radar(
                     b_min_x, b_min_y, b_max_x, b_max_y, bw, bh, dem_block=dem_block
                 )
                 if l_map is None:
@@ -959,6 +971,7 @@ def process_date_slices_python(
                 clipped_l = np.clip(l_map[in_bounds], 0.0, float(ref_prod.num_lines - 1))
                 clipped_p = np.clip(p_map[in_bounds], 0.0, float(ref_prod.num_samples - 1))
                 coords = np.array([clipped_l, clipped_p], dtype=np.float32)
+                norm_sub = inc_norm_factor[in_bounds]
                 for pol in polarisations:
                     pol_u = pol.upper()
                     _, s0_img = slice_dict[pol_u]
@@ -967,7 +980,7 @@ def process_date_slices_python(
                     if np.any(valid_s):
                         sub_acc = acc_bands[pol_u][in_bounds]
                         sub_w = acc_weights[pol_u][in_bounds]
-                        sub_acc[valid_s] += sampled[valid_s]
+                        sub_acc[valid_s] += sampled[valid_s] * norm_sub[valid_s]
                         sub_w[valid_s] += 1.0
                         acc_bands[pol_u][in_bounds] = sub_acc
                         acc_weights[pol_u][in_bounds] = sub_w
@@ -1072,6 +1085,54 @@ def process_orbit_coregistration_python(
     master_width = int(round((max_x - min_x) / 10.0))
     master_height = int(round((max_y - min_y) / 10.0))
     master_gt = [min_x, 10.0, 0.0, max_y, 0.0, -10.0]
+
+    # Estimate sub-pixel / integer translation alignment relative to the master acquisition
+    # using Fourier phase cross-correlation on a central 512x512 high-contrast patch
+    if len(records) >= 2:
+        try:
+            ref_rec = records[len(records) // 2]
+            ds_ref = gdal.Open(ref_rec["path"], gdal.GA_ReadOnly)
+            if ds_ref is not None:
+                rw, rh = ref_rec["width"], ref_rec["height"]
+                pw, ph = min(512, rw), min(512, rh)
+                rx0, ry0 = max(0, (rw - pw) // 2), max(0, (rh - ph) // 2)
+                ref_x0_m = ref_rec["bbox"][0] + rx0 * 10.0
+                ref_y1_m = ref_rec["bbox"][3] - ry0 * 10.0
+                ref_patch = ds_ref.GetRasterBand(min(2, ds_ref.RasterCount)).ReadAsArray(rx0, ry0, pw, ph)
+                ds_ref = None
+                if ref_patch is not None and np.count_nonzero(ref_patch > 0) > (pw * ph) // 4:
+                    ref_db = 10.0 * np.log10(np.maximum(ref_patch.astype(np.float32), 1e-5))
+                    ref_db = ref_db - np.mean(ref_db)
+                    f_ref = np.fft.fft2(ref_db)
+                    for rec in records:
+                        rec["shift_x_px"] = 0
+                        rec["shift_y_px"] = 0
+                        if rec["path"] == ref_rec["path"]:
+                            continue
+                        sx0 = int(round((ref_x0_m - rec["bbox"][0]) / 10.0))
+                        sy0 = int(round((rec["bbox"][3] - ref_y1_m) / 10.0))
+                        if 0 <= sx0 and (sx0 + pw) <= rec["width"] and 0 <= sy0 and (sy0 + ph) <= rec["height"]:
+                            ds_slv = gdal.Open(rec["path"], gdal.GA_ReadOnly)
+                            if ds_slv is not None:
+                                slv_patch = ds_slv.GetRasterBand(min(2, ds_slv.RasterCount)).ReadAsArray(sx0, sy0, pw, ph)
+                                ds_slv = None
+                                if slv_patch is not None and np.count_nonzero(slv_patch > 0) > (pw * ph) // 4:
+                                    slv_db = 10.0 * np.log10(np.maximum(slv_patch.astype(np.float32), 1e-5))
+                                    slv_db = slv_db - np.mean(slv_db)
+                                    f_slv = np.fft.fft2(slv_db)
+                                    cps = f_ref * np.conj(f_slv)
+                                    cps /= np.maximum(np.abs(cps), 1e-8)
+                                    corr = np.abs(np.fft.ifft2(cps))
+                                    py_max, px_max = np.unravel_index(np.argmax(corr), corr.shape)
+                                    if py_max > ph // 2:
+                                        py_max -= ph
+                                    if px_max > pw // 2:
+                                        px_max -= pw
+                                    if abs(px_max) <= 3 and abs(py_max) <= 3:
+                                        rec["shift_x_px"] = int(px_max)
+                                        rec["shift_y_px"] = int(py_max)
+        except Exception as e:
+            logging.debug(f"[{track_name}] Phase cross-correlation shift check skipped: {e}")
 
     manifest_data = {
         "country": country.upper(),
@@ -1245,7 +1306,15 @@ def process_orbit_stack_and_clip_python(
     # Create final output BigTIFF
     tmp_out = out_tif.with_suffix(".tif.tmp")
     driver = gdal.GetDriverByName("GTiff")
-    options = ["COMPRESS=DEFLATE", "TILED=YES", "BLOCKXSIZE=512", "BLOCKYSIZE=512", "BIGTIFF=YES"]
+    options = [
+        "COMPRESS=DEFLATE",
+        "PREDICTOR=3",
+        "TILED=YES",
+        "BLOCKXSIZE=512",
+        "BLOCKYSIZE=512",
+        "BIGTIFF=YES",
+        "NUM_THREADS=ALL_CPUS",
+    ]
     ds_out = driver.Create(str(tmp_out), master_w, master_h, total_bands, gdal.GDT_Float32, options=options)
 
     srs_3857 = osr.SpatialReference()
@@ -1271,16 +1340,15 @@ def process_orbit_stack_and_clip_python(
 
     mask_ds = gdal.Open(str(mask_tif), gdal.GA_ReadOnly) if mask_tif.exists() else None
 
-    # Process in 2048x2048 spatial blocks
+    # Process in 2048x2048 spatial blocks with a halo overlap buffer to eliminate Quegan filter tile seams
     block_size = 2048
+    halo = max(1, filter_window // 2)
 
     for y0 in range(0, master_h, block_size):
         bh = min(block_size, master_h - y0)
-        b_max_y = max_y - y0 * 10.0
 
         for x0 in range(0, master_w, block_size):
             bw = min(block_size, master_w - x0)
-            b_min_x = min_x + x0 * 10.0
 
             if mask_ds is not None:
                 nuts_mask = mask_ds.GetRasterBand(1).ReadAsArray(x0, y0, bw, bh) > 0
@@ -1289,21 +1357,36 @@ def process_orbit_stack_and_clip_python(
             else:
                 nuts_mask = np.ones((bh, bw), dtype=bool)
 
+            # Expand read window by `halo` pixels on all sides (clamped to master grid bounds)
+            x0_h = max(0, x0 - halo)
+            y0_h = max(0, y0 - halo)
+            x1_h = min(master_w, x0 + bw + halo)
+            y1_h = min(master_h, y0 + bh + halo)
+            bw_h = x1_h - x0_h
+            bh_h = y1_h - y0_h
+
+            b_min_x_h = min_x + x0_h * 10.0
+            b_max_y_h = max_y - y0_h * 10.0
+            core_x0 = x0 - x0_h
+            core_y0 = y0 - y0_h
+
             for pol_idx in (1, 2):  # 1 = VH, 2 = VV
-                stack_lin = np.zeros((len(src_datasets), bh, bw), dtype=np.float32)
+                stack_lin = np.zeros((len(src_datasets), bh_h, bw_h), dtype=np.float32)
 
                 for t_idx, (rec, ds) in enumerate(src_datasets):
                     if ds is None:
                         continue
                     f_min_x, f_min_y, f_max_x, f_max_y = rec["bbox"]
-                    # Compute pixel offset between master grid and daily slice grid
-                    dx = int(round((b_min_x - f_min_x) / 10.0))
-                    dy = int(round((f_max_y - b_max_y) / 10.0))
+                    shift_x = int(rec.get("shift_x_px", 0))
+                    shift_y = int(rec.get("shift_y_px", 0))
+                    # Compute pixel offset between master halo window and daily slice grid
+                    dx = int(round((b_min_x_h - f_min_x) / 10.0)) - shift_x
+                    dy = int(round((f_max_y - b_max_y_h) / 10.0)) - shift_y
 
                     sx0 = max(0, dx)
                     sy0 = max(0, dy)
-                    sx1 = min(rec["width"], dx + bw)
-                    sy1 = min(rec["height"], dy + bh)
+                    sx1 = min(rec["width"], dx + bw_h)
+                    sy1 = min(rec["height"], dy + bh_h)
 
                     if sx1 > sx0 and sy1 > sy0:
                         tx0 = sx0 - dx
@@ -1317,8 +1400,10 @@ def process_orbit_stack_and_clip_python(
                 if not np.any(stack_lin > 0.0):
                     continue
 
-                # Apply Multi-Temporal Quegan Speckle Filter in linear power domain
-                despeckled = quegan_multitemporal_filter(stack_lin, window_size=filter_window)
+                # Apply Multi-Temporal Quegan Speckle Filter in linear power domain over halo-padded block
+                despeckled_h = quegan_multitemporal_filter(stack_lin, window_size=filter_window)
+                # Crop halo margin back to the exact (bh, bw) interior block
+                despeckled = despeckled_h[:, core_y0 : core_y0 + bh, core_x0 : core_x0 + bw]
 
                 # Convert linear Sigma0 to dB and mask with NUTS2
                 band_offset = 0 if pol_idx == 1 else num_out_dates

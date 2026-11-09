@@ -27,6 +27,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ.setdefault("OMP_NUM_THREADS", "4")
 
 import argparse
+import datetime
 from pathlib import Path
 import subprocess
 import sys
@@ -211,6 +212,94 @@ def parse_month_from_description(desc: str) -> int:
         dt = datetime.date(2025, 1, 1) + datetime.timedelta(days=doy - 1)
         return dt.month - 1
     return 0
+
+
+def parse_chronological_doys(ds_s1, num_dates_s1: int, ds_s2, num_dates_s2: int) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Extracts continuous chronological Day-Of-Year (DOY) coordinates relative to the main harvest year
+    for both Sentinel-1 (dense ~6-day radar acquisitions) and Sentinel-2 (14 regional optical DOYs).
+    Ensures autumn (year - 1) radar acquisitions have negative relative DOYs so S1 and S2 align on
+    the exact same calendar timeline without stretching array indices.
+    """
+    months_map = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+        'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+    }
+
+    def _parse_band_desc(desc: str) -> Tuple[Optional[datetime.date], Optional[int]]:
+        s = str(desc or "")
+        m_dmy = re.search(r'(\d{1,2})(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(20\d{2})', s, re.IGNORECASE)
+        if m_dmy:
+            day = int(m_dmy.group(1))
+            mon = months_map[m_dmy.group(2).lower()]
+            yr = int(m_dmy.group(3))
+            try:
+                dt = datetime.date(yr, mon, day)
+                return dt, dt.timetuple().tm_yday
+            except ValueError:
+                pass
+        m_ymd = re.search(r'(20\d{2})[-_]?(\d{2})[-_]?(\d{2})', s)
+        if m_ymd:
+            yr, mon, day = int(m_ymd.group(1)), int(m_ymd.group(2)), int(m_ymd.group(3))
+            try:
+                dt = datetime.date(yr, mon, day)
+                return dt, dt.timetuple().tm_yday
+            except ValueError:
+                pass
+        m_doy = re.search(r'(?:doy|day)(\d{1,3})', s, re.IGNORECASE)
+        if m_doy:
+            return None, max(1, min(366, int(m_doy.group(1))))
+        return None, None
+
+    s1_parsed = []
+    if ds_s1 is not None and num_dates_s1 > 0:
+        for b in range(1, num_dates_s1 + 1):
+            s1_parsed.append(_parse_band_desc(ds_s1.GetRasterBand(b).GetDescription()))
+
+    s2_parsed = []
+    if ds_s2 is not None and num_dates_s2 > 0:
+        for d in range(num_dates_s2):
+            b = d * 9 + 1
+            s2_parsed.append(_parse_band_desc(ds_s2.GetRasterBand(b).GetDescription()))
+
+    s2_years = [dt.year for dt, _ in s2_parsed if dt is not None]
+    s1_summer_years = [dt.year for dt, _ in s1_parsed if dt is not None and 4 <= dt.month <= 9]
+    all_years = [dt.year for dt, _ in (s1_parsed + s2_parsed) if dt is not None]
+    if s2_years:
+        harvest_year = max(set(s2_years), key=s2_years.count)
+    elif s1_summer_years:
+        harvest_year = max(set(s1_summer_years), key=s1_summer_years.count)
+    elif all_years:
+        harvest_year = max(set(all_years), key=all_years.count)
+    else:
+        harvest_year = 2025
+    ref_jan1 = datetime.date(harvest_year, 1, 1)
+
+    def _to_continuous_doys(parsed_list: list, default_start: float, default_step: float) -> Optional[np.ndarray]:
+        if not parsed_list:
+            return None
+        out = np.zeros(len(parsed_list), dtype=np.float32)
+        has_any = False
+        for i, (dt, doy) in enumerate(parsed_list):
+            if dt is not None:
+                out[i] = float((dt - ref_jan1).days + 1)
+                has_any = True
+            elif doy is not None:
+                out[i] = float(doy)
+                has_any = True
+            else:
+                out[i] = default_start + i * default_step
+        if not has_any:
+            return None
+        # Ensure monotonic progression if yearless DOYs wrapped across Dec -> Jan
+        for i in range(len(out) - 2, -1, -1):
+            if out[i] > out[i + 1] + 180.0:
+                out[:i + 1] -= 365.0
+        return out
+
+    s1_doys = _to_continuous_doys(s1_parsed, default_start=1.0, default_step=6.0)
+    s2_doys = _to_continuous_doys(s2_parsed, default_start=80.0, default_step=15.0)
+    return s1_doys, s2_doys
 
 
 def _check_s2_needs_boa_offset_correction(ds_s2) -> bool:
@@ -708,15 +797,38 @@ def compute_vegetation_and_sar_indices(
 
         # Dual-frequency L-band (24 cm, NISAR) vs C-band (5.6 cm, Sentinel-1) canopy penetration features
         if s1_means is not None and num_dates_s1 > 0:
-            c_vh_mean = np.mean(s1_means[:, :num_dates_s1], axis=1)
-            c_vv_mean = np.mean(s1_means[:, num_dates_s1:num_dates_s1 * 2], axis=1)
+            s1_vh_all = s1_means[:, :num_dates_s1]
+            s1_vv_all = s1_means[:, num_dates_s1:num_dates_s1 * 2]
+            c_vh_mean = np.mean(s1_vh_all, axis=1)
+            c_vv_mean = np.mean(s1_vv_all, axis=1)
             l_hv_mean = np.mean(hv_db_arr, axis=1)
             l_hh_mean = np.mean(hh_db_arr, axis=1)
             dual_hv_vh = (l_hv_mean - c_vh_mean).reshape(-1, 1)
             dual_hh_vv = (l_hh_mean - c_vv_mean).reshape(-1, 1)
             dual_rvi_diff = (np.mean(nisar_rvi_arr, axis=1) - np.mean(rvi_arr, axis=1)).reshape(-1, 1)
-            feats.append(np.hstack([dual_hv_vh, dual_hh_vv, dual_rvi_diff]))
-            feat_names.extend(["dual_freq_hv_vh_diff_mean", "dual_freq_hh_vv_diff_mean", "dual_freq_rvi_l_minus_c"])
+
+            # Peak-biomass (90th percentile) and seasonal dynamic range (P90 - P10) dual-frequency ratios
+            c_vh_p90 = np.percentile(s1_vh_all, 90, axis=1)
+            c_vv_p90 = np.percentile(s1_vv_all, 90, axis=1)
+            l_hv_p90 = np.percentile(hv_db_arr, 90, axis=1)
+            l_hh_p90 = np.percentile(hh_db_arr, 90, axis=1)
+            dual_hv_vh_p90 = (l_hv_p90 - c_vh_p90).reshape(-1, 1)
+            dual_hh_vv_p90 = (l_hh_p90 - c_vv_p90).reshape(-1, 1)
+            dual_rvi_p90 = (np.percentile(nisar_rvi_arr, 90, axis=1) - np.percentile(rvi_arr, 90, axis=1)).reshape(-1, 1)
+
+            c_vh_dyn = c_vh_p90 - np.percentile(s1_vh_all, 10, axis=1)
+            l_hv_dyn = l_hv_p90 - np.percentile(hv_db_arr, 10, axis=1)
+            dual_hv_vh_dyn = (l_hv_dyn - c_vh_dyn).reshape(-1, 1)
+
+            feats.append(np.hstack([
+                dual_hv_vh, dual_hh_vv, dual_rvi_diff,
+                dual_hv_vh_p90, dual_hh_vv_p90, dual_rvi_p90, dual_hv_vh_dyn
+            ]))
+            feat_names.extend([
+                "dual_freq_hv_vh_diff_mean", "dual_freq_hh_vv_diff_mean", "dual_freq_rvi_l_minus_c",
+                "dual_freq_hv_vh_diff_p90", "dual_freq_hh_vv_diff_p90", "dual_freq_rvi_l_minus_c_p90",
+                "dual_freq_hv_vh_dyn_diff"
+            ])
 
     arr_res = np.hstack(feats).astype(np.float32) if feats else np.zeros((N, 0), dtype=np.float32)
     return arr_res, feat_names
@@ -883,8 +995,19 @@ class EnsembleClassifier:
         xgb_le.fit(self.xgb_classes_)
         y_xgb = xgb_le.transform(y_enc)
 
+        # Align XGBoost sample weights with MLP square-root class weights so both models share
+        # the exact same training class prior assumed by compute_dynamic_bayesian_priors
+        sample_weight_xgb = None
+        cw = getattr(self.mlp_model, 'class_weights', None)
+        if cw is not None and len(cw) == len(self.classes_):
+            cw_arr = np.asarray(cw, dtype=np.float32)
+            sample_weight_xgb = cw_arr[y_enc]
+
         try:
-            self.xgb_model.fit(X_imputed, y_xgb)
+            if sample_weight_xgb is not None:
+                self.xgb_model.fit(X_imputed, y_xgb, sample_weight=sample_weight_xgb)
+            else:
+                self.xgb_model.fit(X_imputed, y_xgb)
         except Exception as e:
             print(f"  [WARNING] XGBoost fitting encountered an error: {e}. Falling back to HistGradientBoostingClassifier...")
             from sklearn.ensemble import HistGradientBoostingClassifier
@@ -894,7 +1017,10 @@ class EnsembleClassifier:
                 max_depth=7,
                 random_state=42
             )
-            self.xgb_model.fit(X_imputed, y_xgb)
+            if sample_weight_xgb is not None:
+                self.xgb_model.fit(X_imputed, y_xgb, sample_weight=sample_weight_xgb)
+            else:
+                self.xgb_model.fit(X_imputed, y_xgb)
         print("  [Fusion Complete] Unified MLP + XGBoost Ensemble successfully fitted.")
         return self
 
@@ -951,7 +1077,8 @@ class PrestoMultimodalExtractor:
             import presto_model as single_file_presto
         except ImportError:
             import single_file_presto
-        self.model = single_file_presto.Presto.construct(max_sequence_length=72)
+        self._presto_mod = single_file_presto
+        self.model = single_file_presto.Presto.construct(max_sequence_length=120)
         state_dict = torch.load(self.weights_path, map_location=self.device)
         state_dict.pop('encoder.pos_embed', None)
         state_dict.pop('decoder.pos_embed', None)
@@ -959,22 +1086,35 @@ class PrestoMultimodalExtractor:
         self.model.to(self.device)
         self.model.eval()
 
+    def _ensure_sequence_length(self, seq_len: int):
+        """Dynamically expands sinusoidal positional embeddings if a dense 6-day S1 stack exceeds current max_sequence_length."""
+        cur_max = self.model.encoder.pos_embed.shape[1]
+        if seq_len > cur_max:
+            pos_dim = self.model.encoder.pos_embed.shape[-1]
+            new_pos = self._presto_mod.get_sinusoid_encoding_table(seq_len + 16, pos_dim).to(self.device)
+            self.model.encoder.pos_embed = nn.Parameter(new_pos, requires_grad=False)
+            self.model.encoder.max_sequence_length = seq_len + 16
+
     def get_joint_embeddings(
         self,
         batch_s1_vv_vh: Optional[torch.Tensor],
         batch_s2_9bands: Optional[torch.Tensor],
         batch_latlons: torch.Tensor,
         months_tensor: torch.Tensor,
-        chunk_size: int = 4096
+        chunk_size: int = 4096,
+        s1_doys: Optional[np.ndarray] = None,
+        s2_doys: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Computes true multimodal joint cross-attention embeddings across S1 + S2 simultaneously.
-        Preserves the full native Sentinel-1 radar time series (primary dataset, T = max(T_s1, T_s2))
-        and temporally interpolates the cloud-free Sentinel-2 DOY composites onto the full S1 timeline.
+        Strictly preserves the full dense ~6-day Sentinel-1 dual-pol (VV, VH) radar time series
+        as the primary backbone (T = T_s1) and chronologically interpolates the 14 cloud-free
+        Sentinel-2 DOY composites onto the exact calendar DOYs of the S1 acquisitions.
         """
         if batch_s1_vv_vh is not None and batch_s2_9bands is not None:
             B = batch_s1_vv_vh.shape[0]
-            T = max(batch_s1_vv_vh.shape[1], batch_s2_9bands.shape[1])
+            # Always preserve the full dense Sentinel-1 time series as the master temporal grid
+            T = batch_s1_vv_vh.shape[1] if batch_s1_vv_vh.shape[1] >= batch_s2_9bands.shape[1] else max(batch_s1_vv_vh.shape[1], batch_s2_9bands.shape[1])
         elif batch_s1_vv_vh is not None:
             B, T, _ = batch_s1_vv_vh.shape
         elif batch_s2_9bands is not None:
@@ -989,10 +1129,14 @@ class PrestoMultimodalExtractor:
                 s1_sub = batch_s1_vv_vh[i:end_i] if batch_s1_vv_vh is not None else None
                 s2_sub = batch_s2_9bands[i:end_i] if batch_s2_9bands is not None else None
                 ll_sub = batch_latlons[i:end_i]
-                out_chunk = self.get_joint_embeddings(s1_sub, s2_sub, ll_sub, months_tensor, chunk_size=chunk_size)
+                out_chunk = self.get_joint_embeddings(
+                    s1_sub, s2_sub, ll_sub, months_tensor,
+                    chunk_size=chunk_size, s1_doys=s1_doys, s2_doys=s2_doys
+                )
                 out_list.append(out_chunk)
             return np.concatenate(out_list, axis=0)
 
+        self._ensure_sequence_length(T)
         x = torch.zeros(B, T, 17, dtype=torch.float32, device=self.device)
         mask = torch.ones(B, T, 17, dtype=torch.float32, device=self.device)
 
@@ -1015,15 +1159,48 @@ class PrestoMultimodalExtractor:
         if batch_s2_9bands is not None:
             s2_dev = batch_s2_9bands.to(self.device)
             s2_t = s2_dev.shape[1]
-            if s2_t == T:
+            s2_valid_time_mask = None
+            if (
+                s1_doys is not None
+                and s2_doys is not None
+                and len(s1_doys) == T
+                and len(s2_doys) == s2_t
+                and s2_t >= 2
+            ):
+                # Chronological DOY interpolation of 14 S2 dates onto the full dense ~6-day S1 timeline
+                s1_d_arr = np.asarray(s1_doys, dtype=np.float32)
+                s2_d_arr = np.asarray(s2_doys, dtype=np.float32)
+                # Ensure strictly increasing s2_d_arr for searchsorted
+                if np.all(np.diff(s2_d_arr) > 0):
+                    idx_right = np.clip(np.searchsorted(s2_d_arr, s1_d_arr, side='right'), 1, s2_t - 1)
+                    idx_left = idx_right - 1
+                    d_left = s2_d_arr[idx_left]
+                    d_right = s2_d_arr[idx_right]
+                    alpha = np.clip((s1_d_arr - d_left) / np.maximum(d_right - d_left, 1.0), 0.0, 1.0)
+
+                    idx_l_t = torch.as_tensor(idx_left, dtype=torch.long, device=self.device)
+                    idx_r_t = torch.as_tensor(idx_right, dtype=torch.long, device=self.device)
+                    alpha_t = torch.as_tensor(alpha, dtype=torch.float32, device=self.device).view(1, T, 1)
+
+                    s2_aligned = (1.0 - alpha_t) * s2_dev[:, idx_l_t, :] + alpha_t * s2_dev[:, idx_r_t, :]
+                    # Mark S2 optical tokens as observed within +/-25 days of the optical DOY window;
+                    # mask out deep-winter S1 dates where only SAR was acquired
+                    in_opt_window = (s1_d_arr >= (s2_d_arr[0] - 25.0)) & (s1_d_arr <= (s2_d_arr[-1] + 25.0))
+                    if np.any(in_opt_window):
+                        s2_valid_time_mask = torch.as_tensor(in_opt_window, dtype=torch.bool, device=self.device)
+                else:
+                    s2_aligned = torch.nn.functional.interpolate(
+                        s2_dev.permute(0, 2, 1), size=T, mode='linear', align_corners=True
+                    ).permute(0, 2, 1)
+            elif s2_t == T:
                 s2_aligned = s2_dev
             elif s2_t > 1 and T > 1:
-                # Interpolate the 14 cloud-free S2 DOY composites onto the full S1 radar time series
                 s2_aligned = torch.nn.functional.interpolate(
                     s2_dev.permute(0, 2, 1), size=T, mode='linear', align_corners=True
                 ).permute(0, 2, 1)
             else:
                 s2_aligned = s2_dev[:, :min(T, s2_t), :]
+
             t_s2 = s2_aligned.shape[1]
             b2 = s2_aligned[:, :t_s2, 0]
             b3 = s2_aligned[:, :t_s2, 1]
@@ -1047,7 +1224,13 @@ class PrestoMultimodalExtractor:
             x[:, :t_s2, 11] = b12
             x[:, :t_s2, 16] = ndvi
 
-            mask[:, :t_s2, [2, 3, 4, 5, 6, 7, 9, 10, 11, 16]] = 0.0
+            opt_channels = [2, 3, 4, 5, 6, 7, 9, 10, 11, 16]
+            if s2_valid_time_mask is not None:
+                valid_t_idx = torch.where(s2_valid_time_mask)[0]
+                for c_idx in opt_channels:
+                    mask[:, valid_t_idx, c_idx] = 0.0
+            else:
+                mask[:, :t_s2, opt_channels] = 0.0
 
         dw = torch.ones(B, T, dtype=torch.long, device=self.device) * 9
         if months_tensor.ndim == 1:
@@ -1081,6 +1264,7 @@ class PrestoMultimodalExtractor:
                 out_list.append(out_chunk)
             return np.concatenate(out_list, axis=0)
 
+        self._ensure_sequence_length(T)
         x = torch.zeros(B, T, 17, dtype=torch.float32, device=self.device)
         x[:, :, 0] = batch_s1_vv_vh[:, :, 0] # VV
         x[:, :, 1] = batch_s1_vv_vh[:, :, 1] # VH
@@ -2807,7 +2991,8 @@ class ProcessingPipelineS1S2:
         month_tensor_s1 = torch.tensor(months_s1, dtype=torch.long, device=device)
         month_tensor_s2 = torch.tensor(months_s2, dtype=torch.long, device=device)
         month_tensor_nisar = torch.tensor(months_nisar, dtype=torch.long, device=device)
-        month_tensor_joint = torch.tensor(months_s2 if num_dates_s2 >= num_dates_s1 else months_s1, dtype=torch.long, device=device)
+        month_tensor_joint = torch.tensor(months_s1 if num_dates_s1 >= num_dates_s2 else months_s2, dtype=torch.long, device=device)
+        s1_doys, s2_doys = parse_chronological_doys(ds_s1, num_dates_s1, ds_s2, num_dates_s2)
 
         print("    Accumulating segment statistics using fast vectorized chunked I/O...")
         t_io_start = time.time()
@@ -3014,7 +3199,9 @@ class ProcessingPipelineS1S2:
             b_s2_t = torch.from_numpy(np.stack(batch_s2_profiles[start_i:end_i], axis=0)).to(device) if batch_s2_profiles else None
             b_nisar_t = torch.from_numpy(np.stack(batch_nisar_profiles[start_i:end_i], axis=0)).to(device) if batch_nisar_profiles else None
 
-            embs_joint = extractor.get_joint_embeddings(b_s1_t, b_s2_t, b_ll, month_tensor_joint)
+            embs_joint = extractor.get_joint_embeddings(
+                b_s1_t, b_s2_t, b_ll, month_tensor_joint, s1_doys=s1_doys, s2_doys=s2_doys
+            )
             for rec_i, emb in enumerate(embs_joint):
                 for f_i, f_val in enumerate(emb):
                     batch_records[start_i + rec_i][f'presto_joint_{f_i}'] = float(f_val)
@@ -3231,7 +3418,8 @@ class ProcessingPipelineS1S2:
         month_tensor_s1 = torch.tensor(months_s1, dtype=torch.long, device=device)
         month_tensor_s2 = torch.tensor(months_s2, dtype=torch.long, device=device)
         month_tensor_nisar = torch.tensor(months_nisar, dtype=torch.long, device=device)
-        month_tensor_joint = torch.tensor(months_s2 if num_dates_s2 >= num_dates_s1 else months_s1, dtype=torch.long, device=device)
+        month_tensor_joint = torch.tensor(months_s1 if num_dates_s1 >= num_dates_s2 else months_s2, dtype=torch.long, device=device)
+        s1_doys, s2_doys = parse_chronological_doys(ds_s1, num_dates_s1, ds_s2, num_dates_s2)
 
         from scipy import ndimage
         srs_ras = osr.SpatialReference()
@@ -3462,7 +3650,9 @@ class ProcessingPipelineS1S2:
             embs_s1 = extractor.get_s1_embeddings(b_s1, b_ll, month_tensor_s1) if b_s1 is not None else None
             embs_s2 = extractor.get_s2_embeddings(b_s2, b_ll, month_tensor_s2) if b_s2 is not None else None
             embs_nisar = extractor.get_s1_embeddings(b_nisar, b_ll, month_tensor_nisar) if b_nisar is not None else None
-            embs_joint = extractor.get_joint_embeddings(b_s1, b_s2, b_ll, month_tensor_joint)
+            embs_joint = extractor.get_joint_embeddings(
+                b_s1, b_s2, b_ll, month_tensor_joint, s1_doys=s1_doys, s2_doys=s2_doys
+            )
 
             feat_blocks = []
             if s1_means is not None: feat_blocks.append(s1_means)
@@ -3945,16 +4135,27 @@ class ProcessingPipelineS1S2:
                 cell.border = thin_border
                 cell.alignment = align_center
 
-        # Area estimation table (computed via memory-safe chunked tile iteration with Web Mercator cos^2(lat) correction)
+        # Area estimation table (computed via memory-safe chunked tile iteration with per-row Web Mercator cos^2(lat) correction)
         class_counts_map = {}
+        class_areas_ha_map = {}
+        resx = abs(gt[1])
+        resy = abs(gt[5])
+        nominal_px_ha = (resx * resy) / 10000.0
         ds_area = gdal.Open(str(target_tif), gdal.GA_ReadOnly)
         if ds_area is not None:
             band_area = ds_area.GetRasterBand(1)
             area_tile_sz = 4096
             for ay in range(0, rows, area_tile_sz):
+                ays = min(area_tile_sz, rows - ay)
+                tile_px_ha = nominal_px_ha
+                try:
+                    y_merc = gt[3] + (ay + 0.5 * ays) * gt[5]
+                    if abs(y_merc) > 100000.0:
+                        tile_px_ha = nominal_px_ha / (math.cosh(y_merc / 6378137.0) ** 2)
+                except Exception:
+                    tile_px_ha = nominal_px_ha
                 for ax in range(0, cols, area_tile_sz):
                     axs = min(area_tile_sz, cols - ax)
-                    ays = min(area_tile_sz, rows - ay)
                     blk = band_area.ReadAsArray(ax, ay, axs, ays)
                     if blk is None:
                         continue
@@ -3962,24 +4163,16 @@ class ProcessingPipelineS1S2:
                     if v_blk.size > 0:
                         u_b, c_b = np.unique(v_blk, return_counts=True)
                         for uid_val, ucnt_val in zip(u_b, c_b):
-                            class_counts_map[int(uid_val)] = class_counts_map.get(int(uid_val), 0) + int(ucnt_val)
+                            cid_int = int(uid_val)
+                            cnt_int = int(ucnt_val)
+                            class_counts_map[cid_int] = class_counts_map.get(cid_int, 0) + cnt_int
+                            class_areas_ha_map[cid_int] = class_areas_ha_map.get(cid_int, 0.0) + float(cnt_int) * tile_px_ha
             ds_area = None
 
         if class_counts_map:
             unique_cls = np.array(sorted(class_counts_map.keys()), dtype=np.int32)
             counts = np.array([class_counts_map[int(k)] for k in unique_cls], dtype=np.int64)
-            
-            resx = abs(gt[1])
-            resy = abs(gt[5])
-            lat_area_factor = 1.0
-            try:
-                y_center = gt[3] + 0.5 * rows * gt[5]
-                if abs(y_center) > 100000.0:
-                    lat_area_factor = 1.0 / (math.cosh(y_center / 6378137.0) ** 2)
-            except Exception:
-                lat_area_factor = 1.0
-            pixel_ha = ((resx * resy) * lat_area_factor) / 10000.0
-            total_ha = float(np.sum(counts) * pixel_ha)
+            total_ha = float(sum(class_areas_ha_map.values()))
 
             r += 3
             ws.cell(row=r, column=1, value="Classified Agricultural Area Statistics").font = sub_font
@@ -3994,8 +4187,9 @@ class ProcessingPipelineS1S2:
             for u_id, u_count in zip(unique_cls, counts):
                 r += 1
                 c_name = crop_name_map.get(int(u_id), f"Class {u_id}")
-                c_ha = int(round(float(u_count * pixel_ha)))
-                c_pct = (float(u_count * pixel_ha) / total_ha * 100.0) if total_ha > 0 else 0.0
+                raw_ha = class_areas_ha_map.get(int(u_id), 0.0)
+                c_ha = int(round(raw_ha))
+                c_pct = (raw_ha / total_ha * 100.0) if total_ha > 0 else 0.0
                 
                 c1 = ws.cell(row=r, column=1, value=int(u_id))
                 c1.font = regular_font

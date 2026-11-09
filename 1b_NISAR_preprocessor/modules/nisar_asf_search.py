@@ -936,6 +936,7 @@ class FindNisarASF:
                 except Exception:
                     pass
 
+            f_dir = "ASCENDING" if ("_A_" in title or (len(parts) >= 7 and parts[6].upper() == "A")) else "DESCENDING"
             found.append({
                 "title": title,
                 "start_time": start_str,
@@ -943,7 +944,7 @@ class FindNisarASF:
                 "url": str(h5_file),
                 "local_h5": h5_file,
                 "bytes": h5_file.stat().st_size,
-                "flight_direction": "DESCENDING",
+                "flight_direction": f_dir,
                 "path_number": path_num,
                 "geometry": geom_dict,
                 "asf_product": None
@@ -978,35 +979,80 @@ class FindNisarASF:
 
         start_str = start_date.strftime("%Y-%m-%dT00:00:00Z")
         end_str = end_date.strftime("%Y-%m-%dT23:59:59Z")
-        logging.info(f"Searching NASA ASF DAAC for NISAR {product_type}: {start_date} to {end_date} ({flight_direction})")
+        f_dir_norm = (flight_direction or "AUTO").upper()
+        logging.info(f"Searching NASA ASF DAAC for NISAR {product_type}: {start_date} to {end_date} ({f_dir_norm})")
 
-        if HAS_ASF:
+        def _query_asf_direction(dir_filter: Optional[str]) -> List[Dict]:
+            if HAS_ASF:
+                try:
+                    search_opts = {
+                        "platform": getattr(asf.PLATFORM, "NISAR", "NISAR"),
+                        "intersectsWith": geometry_wkt,
+                        "start": start_str,
+                        "end": end_str
+                    }
+                    if product_type:
+                        search_opts["processingLevel"] = product_type
+                    if dir_filter and dir_filter not in ("ALL", "AUTO"):
+                        search_opts["flightDirection"] = dir_filter
+
+                    if session:
+                        opts = asf.ASFSearchOptions(session=session)
+                        results = asf.geo_search(**search_opts, opts=opts)
+                    else:
+                        results = asf.geo_search(**search_opts)
+
+                    products = []
+                    for res in results:
+                        props = res.properties
+                        title = props.get("sceneName") or props.get("fileID") or props.get("fileName") or ""
+                        if "_SHSH_" in title or "_SVSV_" in title:
+                            continue
+                        if session:
+                            res.session = session
+                        products.append({
+                            "title": title,
+                            "start_time": props.get("startTime"),
+                            "stop_time": props.get("stopTime"),
+                            "url": props.get("url"),
+                            "bytes": props.get("bytes", 0),
+                            "flight_direction": props.get("flightDirection"),
+                            "path_number": props.get("pathNumber"),
+                            "geometry": getattr(res, "geometry", None),
+                            "asf_product": res,
+                            "token": getattr(session, "token", None) if session else None
+                        })
+                    logging.info(f"Found {len(products)} NISAR granules via asf_search ({dir_filter or 'ALL'}).")
+                    return products
+                except Exception as e:
+                    logging.warning(f"asf_search query failed ({e}); falling back to direct ASF Search REST API...")
+
+            # Direct NASA ASF Search REST API fallback (zero external package dependencies)
             try:
-                search_opts = {
-                    "platform": getattr(asf.PLATFORM, "NISAR", "NISAR"),
+                params = {
+                    "platform": "NISAR",
+                    "processingLevel": product_type,
                     "intersectsWith": geometry_wkt,
                     "start": start_str,
-                    "end": end_str
+                    "end": end_str,
+                    "output": "geojson"
                 }
-                if product_type:
-                    search_opts["processingLevel"] = product_type
-                if flight_direction and flight_direction.upper() != "ALL":
-                    search_opts["flightDirection"] = flight_direction.upper()
+                if dir_filter and dir_filter not in ("ALL", "AUTO"):
+                    params["flightDirection"] = dir_filter
 
-                if session:
-                    opts = asf.ASFSearchOptions(session=session)
-                    results = asf.geo_search(**search_opts, opts=opts)
-                else:
-                    results = asf.geo_search(**search_opts)
+                url = "https://api.daac.asf.alaska.edu/services/search/param"
+                post_data = urllib.parse.urlencode(params).encode("utf-8")
+                req = urllib.request.Request(url, data=post_data, headers={"User-Agent": "AIML-CropMapper-Cloud/2.0"})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
 
+                features = data.get("features", [])
                 products = []
-                for res in results:
-                    props = res.properties
+                for feat in features:
+                    props = feat.get("properties", {})
                     title = props.get("sceneName") or props.get("fileID") or props.get("fileName") or ""
                     if "_SHSH_" in title or "_SVSV_" in title:
                         continue
-                    if session:
-                        res.session = session
                     products.append({
                         "title": title,
                         "start_time": props.get("startTime"),
@@ -1015,54 +1061,30 @@ class FindNisarASF:
                         "bytes": props.get("bytes", 0),
                         "flight_direction": props.get("flightDirection"),
                         "path_number": props.get("pathNumber"),
-                        "geometry": getattr(res, "geometry", None),
-                        "asf_product": res,
-                        "token": getattr(session, "token", None) if session else None
+                        "geometry": feat.get("geometry"),
+                        "asf_product": None
                     })
-                logging.info(f"Found {len(products)} NISAR granules via asf_search.")
+                logging.info(f"Found {len(products)} NISAR granules via NASA ASF REST API ({dir_filter or 'ALL'}).")
                 return products
             except Exception as e:
-                logging.warning(f"asf_search query failed ({e}); falling back to direct ASF Search REST API...")
+                logging.error(f"Error querying NASA ASF REST API for NISAR: {e}")
+                return []
 
-        # Direct NASA ASF Search REST API fallback (zero external package dependencies)
-        try:
-            params = {
-                "platform": "NISAR",
-                "processingLevel": product_type,
-                "intersectsWith": geometry_wkt,
-                "start": start_str,
-                "end": end_str,
-                "output": "geojson"
-            }
-            if flight_direction and flight_direction.upper() != "ALL":
-                params["flightDirection"] = flight_direction.upper()
+        if f_dir_norm in ("AUTO", "ALL"):
+            all_prods = _query_asf_direction("ALL")
+            if not all_prods or f_dir_norm == "ALL":
+                return all_prods
+            asc_prods = [p for p in all_prods if str(p.get("flight_direction", "")).upper().startswith("A")]
+            desc_prods = [p for p in all_prods if str(p.get("flight_direction", "")).upper().startswith("D")]
+            if len(asc_prods) > len(desc_prods):
+                logging.info(f"Auto-selected ASCENDING pass direction ({len(asc_prods)} granules vs {len(desc_prods)} DESCENDING).")
+                return asc_prods
+            logging.info(f"Auto-selected DESCENDING pass direction ({len(desc_prods)} granules vs {len(asc_prods)} ASCENDING).")
+            return desc_prods if desc_prods else all_prods
 
-            url = "https://api.daac.asf.alaska.edu/services/search/param"
-            post_data = urllib.parse.urlencode(params).encode("utf-8")
-            req = urllib.request.Request(url, data=post_data, headers={"User-Agent": "AIML-CropMapper-Cloud/2.0"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-
-            features = data.get("features", [])
-            products = []
-            for feat in features:
-                props = feat.get("properties", {})
-                title = props.get("sceneName") or props.get("fileID") or props.get("fileName") or ""
-                if "_SHSH_" in title or "_SVSV_" in title:
-                    continue
-                products.append({
-                    "title": title,
-                    "start_time": props.get("startTime"),
-                    "stop_time": props.get("stopTime"),
-                    "url": props.get("url"),
-                    "bytes": props.get("bytes", 0),
-                    "flight_direction": props.get("flightDirection"),
-                    "path_number": props.get("pathNumber"),
-                    "geometry": feat.get("geometry"),
-                    "asf_product": None
-                })
-            logging.info(f"Found {len(products)} NISAR granules via NASA ASF REST API.")
-            return products
-        except Exception as e:
-            logging.error(f"Error querying NASA ASF REST API for NISAR: {e}")
-            return []
+        products = _query_asf_direction(f_dir_norm)
+        if not products and f_dir_norm in ("DESCENDING", "ASCENDING"):
+            fallback_dir = "ASCENDING" if f_dir_norm == "DESCENDING" else "DESCENDING"
+            logging.info(f"No NISAR granules found for {f_dir_norm}; automatically checking {fallback_dir} pass...")
+            products = _query_asf_direction(fallback_dir)
+        return products

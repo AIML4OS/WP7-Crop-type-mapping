@@ -94,7 +94,7 @@ REGIONAL_DOYS = {
 def get_regional_doys_for_country(country_code: str) -> List[int]:
     """Returns optimal 14-date phenological DOY sequence for specified country."""
     c = country_code.upper()
-    if c in {'PT', 'ES', 'IT', 'EL', 'GR', 'CY', 'MT', 'AL', 'TR', 'ME', 'MK'}:
+    if c in {'PT', 'ES', 'IT', 'EL', 'GR', 'CY', 'MT', 'HR', 'AL', 'TR', 'ME', 'MK'}:
         return REGIONAL_DOYS['MEDITERRANEAN']
     elif c in {'SE', 'FI', 'EE', 'LT', 'LV', 'NO', 'IS'}:
         return REGIONAL_DOYS['NORTHERN']

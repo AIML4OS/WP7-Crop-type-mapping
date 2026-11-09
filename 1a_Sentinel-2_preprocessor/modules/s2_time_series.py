@@ -62,7 +62,7 @@ REGIONAL_DOYS = {
 def get_regional_doys(country_code: str) -> List[int]:
     """Returns the optimal 14-date phenological DOY sequence for the specified country."""
     c = country_code.upper()
-    if c in {'PT', 'ES', 'IT', 'EL', 'GR', 'CY', 'MT', 'AL', 'TR', 'ME', 'MK'}:
+    if c in {'PT', 'ES', 'IT', 'EL', 'GR', 'CY', 'MT', 'HR', 'AL', 'TR', 'ME', 'MK'}:
         return REGIONAL_DOYS['MEDITERRANEAN']
     elif c in {'SE', 'FI', 'EE', 'LT', 'LV', 'NO', 'IS'}:
         return REGIONAL_DOYS['NORTHERN']
@@ -72,7 +72,8 @@ def get_regional_doys(country_code: str) -> List[int]:
 def whittaker_smooth_series(
     y_stack: np.ndarray,
     lmbda: float = DEFAULT_WHITTAKER_LAMBDA,
-    d: int = 2
+    d: int = 2,
+    doys: Optional[List[int]] = None
 ) -> np.ndarray:
     """
     Vectorized robust penalized least-squares Whittaker smoother for satellite reflectance stacks.
@@ -82,6 +83,7 @@ def whittaker_smooth_series(
         y_stack: (T, H, W) or (T, N) float32 multi-temporal reflectance array.
         lmbda: Smoothing penalty parameter (default: 15.0).
         d: Difference order (default: 2, penalizes second derivative / acceleration).
+        doys: Optional list of target DOYs of length T to account for non-uniform DOY spacing.
 
     Returns:
         Smoothed array matching the shape of y_stack.
@@ -100,9 +102,22 @@ def whittaker_smooth_series(
 
     Y_valid = Y[:, valid_px]
 
-    # Second-order difference operator D of shape (T-d, T)
-    E = np.eye(T, dtype=np.float32)
-    D = np.diff(E, n=d, axis=0)
+    # Second-order difference operator D of shape (T-d, T), weighted by actual DOY intervals if provided
+    if doys is not None and len(doys) == T and d == 2:
+        t_arr = np.asarray(doys, dtype=np.float64)
+        h_steps = np.maximum(np.diff(t_arr), 1.0)
+        h_mean = float(np.mean(h_steps))
+        D = np.zeros((T - 2, T), dtype=np.float32)
+        for i in range(T - 2):
+            h1 = h_steps[i]
+            h2 = h_steps[i + 1]
+            scale = 2.0 * (h_mean ** 2)
+            D[i, i] = float(scale / (h1 * (h1 + h2)))
+            D[i, i + 1] = float(-scale / (h1 * h2))
+            D[i, i + 2] = float(scale / (h2 * (h1 + h2)))
+    else:
+        E = np.eye(T, dtype=np.float32)
+        D = np.diff(E, n=d, axis=0)
     DTD = (D.T @ D).astype(np.float32)
 
     # Pass 1: Global smooth curve
@@ -209,7 +224,7 @@ def apply_whittaker_smoothing_to_tile(
                     block_stack[t_idx] = ds.GetRasterBand(1).ReadAsArray(x, y, xsize, ysize).astype(np.float32)
 
                 if np.any(block_stack > 0):
-                    smoothed_block = whittaker_smooth_series(block_stack, lmbda=lmbda)
+                    smoothed_block = whittaker_smooth_series(block_stack, lmbda=lmbda, doys=doys)
                     smoothed_arr = np.clip(smoothed_block, 0, 65535).astype(np.uint16)
 
                     for t_idx, ds in enumerate(ds_list):
@@ -420,8 +435,18 @@ def generate_s2_time_series_for_tile(
         })
 
     acquisitions.sort(key=lambda x: (x['date'].year, x['doy']))
+    summer_years = [a['date'].year for a in acquisitions if 4 <= a['date'].month <= 9]
     years = [a['date'].year for a in acquisitions]
-    year = max(years) if years else datetime.date.today().year
+    if summer_years:
+        year = max(set(summer_years), key=summer_years.count)
+    else:
+        year = max(years) if years else datetime.date.today().year
+    ref_jan1 = datetime.date(year, 1, 1)
+    for acq in acquisitions:
+        # Express DOY monotonically relative to the main harvest year so autumn (year - 1)
+        # acquisitions have negative relative DOYs and never sort after late-summer (year) scenes
+        acq['raw_doy'] = acq['doy']
+        acq['doy'] = (acq['date'] - ref_jan1).days + 1
 
     # Open first band to retrieve raster dimensions and projection
     ds0 = gdal.Open(str(acquisitions[0]['b02_path']))

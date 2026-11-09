@@ -80,7 +80,12 @@ Examples:
 """
     )
     parser.add_argument('-c', '--country', default=None, help="Country code (e.g. NL, PL, FR, PT, ES, DE)")
-    parser.add_argument('--classifier', default='auto', choices=['auto', 'mlpxgb_presto', 'mlpxgb_presto_s1s2', 's1s2', 'presto_s1', 'otb'], help="Classifier model: 'mlpxgb_presto' [Default SOTA], 'mlpxgb_presto_s1s2', 'presto_s1', 'otb', 'auto' (default: auto)")
+    parser.add_argument(
+        '--classifier',
+        default='auto',
+        choices=['auto', 'mlpxgb_presto', 'mlpxgb_presto_s1s2', 's1s2', 'presto_s1', 'mlp', 'xgb', 'otb'],
+        help="Classifier model: 'mlpxgb_presto' [Default SOTA], 'mlpxgb_presto_s1s2', 'presto_s1', 'mlp', 'xgb', 'otb', 'auto' (default: auto)"
+    )
     parser.add_argument('--seg_mode', default='slic', choices=['slic', 'sam', 'lpis'], help="Segmentation mode: 'slic', 'sam', 'lpis' (default: slic)")
     parser.add_argument('--method', default='confidence', choices=['confidence', 'priority', 'majority'], help="Blending method across overlapping tracks (default: confidence)")
 
@@ -96,6 +101,10 @@ Examples:
         suffix = f"_mlpxgb_presto_s1s2_{args.seg_mode}"
     elif args.classifier == 'presto_s1':
         suffix = f"_presto_{args.seg_mode}"
+    elif args.classifier == 'mlp':
+        suffix = f"_mlp_{args.seg_mode}"
+    elif args.classifier == 'xgb':
+        suffix = f"_xgb_{args.seg_mode}"
     elif args.classifier == 'otb':
         suffix = f"_{args.seg_mode}"
 
