@@ -68,10 +68,10 @@ Builds external GDAL multi-scale pyramid overview layers (`[2, 4, 8, 16, 32, 64]
 ### Execution examples:
 ```powershell
 # Build overviews for a single GeoTIFF:
-python tools/3_build_raster_overviews.py -i workingDirs/NL/orbit_37/processed_raster/NL_orbit_37_S2_timeseries.tif
+python tools/3_build_raster_overviews.py -i workingDirs/NL/orbit_37/1_input_stacks/NL_orbit_37_S2_timeseries.tif
 
 # Build overviews for all rasters in a directory:
-python tools/3_build_raster_overviews.py -d workingDirs/NL/orbit_37/processed_raster/
+python tools/3_build_raster_overviews.py -d workingDirs/NL/orbit_37/1_input_stacks/
 
 # Build overviews for all national products and orbit stacks for a country:
 python tools/3_build_raster_overviews.py -c NL

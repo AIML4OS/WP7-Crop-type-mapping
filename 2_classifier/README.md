@@ -64,14 +64,14 @@ The classification suite combines handcrafted physical remote sensing features w
 * **Sentinel-2 multi-spectral trajectories & Red-Edge indices**: Standardized 14-DOY reflectances across 9 spectral bands (14 x 9 = 126 features) plus biophysical time-series vegetation indices (`NDVI = (B8A - B04)/(B8A + B04)`, `NDRE1 = (B06 - B05)/(B06 + B05)`, `NDRE2 = (B07 - B05)/(B07 + B05)`, `NDWI = (B8A - B11)/(B8A + B11)`) tracking chlorophyll absorption, red-edge inflection shift across `B05`/`B06`/`B07`, and canopy moisture.
 * **Optional NISAR L-band SAR & dual-frequency L/C-band canopy penetration features (with automatic `S1 + S2` fallback)**:
   When a co-registered NISAR L-band stack (`*_NISAR_GCOV_L_timeseries.tif`) is detected in `1_input_stacks/` (or supplied via `--nisar_raster`), the pipeline extracts:
-  - L-band polarimetric moments (`nisar_hh_mean_dB`, `nisar_hv_mean_dB`, `nisar_hv_std`, `nisar_hh_hv_ratio_dB`),
-  - L-band Radar Vegetation Index (`RVI_L = 4 * HV / (HH + HV)`), L-band cross-ratio (`CR_L = HV_dB - HH_dB`), and spring-to-summer biomass accumulation (`nisar_delta_hv_spring_summer`),
-  - **Dual-frequency L-vs-C-band ratios (`nisar_s1_crosspol_diff_dB`, `nisar_s1_copol_diff_dB`, `nisar_s1_rvi_diff`)** comparing 24 cm L-band penetration with 5.6 cm C-band canopy scattering to separate woody/high-biomass crops (maize, rapeseed, orchards, vineyards, potatoes) from fine-stemmed cereals.
+  - Per-cycle L-band Radar Vegetation Index (`nisar_rvi_d{d}`) and cross-ratio (`nisar_cr_d{d}`), plus temporal max, min, amplitude, and mean (`nisar_rvi_max`, `nisar_rvi_min`, `nisar_rvi_amp`, `nisar_rvi_mean`, `nisar_cr_max`, `nisar_cr_min`, `nisar_cr_mean`),
+  - Spring-to-summer L-band biomass accumulation (`nisar_delta_hv_spring_summer`, `nisar_delta_hh_spring_summer`, `nisar_hv_temporal_amp`) and intra-parcel texture dispersion (`nisar_hh_intra_std_mean`, `nisar_hv_intra_std_mean`),
+  - **7 dual-frequency L-vs-C-band ratios & dynamics (`dual_freq_hv_vh_diff_mean`, `dual_freq_hh_vv_diff_mean`, `dual_freq_rvi_l_minus_c`, `dual_freq_hv_vh_diff_p90`, `dual_freq_hh_vv_diff_p90`, `dual_freq_rvi_l_minus_c_p90`, `dual_freq_hv_vh_dyn_diff`)** comparing 24 cm L-band penetration with 5.6 cm C-band canopy scattering to separate woody/high-biomass crops (maize, rapeseed, orchards, vineyards, potatoes) from fine-stemmed cereals.
   - **Seamless fallback**: If no NISAR stack is present (or if a trained `.pkl` checkpoint was trained on `S1 + S2` only), the classifier automatically runs in standard `Sentinel-1 + Sentinel-2` mode with zero configuration changes.
 
 #### Tier 2: NASA Harvest Presto 384-dimensional / 512-dimensional foundation embeddings
 NASA Harvest Presto encodes multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into 128-dimensional latent vectors:
-* `E_Joint` (128 dimensions): True multimodal cross-attention preserving the **full native Sentinel-1 radar time series (`T_s1` dates)** as the primary timeline and temporally interpolating the 14 cloud-free Sentinel-2 DOY composites onto the full S1 sequence.
+* `E_Joint` (128 dimensions): True multimodal cross-attention preserving the **full native ~6-day Sentinel-1 radar time series (`T_s1` dates)** as the primary timeline and chronologically aligning (`parse_chronological_doys`) and linearly interpolating the 14 cloud-free Sentinel-2 DOY composites onto the exact S1 acquisition DOYs (with dynamic positional table expansion `_ensure_sequence_length` for $T > 72$).
 * `E_S1` (128 dimensions): Full-resolution C-band SAR temporal dynamics.
 * `E_S2` (128 dimensions): Optical multispectral phenology.
 * `E_NISAR` (128 dimensions, optional): Full-series L-band SAR transformer embedding (`presto_nisar_0..127`) extracted when NISAR data is present.
@@ -89,7 +89,7 @@ Combining Deep Neural Networks (PyTorch MLP) with Gradient Boosted Decision Tree
 * **Gradient Boosted Decision Trees (XGBoost)** excel at modeling discrete tabular decision thresholds, sharp spectral cutoffs, and step-function phenological transitions.
 * Combining both architectures yields significantly lower generalization error and prediction variance than either model operating alone.
 
-#### PyTorch Deep MLP architecture & regularization
+#### PyTorch deep MLP architecture & regularization
 * **Network topology**: Input Layer (D dims) -> `Dense(512)` -> `BatchNorm1d` -> `ReLU` -> `Dropout(p=0.3)` -> `Dense(256)` -> `BatchNorm1d` -> `ReLU` -> `Dropout(p=0.3)` -> `Dense(128)` -> Output (K classes).
 * **Square-root balanced class loss weights**: Corrects for class imbalance between dominant broadacre crops and minor specialty crops without gradient explosion:
   `w_c = sqrt(N / (K * N_c))`
@@ -97,7 +97,7 @@ Combining Deep Neural Networks (PyTorch MLP) with Gradient Boosted Decision Tree
 * **Cosine Annealing learning rate schedule**: Smoothly decays learning rate across training epochs to avoid local minima.
 
 #### XGBoost GBDT engine
-* Trained on 250 trees with histogram-based split binning (`tree_method='hist'`), maximum depth `max_depth=6`, learning rate 0.08, sample subsampling `subsample=0.8`, and column feature subsampling `colsample_bytree=0.25`.
+* Trained on 350 trees (`n_estimators=350`) with histogram-based split binning (`tree_method='hist'`), maximum depth `max_depth=7`, learning rate `0.08`, sample subsampling `subsample=0.85`, column feature subsampling `colsample_bytree=0.85`, and **class-balanced sample weights (`sample_weight=w_c[y]`)** matching the PyTorch Deep MLP so that dynamic Bayesian prior calibration is mathematically consistent across both ensemble branches.
 
 #### Soft-voting probability blend
 Combines posterior probability distributions from both models:
@@ -234,7 +234,8 @@ Large-scale spatial inference across nationwide multi-temporal satellite stacks 
                                                      v
                      +----------------------------------------------------------+
                      | [Multi-Orbit Swath Overlap Blending (--method)]          |
-                     | - confidence: Select pixel with max posterior confidence |
+                     | - Swath-edge cosine feathering (~2.5 km taper)           |
+                     | - confidence: Select pixel with max weighted confidence  |
                      | - majority:   Majority vote across orbits + conf tiebreak|
                      | - priority:   First valid non-zero orbit in track order  |
                      +----------------------------+-----------------------------+
@@ -251,7 +252,8 @@ Large-scale spatial inference across nationwide multi-temporal satellite stacks 
                      +----------------------------------------------------------+
                      | [National Products: national_products/]                  |
                      | 1. {COUNTRY}_national_crop_map{suffix}.tif               |
-                     | 2. {COUNTRY}_final_metrics{suffix}.xlsx                  |
+                     | 2. {COUNTRY}_national_confidence{suffix}.tif             |
+                     | 3. {COUNTRY}_final_metrics{suffix}.xlsx                  |
                      +----------------------------+-----------------------------+
 ```
 
@@ -259,9 +261,9 @@ Large-scale spatial inference across nationwide multi-temporal satellite stacks 
 
 ## Classifier models & modality options
 
-| Model identifier | Modality | Engine | Status / Description |
+| Model identifier | Modality | Engine | Status / description |
 | :--- | :---: | :---: | :--- |
-| **`mlpxgb_presto`** | `[S1 + S2]` | Presto + MLP + XGBoost | **Recommended SOTA**: 128d Presto tokens, 3-layer deep MLP, and 250 XGBoost trees with soft-voting blend (65% MLP + 35% XGBoost). Aliases: `mlpxgb_presto_s1s2`, `s1s2`. |
+| **`mlpxgb_presto`** | `[S1 + S2 (+NISAR)]` | Presto + MLP + XGBoost | **Recommended SOTA**: 384d/512d Presto tokens, 3-layer deep MLP, and 350 XGBoost trees with soft-voting blend (65% MLP + 35% XGBoost). Aliases: `mlpxgb_presto_s1s2`, `s1s2`. |
 | **`mlp`** | `[S1 + S2]` | PyTorch Deep MLP | Pure deep neural network with BatchNorm, Dropout, and Cosine Annealing learning rate. |
 | **`xgb`** | `[S1 + S2]` | XGBoost GBDT | Pure gradient boosted decision tree classifier with histogram-based splitting. |
 | **`presto_s1`** | `[S1 only]` | Presto ANN | *Archived*: Single-radar SAR classification using temporal Sigma0 sequences and 128d Presto embeddings. |
@@ -416,7 +418,7 @@ python 2_classifier/run_merge.py --country PT --classifier mlpxgb_presto --seg_m
 | Argument | Type | Default | Description |
 | :--- | :---: | :---: | :--- |
 | `-c, --country` | string | **Required** | Country code (e.g. `NL`, `PL`, `PT`, `FR`, `ES`, `DE`). |
-| `--classifier` | choice | `auto` | Model suffix to merge: `auto`, `mlpxgb_presto`, `mlpxgb_presto_s1s2`, `s1s2`, `presto_s1`, `otb`. |
+| `--classifier` | choice | `auto` | Model suffix to merge: `auto`, `mlpxgb_presto`, `mlpxgb_presto_s1s2`, `s1s2`, `presto_s1`, `mlp`, `xgb`, `otb`. |
 | `--seg_mode` | choice | `slic` | Segmentation mode: `slic` (superpixels), `sam` (Meta AI), `lpis` (cadastre). |
 | `--method` | choice | `confidence` | Blending method across overlapping tracks: `confidence`, `priority`, `majority`. |
 
@@ -426,7 +428,7 @@ python 2_classifier/run_merge.py --country PT --classifier mlpxgb_presto --seg_m
 
 All classification outputs are stored sequentially by stage in `workingDirs/{COUNTRY}/orbit_{ORBIT}/2_classification/`:
 
-| Stage | Directory | Output file name pattern | Format / Type | Purpose & description |
+| Stage | Directory | Output file name pattern | Format / type | Purpose & description |
 | :---: | :--- | :--- | :---: | :--- |
 | **1** | `0_segmentation/` | `{COUNTRY}_{ORBIT}_data_footprint.tif` | `Byte`, 1 b. | Binary mask (1=valid, 0=NoData) of S1, S2, and NUTS boundary intersection. |
 | **2** | `0_segmentation/` | `{COUNTRY}_{ORBIT}_sar_seasonal_composite.tif` | `Float32`, 1 b. | **Primary Seasonal SAR Composite**: April–August multi-temporal speckle-reduced backscatter. |
@@ -434,7 +436,7 @@ All classification outputs are stored sequentially by stage in `workingDirs/{COU
 | **2** | `0_segmentation/` | `{COUNTRY}_{ORBIT}_segmentation_{MODE}.tif` | `UInt32`, 1 b. | Object segmentation raster with unique integer `segment_id` per parcel. |
 | **3** | `1_samples_and_features/` | `{COUNTRY}_{ORBIT}_learn_{MODE}.shp` | Vector Points | Stratified 70% training sample points with spatial attributes. |
 | **3** | `1_samples_and_features/` | `{COUNTRY}_{ORBIT}_control_{MODE}.shp` | Vector Points | Stratified 30% independent validation sample points. |
-| **4** | `1_samples_and_features/` | `{COUNTRY}_{ORBIT}_mlpxgb_presto_learn_features_{MODE}.csv` | Tabular CSV | Extracted S1 statistics, S2 reflectances, physical indices, and 128d Presto tokens (~450+ feats). |
+| **4** | `1_samples_and_features/` | `{COUNTRY}_{ORBIT}_mlpxgb_presto_learn_features_{MODE}.csv` | Tabular CSV | Extracted S1 statistics, S2 reflectances, physical indices, optional NISAR L-band stats, and 384d/512d Presto tokens (~560+ / ~707+ feats). |
 | **5** | `2_models/` | `{COUNTRY}_{ORBIT}_mlpxgb_presto_model_{MODE}.pkl` | Pickle Checkpoint | Serialized PyTorch Deep MLP weights + XGBoost GBDT trees + label encoder + scaler. |
 | **6** | `3_maps/` | `{COUNTRY}_{ORBIT}_classified_mlpxgb_presto_{MODE}.tif` | `UInt16`, 1 b. | Raw pixel crop classification raster (pixel value = numeric `crop_id`). |
 | **6** | `3_maps/` | `{COUNTRY}_{ORBIT}_confidence_mlpxgb_presto_{MODE}.tif` | `Float32`, 1 b. | Winning ensemble prediction probability confidence map (`0.0` to `1.0`). |
@@ -444,7 +446,8 @@ All classification outputs are stored sequentially by stage in `workingDirs/{COU
 | **7** | `3_maps/` | `{COUNTRY}_{ORBIT}_confidence_masked_mlpxgb_presto_{MODE}.tif` | `Float32`, 1 b. | **Final Track Confidence Map**: Cropland-masked confidence GeoTIFF. |
 | **7** | `3_maps/` | `{COUNTRY}_{ORBIT}_entropy_masked_mlpxgb_presto_{MODE}.tif` | `Float32`, 1 b. | **Final Track Entropy Map**: Cropland-masked spatial entropy uncertainty GeoTIFF. |
 | **7** | `3_maps/` | `{COUNTRY}_{ORBIT}_margin_masked_mlpxgb_presto_{MODE}.tif` | `Float32`, 1 b. | **Final Track Margin Map**: Cropland-masked prediction margin GeoTIFF. |
-| **8** | `4_reports/` | `report_{COUNTRY}_{ORBIT}_mlpxgb_presto_{MODE}.xlsx` | Styled Excel | Detailed validation report: Overall Accuracy, Cohen's Kappa, Confusion Matrix, F1-scores. |
-| **Merge** | `national_products/` | `{COUNTRY}_national_crop_map{suffix}.tif` | `Int32`, 1 b. | **Seamless National Crop Map**: Confidence-blended multi-orbit BigTIFF. |
+| **8** | `4_reports/` | `report_{COUNTRY}_{ORBIT}_mlpxgb_presto_{MODE}.xlsx` | Styled Excel | Detailed validation report: Overall Accuracy, Cohen's Kappa, Confusion Matrix, F1-scores, and latitude-corrected Web Mercator (`cosh^2`) area statistics. |
+| **Merge** | `national_products/` | `{COUNTRY}_national_crop_map{suffix}.tif` | `Int32`, 1 b. | **Seamless National Crop Map**: Swath-feathered confidence-blended multi-orbit BigTIFF. |
+| **Merge** | `national_products/` | `{COUNTRY}_national_confidence{suffix}.tif` | `Float32`, 1 b. | **National Confidence Map**: Nationwide posterior probability confidence GeoTIFF (`0.0` to `1.0`). |
 | **Merge** | `national_products/` | `{COUNTRY}_final_metrics{suffix}.xlsx` | Styled Excel | Aggregated nationwide statistical validation report. |
 

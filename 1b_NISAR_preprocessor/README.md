@@ -24,7 +24,7 @@ All output stacks are co-registered pixel-for-pixel to the **Sentinel-1** and **
 ```
 
 ### Stage 1: Granule discovery, HDF5 extraction & radiometric calibration (`--stage 1`)
-* Queries local `/eodata/NISAR` archives (`--source local`), the NASA ASF DAAC API (`--source asf`), or both automatically (`--source auto`, default), grouping scenes into 12-day orbital repeat cycles.
+* Queries local `/eodata/NISAR` archives (`--source local`), the NASA ASF DAAC API (`--source asf`), or both automatically (`--source auto`, default), grouping scenes into 12-day orbital repeat cycles with automatic orbit pass direction discovery and fallback (`ASCENDING` / `DESCENDING`).
 * Extracts four physical L-band polarimetric layers per granule:
   1. `NISAR_HHHH_dB_<DDMonYYYY>` — Co-polarized L-band backscatter (`Gamma0_HH` in dB, `10 * log10(Gamma0_HH)`).
   2. `NISAR_HVHV_dB_<DDMonYYYY>` — Cross-polarized L-band volume scattering (`Gamma0_HV` in dB, `10 * log10(Gamma0_HV)`).
@@ -68,14 +68,17 @@ python 1b_NISAR_preprocessor/run_nisar_preprocessor.py --track PT/orbit_52 --sta
 
 | Argument | Description | Default |
 | :--- | :--- | :--- |
-| `--track` | Single target track (`COUNTRY/orbit_ID`, e.g., `PT/orbit_52`). | Interactive |
-| `--country` | Process all orbits for an EU-27 country code (e.g., `PT`, `NL`, `PL`). | `None` |
+| `-t, --track` | Single target track (`COUNTRY/orbit_ID`, e.g., `PT/orbit_52`). | Interactive |
+| `-c, --country` | Process all orbits for an EU-27 country code (e.g., `PT`, `NL`, `PL`). | `None` |
+| `-o, --orbit` | Specific relative S1 reference orbit number (e.g., `52`, `37`). | `None` |
 | `--source` | Data source mode: `auto` (local first, then ASF DAAC), `asf`, or `local`. | `auto` |
-| `-s`, `--start_date` | Start date (`YYYY-MM-DD`). | Config value |
-| `-e`, `--end_date` | End date (`YYYY-MM-DD`). | Config value |
+| `-s, --start_date` | Start date (`YYYY-MM-DD`). | Config value |
+| `-e, --end_date` | End date (`YYYY-MM-DD`). | Config value |
 | `--stage` | Execution stage: `1` (Extract), `2` (Mosaic), `3` (Stack), `A` (All). | `A` |
+| `--grouping_mode` | Temporal grouping mode: `cycle` (12-day NISAR orbital cycle), `dekada`, or `date`. | `cycle` |
 | `--threads` | Number of parallel worker threads. | `4` |
 | `--keep_h5` | Retain raw `.h5` files in `_temp_nisar_h5/` after extraction. | `False` |
-| `--config` | Path to custom JSON configuration file. | `config_nisar.json` |
+| `-j, --config` | Path to custom JSON configuration file. | `config_nisar.json` |
+| `-f, --overwrite` | Force overwrite of existing intermediate mosaics and final stacks. | `False` |
 
 

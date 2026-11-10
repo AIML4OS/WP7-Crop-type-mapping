@@ -141,10 +141,10 @@ Sentinel-1 operates at C-band Synthetic Aperture Radar frequency (5.405 GHz, wav
 #### 1. Radar backscatter calibration
 Raw Sentinel-1 images contain digital number (DN) values. The pipeline calibrates them to normalized radar cross section (Sigma0) using look-up tables (LUT), removing antenna gain and range spreading loss.
 
-#### 2. Radiometric terrain correction (RTC) & decibel transformation
-To eliminate topographic illumination distortions on sloped terrain, backscatter is orthorectified using Copernicus 30 m DEM and converted to decibels:
+#### 2. Radiometric terrain correction (RTC), incidence angle normalization & decibel transformation
+To eliminate topographic illumination distortions on sloped terrain and cross-swath viewing geometry variations, backscatter is orthorectified using the Copernicus 30 m Global DEM, normalized to a reference incidence angle of $\theta_{\text{ref}} = 37.5^\circ$ ($\gamma^0 = \sigma^0 \cdot \cos(37.5^\circ) / \cos(\theta_{\text{inc}})$), and converted to decibels:
 `dB = 10 * log10(Sigma0)`
-This standardizes the radar signal dynamic range between -28 dB and 0 dB.
+This standardizes the radar signal dynamic range between -28 dB and 0 dB while eliminating near-to-far range brightness drop-off across wide swaths.
 
 #### 3. Agricultural polarimetric indices
 * **Radar Vegetation Index (RVI)**: Measures canopy volume scattering relative to total backscatter:
@@ -175,18 +175,19 @@ Captures Bottom-Of-Atmosphere (BOA) surface reflectances across 9 spectral bands
 
 #### 3. Standardized 14-DOY agricultural nodes & regional phenological profiles
 Temporal observations are interpolated into 14 standardized agricultural reference dates (Day of Year) tailored to specific European bioclimatic zones:
-* **Mediterranean profile (`PT`, `ES`, `IT`, `EL`, `CY`, etc.)**:
+* **Mediterranean profile (`PT`, `ES`, `IT`, `EL`, `GR`, `CY`, `MT`, `HR`, `ME`, `MK`, `AL`, `TR`)**:
   DOYs: `[45, 65, 85, 105, 120, 135, 150, 165, 180, 200, 220, 240, 260, 280]`
   Captures early February green-up (DOY 45 ~ Feb 14), early cereal heading, summer drought senescence, and autumn emergence.
-* **Continental & Central European profile (`PL`, `NL`, `DE`, `FR`, etc.)**:
+* **Continental & Central European profile (`PL`, `NL`, `DE`, `FR`, `BE`, `LU`, `AT`, `CZ`, `SK`, `HU`, `RO`, `BG`, `SI`, `IE`, `DK`, `CH`, `UK`)**:
   DOYs: `[80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]`
   Optimized for spring green-up (DOY 80 ~ March 21), peak summer vegetative growth, and autumn harvest.
 * **Northern European profile (`SE`, `FI`, `EE`, `LT`, `LV`, `NO`)**:
   DOYs: `[105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300]`
   Calibrated for delayed boreal snowmelt and late autumn harvest windows.
+* **Continuous cross-year chronological axis**: For winter-sown crop seasons spanning two calendar years (e.g., October $Y-1$ to September $Y$), observations are mapped onto a continuous chronological axis (`rel_doy` relative to the harvest year) so autumn emergence dates interpolate seamlessly into spring green-up without calendar wrap-around artifacts.
 
-#### 4. Whittaker penalized least-squares smoother (`--enable_whittaker`)
-To suppress residual cloud artifacts, shadow dips, and atmospheric fluctuations across the reconstructed sequence, the pipeline incorporates an optional, vectorized Whittaker smoother (`lambda = 15.0`). It balances fidelity to observations with a curvature smoothness penalty, yielding continuous, physically realistic phenological trajectories.
+#### 4. Interval-weighted Whittaker penalized least-squares smoother (`--enable_whittaker`)
+To suppress residual cloud artifacts, shadow dips, and atmospheric fluctuations across the reconstructed sequence, the pipeline incorporates a vectorized Whittaker smoother (`lambda = 15.0`) using **$\Delta\text{DOY}$-weighted 2nd-order divided differences**. Accounting for exact time intervals (`13` to `25` days) between regional DOY nodes balances observation fidelity with true second-derivative curvature smoothness, yielding physically realistic phenological trajectories.
 
 #### 5. High-throughput ZSTD compression & temporal stack naming
 * **Zstandard (ZSTD level 3, predictor 2)**: Optical BigTIFF cubes utilize high-speed ZSTD compression, yielding 35% to 45% reduction in storage footprint with significantly faster multi-threaded decompression rates than legacy DEFLATE.
@@ -201,15 +202,15 @@ While Sentinel-1 operates at C-band (wavelength ~5.55 cm, interacting primarily 
 * **Deep canopy & woody structure penetration**: Long 24 cm L-band microwaves penetrate deep through dense agricultural canopies (maize, rapeseed, potatoes, sugar beet) and woody perennial crops (vineyards, olive groves, fruit/nut orchards) where C-band backscatter saturates early in the season.
 * **Level-2 GCOV polarimetric channels**: Extracts radiometrically terrain-corrected (`Gamma0`) co-polarized (`HHHH_gamma0`) and cross-polarized (`HVHV_gamma0`) power terms in decibels, along with the L-band Radar Vegetation Index (`RVI_L = 4 * HV / (HH + HV)`) and cross-ratio (`HH / HV` in dB).
 * **Swath artifact suppression & 12-day cycle mosaicking**: Applies cross-track invalid margin erosion, Euclidean Distance Transform (EDT) internal pinhole imputation, 2D adaptive monotonic range-edge de-tapering, and C1-continuous distance-squared feathering onto the exact `EPSG:3857` (`10.0 m`) reference grid of Sentinel-1 and Sentinel-2.
-* **Automatic fallback**: When a `*_NISAR_GCOV_L_timeseries.tif` stack is present in `1_input_stacks/` (or `workingDirs/{COUNTRY}/NISAR/`), the classifier automatically activates **tri-sensor `Sentinel-1 + Sentinel-2 + NISAR` fusion** (`+19` L-band temporal & polarimetric features + `128d` L-band Presto token embedding). When NISAR data is absent, the classifier **transparently falls back to `Sentinel-1 + Sentinel-2`** with zero configuration changes.
+* **Automatic fallback**: When a `*_NISAR_GCOV_L_timeseries.tif` stack is present in `1_input_stacks/` (or `workingDirs/{COUNTRY}/NISAR/`), the classifier automatically activates **tri-sensor `Sentinel-1 + Sentinel-2 + NISAR` fusion** (`2 * T_nisar` per-cycle `RVI_L`/`CR_L` features + `19` L-band temporal, polarimetric & dual-frequency L-vs-C-band penetration metrics + `128d` L-band Presto token embedding). When NISAR data is absent, the classifier **transparently falls back to `Sentinel-1 + Sentinel-2`** with zero configuration changes.
 
 ---
 
 ### NASA Harvest Presto geospatial foundation model
 
 **Presto** is a global geospatial transformer foundation model pre-trained on multi-sensor Earth observation time series:
-* **Multi-sensor joint tokenization preserving full S1 radar time series**: Simultaneously projects the **full native Sentinel-1 SAR time series (`VV`, `VH`)** and Sentinel-2 optical reflectances (`B02`–`B12`) + dynamic `NDVI` into a unified high-dimensional latent space. Sentinel-1 keeps 100% of its native acquisition dates (`T_s1`), while the 14 cloud-free Sentinel-2 DOY composites are linearly interpolated along the temporal axis onto the full S1 timeline so radar and optical tokens are temporally synchronized without losing any radar acquisitions.
-* **Sinusoidal spatio-temporal embeddings**: Encodes continuous geographic coordinates (latitude, longitude) and seasonal acquisition months, conditioning model attention on geographic and bioclimatic context.
+* **Multi-sensor joint tokenization preserving full S1 radar time series**: Simultaneously projects the **full native ~6-day Sentinel-1 SAR time series (`VV`, `VH`)** and Sentinel-2 optical reflectances (`B02`–`B12`) + dynamic `NDVI` into a unified high-dimensional latent space. Sentinel-1 keeps 100% of its native acquisition dates (`T_s1`), while the 14 cloud-free Sentinel-2 DOY composites are chronologically aligned (`parse_chronological_doys`) and linearly interpolated along the exact acquisition DOY axis onto the full S1 timeline so radar and optical tokens are temporally synchronized without losing any radar acquisitions.
+* **Sinusoidal spatio-temporal embeddings & dynamic sequence length**: Encodes continuous geographic coordinates (latitude, longitude) and seasonal acquisition months, conditioning model attention on geographic and bioclimatic context, while dynamically expanding sinusoidal positional tables (`_ensure_sequence_length`) for dense radar stacks exceeding $T > 72$ steps.
 * **384-dimensional (or 512-dimensional with NISAR) latent representation extraction**: Outputs three **128-dimensional multi-temporal token embeddings** (**384 dimensions total** in `S1 + S2` mode: `E_Presto_Joint`, `E_Presto_S1`, `E_Presto_S2`; **512 dimensions total** in `S1 + S2 + NISAR` mode by appending `E_Presto_NISAR`).
 
 ---
@@ -325,7 +326,7 @@ Before performing segmentation, Stage 2 generates a dedicated 1-channel high-SNR
 * **Intra-object texture variance & dispersion (field-level CV & Std)**:
   Captures internal parcel spatial heterogeneity: scale-invariant SAR Coefficient of Variation (`CV`) and optical intra-parcel standard deviation (`s2_intra_std`, `ndvi_intra_std`). Distinguishes dense uniform field canopies (wheat, barley) from wide-row crops (maize, sugar beets) and structured woody vegetation (vineyards, orchards, olive groves).
 * **Sentinel-2 multi-spectral trajectories & Red-Edge indices**: Standardized 14-DOY reflectances across 9 spectral bands (14 x 9 = 126 features) plus biophysical time-series vegetation indices (`NDVI = (B8A - B04)/(B8A + B04)`, `NDRE1 = (B06 - B05)/(B06 + B05)`, `NDRE2 = (B07 - B05)/(B07 + B05)`, `NDWI = (B8A - B11)/(B8A + B11)`) tracking chlorophyll absorption, red-edge shift across `B05`/`B06`/`B07`, and canopy moisture.
-* **Optional NISAR L-band SAR polarimetric & temporal features (19 features when NISAR is available)**: Extracts linear-power mean (converted to dB), temporal standard deviation, max, min, seasonal amplitude, scale-invariant Coefficient of Variation (`CV`), and intra-parcel spatial dispersion for `HHHH_gamma0` and `HVHV_gamma0`, plus L-band Radar Vegetation Index (`RVI_L = 4 * HV / (HH + HV)`), cross-ratio (`HH/HV` in dB), and seasonal L-band dynamics (`Delta_HV_L`, `Delta_HH_L`). Automatically skipped when NISAR is absent.
+* **Optional NISAR L-band SAR polarimetric, temporal & dual-frequency L/C-band features (when NISAR is available)**: Extracts per-cycle `RVI_L` and `CR_L` (`2 * T_nisar` features) plus `19` summary and dual-frequency metrics: temporal max, min, amplitude, and mean for `RVI_L` (`4 * HV / (HH + HV)`) and `CR_L` (`HV - HH` in dB), seasonal spring-to-summer L-band dynamics (`nisar_delta_hv_spring_summer`, `nisar_delta_hh_spring_summer`, `nisar_hv_temporal_amp`), intra-parcel texture dispersion (`nisar_hh_intra_std_mean`, `nisar_hv_intra_std_mean`), and **7 dual-frequency L-vs-C-band canopy penetration metrics** (`dual_freq_hv_vh_diff_mean`, `dual_freq_hh_vv_diff_mean`, `dual_freq_rvi_l_minus_c`, `dual_freq_hv_vh_diff_p90`, `dual_freq_hh_vv_diff_p90`, `dual_freq_rvi_l_minus_c_p90`, `dual_freq_hv_vh_dyn_diff`). Automatically skipped when NISAR is absent.
 
 #### 2. Tier 2: NASA Harvest Presto foundation embeddings (384D for S1+S2 / 512D with NISAR)
 NASA Harvest Presto encodes multi-temporal sequences using self-attention transformer blocks, mapping seasonal dynamics into 128-dimensional latent vectors:
@@ -347,7 +348,7 @@ Combining Deep Neural Networks (PyTorch MLP) with Gradient Boosted Decision Tree
 * **Gradient Boosted Decision Trees (XGBoost)** excel at modeling discrete tabular decision thresholds, sharp spectral cutoffs, and step-function phenological transitions.
 * Combining both architectures yields significantly lower generalization error and lower prediction variance than either model operating alone.
 
-#### 1. PyTorch Deep MLP architecture & regularization
+#### 1. PyTorch deep MLP architecture & regularization
 * **Network topology**: Input Layer (D dims) -> `Dense(512)` -> `BatchNorm1d` -> `ReLU` -> `Dropout(p=0.3)` -> `Dense(256)` -> `BatchNorm1d` -> `ReLU` -> `Dropout(p=0.3)` -> `Dense(128)` -> Output (K classes).
 * **Square-root balanced class loss weights**: Corrects for class imbalance between dominant broadacre crops and minor specialty crops without gradient explosion:
   `w_c = sqrt(N / (K * N_c))`
@@ -355,7 +356,7 @@ Combining Deep Neural Networks (PyTorch MLP) with Gradient Boosted Decision Tree
 * **Cosine Annealing learning rate schedule**: Smoothly decays learning rate across training epochs to avoid local minima.
 
 #### 2. XGBoost GBDT engine
-* Trained on 250 trees with histogram-based split binning (`tree_method='hist'`), maximum depth `max_depth=6`, learning rate 0.08, sample subsampling `subsample=0.8`, and column feature subsampling `colsample_bytree=0.25`.
+* Trained on 350 trees (`n_estimators=350`) with histogram-based split binning (`tree_method='hist'`), maximum depth `max_depth=7`, learning rate `0.08`, sample subsampling `subsample=0.85`, column feature subsampling `colsample_bytree=0.85`, and **class-balanced sample weights (`sample_weight=w_c[y]`)** matching the PyTorch Deep MLP so that dynamic Bayesian prior calibration is mathematically consistent across both ensemble branches.
 
 #### 3. Soft-voting probability blend
 Combines posterior probability distributions from both models:
@@ -543,7 +544,8 @@ Located in `2_classifier/`, this tool combines multiple single-orbit classificat
                                                      v
                      +----------------------------------------------------------+
                      | [Multi-Orbit Swath Overlap Blending (--method)]          |
-                     | - confidence: Select pixel with max posterior confidence |
+                     | - Swath-edge cosine feathering (~2.5 km taper)           |
+                     | - confidence: Select pixel with max weighted confidence  |
                      | - majority:   Majority vote across orbits + conf tiebreak|
                      | - priority:   First valid non-zero orbit in track order  |
                      +----------------------------+-----------------------------+
@@ -551,7 +553,7 @@ Located in `2_classifier/`, this tool combines multiple single-orbit classificat
                                                   v
                      +----------------------------------------------------------+
                      | [Post-Processing, Pyramids & National Validation]        |
-                     | 1. Morphological sieve filtering (clump size < 50 px)    |
+                     | 1. Cropland-masked seam sieve filter (slivers < 4 px)    |
                      | 2. Multi-scale pyramid overviews [2, 4, 8, 16, 32, 64]   |
                      | 3. Aggregated national confusion matrix & area report    |
                      +----------------------------+-----------------------------+
@@ -560,13 +562,14 @@ Located in `2_classifier/`, this tool combines multiple single-orbit classificat
                      +----------------------------------------------------------+
                      | [National Products: national_products/]                  |
                      | 1. {COUNTRY}_national_crop_map{suffix}.tif               |
-                     | 2. {COUNTRY}_final_metrics{suffix}.xlsx                  |
+                     | 2. {COUNTRY}_national_confidence{suffix}.tif             |
+                     | 3. {COUNTRY}_final_metrics{suffix}.xlsx                  |
                      +----------------------------+-----------------------------+
 ```
 
 * **Master runner script**: `run_merge.py`
 * **Internal engine (`modules/`)**:
-  * `multi_orbit_merger.py`: Multi-strategy mosaic blending (`confidence`, `priority`, `majority`), morphological sieve post-processing, pyramid overview generation, and national statistical aggregation.
+  * `multi_orbit_merger.py`: Multi-strategy mosaic blending (`confidence`, `priority`, `majority`) with cross-track swath-edge cosine feathering, cropland-masked morphological seam sieve post-processing, national confidence map export, pyramid overview generation, and national statistical aggregation.
 
 ---
 
@@ -709,14 +712,14 @@ This section provides an exhaustive, beginner-friendly, end-to-end operational g
 1. **Stage 1 (Radiometric Calibration, Orthorectification & Slice Assembly)**:
    - Supports **two data ingestion pathways**: direct reading from local CreoDIAS storage (`--source creodias` / `--source cog`) or automated downloading from the Copernicus Data Space Ecosystem OData API (`--source cdse`).
    - Performs 2D thermal noise removal (TNR), GRD border noise removal (BNR), and radiometric calibration from raw digital numbers (`DN`) to physical linear radar cross-section (`Sigma0`).
-   - In **Pure Python mode (`--engine python`, default)**, orthorectifies each slice using exact Range-Doppler foreshortening equations with the **Copernicus 30 m Global DEM** directly onto a locked 10.0 m `EPSG:3857` grid and stitches daily slices into `slice_assembly/{YYYYMMDD}.tif` without requiring ESA SNAP.
+   - In **Pure Python mode (`--engine python`, default)**, orthorectifies each slice using exact Range-Doppler foreshortening equations with the **Copernicus 30 m Global DEM** and **incidence angle radiometric normalization** ($\theta_{\text{ref}} = 37.5^\circ$) directly onto a locked 10.0 m `EPSG:3857` grid and stitches daily slices into `slice_assembly/{YYYYMMDD}.tif` without requiring ESA SNAP.
 2. **Stage 2 (Multi-Temporal Coregistration)**:
-   - In **Pure Python mode (`--engine python`)**, aligns all daily orthorectified slices onto the master 10.0 m `EPSG:3857` grid and writes `wrapped/python_stack_manifest.json`.
+   - In **Pure Python mode (`--engine python`)**, aligns all daily orthorectified slices onto the master 10.0 m `EPSG:3857` grid, verifies sub-pixel registration via 2D FFT phase cross-correlation, and writes `wrapped/python_stack_manifest.json`.
    - In **ESA SNAP mode (`--engine snap`)**, runs SNAP `CreateStack` sub-pixel cross-correlation and Range-Doppler terrain correction with the Copernicus 30 m Global DEM (`BILINEAR_INTERPOLATION`).
 3. **Stage 3 (Multi-Temporal Despeckling, Stacking & NUTS2 Clipping)**:
-   - Applies the vectorized **Multi-Temporal Quegan Speckle Filter** in linear power domain (`--filter_window 7`), suppressing granular radar speckle while preserving 10 m field edges.
-   - Optionally interpolates the SAR time series onto 14 standardized regional agricultural DOYs (`--temporal_mode doy`) matching Sentinel-2.
-   - Converts backscatter to decibels (`dB = 10 * log10(Sigma0)`), clips to the country NUTS2 administrative boundary in `EPSG:3857` at 10.0 m resolution, and writes the final multi-temporal dual-polarization BigTIFF (`1_input_stacks/`) with 6 pyramid overview layers (`.ovr`).
+   - Applies the vectorized **Multi-Temporal Quegan Speckle Filter** in linear power domain (`--filter_window 7`) with a halo overlap buffer across `2048 x 2048` blocks, suppressing granular radar speckle while eliminating block boundaries and preserving 10 m field edges.
+   - Preserves the **full native ~6-day Sentinel-1 radar time series** across all acquired passes (`VV` and `VH` polarizations).
+   - Converts backscatter to decibels (`dB = 10 * log10(Sigma0)`), clips to the country NUTS2 administrative boundary in `EPSG:3857` at 10.0 m resolution, and writes the final multi-temporal dual-polarization BigTIFF (`1_input_stacks/`, `COMPRESS=DEFLATE`, `PREDICTOR=3`, `NUM_THREADS=ALL_CPUS`) with 6 pyramid overview layers (`.ovr`).
 
 #### How to execute:
 ```bash
@@ -861,11 +864,11 @@ python 2_classifier/run_classifier.py
 
 #### What happens behind the scenes:
 1. Discovers all processed single-orbit classification maps and confidence rasters for the target country.
-2. Identifies overlapping swath zones between adjacent satellite orbits.
+2. Identifies overlapping swath zones between adjacent satellite orbits and computes a **cross-track swath-edge cosine feathering mask (~2.5 km taper)** to smoothly down-weight outer orbit margins.
 3. In overlapping pixels, applies **confidence-weighted blending**:
-   For each overlapping pixel, the classification from the orbit with higher prediction confidence is selected.
+   For each overlapping pixel, the classification from the orbit with higher feathered prediction confidence is selected, while saving the nationwide blended confidence raster (`{COUNTRY}_national_confidence{suffix}.tif`).
 4. Applies a **cropland-mask-protected morphological seam sieve filter** (removing 1–3 pixel `< 0.04 ha` seam slivers strictly inside valid agricultural parcels while preserving small `< 0.5 ha` fields and never altering the `0` non-agricultural background).
-5. Aggregates confusion matrices from all orbits into a consolidated national statistical performance report.
+5. Aggregates confusion matrices and latitude-corrected Web Mercator (`cosh^2`) crop hectarage from all orbits into a consolidated national statistical performance report.
 
 #### How to execute:
 ```powershell
@@ -881,13 +884,14 @@ python 2_classifier/run_merge.py --country PT --classifier mlpxgb_presto --seg_m
 
 #### Expected output artifacts:
 * `workingDirs/{COUNTRY}/national_products/{COUNTRY}_national_crop_map{suffix}.tif`
+* `workingDirs/{COUNTRY}/national_products/{COUNTRY}_national_confidence{suffix}.tif`
 * `workingDirs/{COUNTRY}/national_products/{COUNTRY}_final_metrics{suffix}.xlsx`
 
 ---
 
 ### Phase 5: How to visualize and validate maps in QGIS & ArcGIS Pro
 
-#### 1. Loading and styling the Crop Map in QGIS:
+#### 1. Loading and styling the crop map in QGIS:
 1. Open **QGIS** and click **Layer -> Add Layer -> Add Raster Layer...**
 2. Select `workingDirs/{COUNTRY}/national_products/{COUNTRY}_national_crop_map_mlpxgb_presto_slic.tif` (or per-orbit `*_classified_masked_slic.tif`).
 3. Right-click the loaded layer in the Layers panel -> **Properties** -> select **Symbology** tab.
@@ -896,13 +900,13 @@ python 2_classifier/run_merge.py --country PT --classifier mlpxgb_presto --seg_m
    - Each numerical `crop_id` (e.g. `11` = Winter Wheat, `12` = Maize, `1430` = Rapeseed) will receive a unique color.
 6. Click **OK** to render the interactive crop classification map.
 
-#### 2. Inspecting Classification Confidence:
-1. Add `*_confidence_masked_slic.tif` as a raster layer in QGIS.
+#### 2. Inspecting classification confidence:
+1. Add `*_confidence_masked_slic.tif` (or `{COUNTRY}_national_confidence_mlpxgb_presto_slic.tif`) as a raster layer in QGIS.
 2. In **Properties -> Symbology**, set **Render type** to **Singleband pseudocolor**.
 3. Choose a color ramp (e.g. `Viridis` or `RdYlGn`), with minimum value `0.0` (red / low confidence) to maximum value `1.0` (green / high confidence).
 4. Overlay with transparency over the classified map to inspect model certainty across field interiors and boundaries.
 
-#### 3. Analyzing the Excel Accuracy Report:
+#### 3. Analyzing the Excel accuracy report:
 1. Open `report_{COUNTRY}_{ORBIT}_metrics_slic.xlsx` or national `*_final_metrics_*.xlsx` in Microsoft Excel or LibreOffice Calc.
 2. Inspect the **Summary Sheet**:
    - **Overall Accuracy (OA)**: Percentage of correct crop identifications (target > 85% to 90%).
@@ -1076,8 +1080,9 @@ The table below catalogs every intermediate and final output artifact generated 
 | **Classif. 7** | `2_classification/3_maps/` | `{COUNTRY}_{ORBIT}_confidence_masked_mlpxgb_presto_{MODE}.tif` | `Float32`, 1 band | **Final Track Confidence Map**: Cropland-masked confidence GeoTIFF. |
 | **Classif. 7** | `2_classification/3_maps/` | `{COUNTRY}_{ORBIT}_entropy_masked_mlpxgb_presto_{MODE}.tif` | `Float32`, 1 band | **Final Track Entropy Map**: Cropland-masked spatial entropy uncertainty GeoTIFF. |
 | **Classif. 7** | `2_classification/3_maps/` | `{COUNTRY}_{ORBIT}_margin_masked_mlpxgb_presto_{MODE}.tif` | `Float32`, 1 band | **Final Track Margin Map**: Cropland-masked prediction margin GeoTIFF. |
-| **Classif. 8** | `2_classification/4_reports/` | `report_{COUNTRY}_{ORBIT}_mlpxgb_presto_{MODE}.xlsx` | Styled Excel | Detailed validation report: Overall Accuracy, Cohen's Kappa, Confusion Matrix, F1-scores. |
-| **Merge 4** | `national_products/` | `{COUNTRY}_national_crop_map{suffix}.tif` | `Int32`, 1 band | **Seamless National Crop Map**: Confidence-blended multi-orbit BigTIFF. |
+| **Classif. 8** | `2_classification/4_reports/` | `report_{COUNTRY}_{ORBIT}_mlpxgb_presto_{MODE}.xlsx` | Styled Excel | Detailed validation report: Overall Accuracy, Cohen's Kappa, Confusion Matrix, F1-scores, and latitude-corrected Web Mercator (`cosh^2`) area statistics. |
+| **Merge 4** | `national_products/` | `{COUNTRY}_national_crop_map{suffix}.tif` | `Int32`, 1 band | **Seamless National Crop Map**: Swath-feathered confidence-blended multi-orbit BigTIFF. |
+| **Merge 4** | `national_products/` | `{COUNTRY}_national_confidence{suffix}.tif` | `Float32`, 1 band | **National Confidence Map**: Nationwide posterior probability confidence GeoTIFF (`0.0` to `1.0`). |
 | **Merge 4** | `national_products/` | `{COUNTRY}_final_metrics{suffix}.xlsx` | Styled Excel | Aggregated nationwide statistical validation report. |
 
 ---

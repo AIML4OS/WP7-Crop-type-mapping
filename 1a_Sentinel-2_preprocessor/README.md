@@ -29,18 +29,19 @@ The pipeline calculates key vegetation and moisture indices:
 
 ### 4. Standardized agricultural DOY time series & regional phenological profiles
 Satellite observations across years and orbits have variable revisit dates due to cloud cover. The pipeline solves this by interpolating observations into **14 standardized 10-day agricultural reference dates (Day of Year - DOY)** using regional phenological profiles tailored to European biomes:
-* **Mediterranean profile (`PT`, `ES`, `IT`, `EL`, `CY`, etc.)**:
+* **Mediterranean profile (`PT`, `ES`, `IT`, `EL`, `GR`, `CY`, `MT`, `HR`, `ME`, `MK`, `AL`, `TR`)**:
   DOYs: `[45, 65, 85, 105, 120, 135, 150, 165, 180, 200, 220, 240, 260, 280]`
   Captures early February green-up (DOY 45 ~ Feb 14), early cereal heading (DOY 105-135), summer drought senescence (DOY 180-220), and autumn emergence (DOY 260-280).
-* **Continental & Central European profile (`PL`, `NL`, `DE`, `FR`, etc.)**:
+* **Continental & Central European profile (`PL`, `NL`, `DE`, `FR`, `BE`, `LU`, `AT`, `CZ`, `SK`, `HU`, `RO`, `BG`, `SI`, `IE`, `DK`, `CH`, `UK`)**:
   DOYs: `[80, 105, 119, 132, 146, 161, 175, 189, 203, 217, 231, 252, 273, 287]`
   Tailored to spring green-up (DOY 80 ~ March 21), peak summer canopy closure (June-July), and late harvest (September-October).
 * **Northern European profile (`SE`, `FI`, `EE`, `LT`, `LV`, `NO`)**:
   DOYs: `[105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300]`
   Adjusted for late snowmelt, short intense boreal growing seasons, and late autumn harvests.
+* **Continuous cross-year chronological ordering**: For winter-sown agricultural seasons crossing calendar years (e.g., October $Y-1$ to September $Y$), observations are sorted along a continuous chronological axis (`rel_doy` relative to the harvest year) so autumn emergence interpolates seamlessly into spring green-up without end-of-year wrap-around.
 
-### 5. Whittaker penalized least-squares smoother (`--enable_whittaker`)
-Residual cloud spikes, shadow dips, and atmospheric fluctuations can distort temporal NDVI trajectories. The pipeline incorporates a vectorized, robust Whittaker smoother across the DOY sequence. It balances observation fidelity with a curvature smoothness penalty (`lambda = 15.0`), suppressing cloud and shadow artifacts while preserving true crop phenological transitions.
+### 5. Interval-weighted Whittaker penalized least-squares smoother (`--enable_whittaker`)
+Residual cloud spikes, shadow dips, and atmospheric fluctuations can distort temporal NDVI trajectories. The pipeline incorporates a vectorized, robust Whittaker smoother across the DOY sequence using **$\Delta\text{DOY}$-weighted 2nd-order divided differences**. Accounting for exact time steps (`13` to `25` days) between regional DOY nodes balances observation fidelity with true curvature smoothness (`lambda = 15.0`), suppressing cloud and shadow artifacts while preserving true crop phenological transitions.
 
 ### 6. High-throughput ZSTD compression & temporal stack naming
 * **Zstandard (ZSTD) level 3 with horizontal predictor (`PREDICTOR=2`)**: Multi-temporal BigTIFF mosaics utilize high-speed ZSTD compression, yielding 35% to 45% smaller file sizes than classic DEFLATE with significantly faster decompression rates during machine learning feature extraction.

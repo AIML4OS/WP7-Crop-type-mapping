@@ -20,18 +20,20 @@ Sentinel-1 operates at C-band microwave frequency (5.405 GHz, wavelength ~5.55 c
 * **VH polarization (vertical transmit / horizontal receive)**: Cross-polarization characterized by high sensitivity to volume scattering within the crop canopy, serving as a direct indicator of biomass accumulation, leaf density, and canopy closure.
 * **VH/VV polarization ratio & cross-ratio**: Normalizes soil moisture variations, highlighting crop phenological transitions, stem elongation, and heading phases.
 
-### 2. Radar backscatter calibration and polarimetric indices
+### 2. Radar backscatter calibration, incidence angle normalization, and polarimetric indices
 The pipeline performs radiometric calibration and prepares physical backscatter stacks for downstream agricultural polarimetric indices:
 * **Calibration to physical backscatter (`Sigma0`)**: Converts raw digital numbers (`DN`) into normalized radar cross section (`Sigma0`) using 2D sensor look-up tables (LUT) and thermal noise vectors:
   `Sigma0(l, p) = max(DN(l, p)^2 - N_rg(l, p) * N_az(l, p), 1e-5) / Sigma_LUT(l, p)^2`
+* **Incidence angle radiometric normalization (`Gamma0_ref`)**: Normalizes range-dependent backscatter decay across wide interferometric swaths to a reference incidence angle $\theta_{\text{ref}} = 37.5^\circ$:
+  `Sigma0_norm = Sigma0 * cos(37.5 deg) / cos(theta_inc)`
 * **Decibel transformation (dB)**: Converts linear backscatter into decibels: `Sigma0_dB = 10 * log10(Sigma0)`, standardizing the dynamic range typically between `-28 dB` and `0 dB`.
 * **Radar Vegetation Index (RVI)**: Measures canopy volume scattering relative to total backscatter: `RVI = 4 * VH / (VV + VH)`.
 * **Polarimetric cross-ratio (CR)**: Ratio of cross-polarized to co-polarized backscatter: `CR [dB] = VH [dB] - VV [dB]`.
 
 ### 3. Multi-temporal Quegan speckle filtering & winter freeze filtering
-* **Vectorized multi-temporal Quegan filter**: For a coregistered time series of `M` linear `Sigma0` acquisitions, the Pure Python engine applies the unbiased Quegan multi-temporal speckle filter in `2048 x 2048` blocks:
+* **Halo-buffered vectorized multi-temporal Quegan filter**: For a coregistered time series of `M` linear `Sigma0` acquisitions, the Pure Python engine applies the unbiased Quegan multi-temporal speckle filter in `2048 x 2048` blocks with a `halo = max(1, filter_window // 2)` overlap buffer:
   `J_k(x, y) = Mean_W(I_k) * (1 / M) * sum_{i=1..M}(I_i / Mean_W(I_i))`
-  This suppresses multiplicative granular speckle noise by a factor of `sqrt(M)` while strictly preserving 10 m agricultural field margins.
+  This suppresses multiplicative granular speckle noise by a factor of `sqrt(M)` while completely eliminating block boundary seams and strictly preserving 10 m agricultural field margins.
 * **Winter freeze exclusion (`--exclude_winter`)**: During freezing temperatures, liquid water transitions to ice, causing a dielectric drop that lowers backscatter by 4 to 8 dB. The `--exclude_winter` flag filters out scenes between December 1 and February 14.
 
 ---
@@ -89,20 +91,20 @@ The pipeline performs radiometric calibration and prepares physical backscatter 
   * Directly parses `annotation/*.xml`, `annotation/calibration/calibration-*.xml`, and `annotation/calibration/noise-*.xml` from `.SAFE` or `.SAFE-COG` directories.
   * Subtracts 2D range and azimuth thermal noise vectors (`noiseRangeLut` and `noiseAzimuthLut`) and masks GRD range/azimuth border artifacts.
   * Evaluates 2D `RectBivariateSpline` `Sigma0` calibration LUTs in horizontal strips.
-  * Orthorectifies each slice using exact Range-Doppler foreshortening equations and the **Copernicus 30m Global DEM (GLO-30)** directly onto a locked 10.0 m `EPSG:3857` grid, seamlessly stitching same-date slices into `slice_assembly/{YYYYMMDD}.tif`.
+  * Orthorectifies each slice using exact Range-Doppler foreshortening equations, incidence angle normalization ($\theta_{\text{ref}} = 37.5^\circ$), and the **Copernicus 30m Global DEM (GLO-30)** directly onto a locked 10.0 m `EPSG:3857` grid, seamlessly stitching same-date slices into `slice_assembly/{YYYYMMDD}.tif`.
 * **ESA SNAP engine (`--engine snap`)**:
   * Applies precise orbit ephemerides (`Sentinel Precise (Auto Download)`), thermal noise removal, border noise removal, `Sigma0` calibration, and `SliceAssembly` into BEAM-DIMAP `.dim` products.
 
 ### Stage 2: Multi-temporal coregistration (`s1_coregistration.py`)
 * **Pure Python engine (`--engine python`)**:
-  * Aligns all daily orthorectified GeoTIFFs in `slice_assembly/*.tif` onto the unified master `EPSG:3857` 10.0 m coordinate grid and exports `wrapped/python_stack_manifest.json` without generating 250 GB of intermediate `.dim` files.
+  * Aligns all daily orthorectified GeoTIFFs in `slice_assembly/*.tif` onto the unified master `EPSG:3857` 10.0 m coordinate grid, verifies and corrects sub-pixel alignment via 2D FFT phase cross-correlation (`_estimate_subpixel_shift`), and exports `wrapped/python_stack_manifest.json` without generating 250 GB of intermediate `.dim` files.
 * **ESA SNAP engine (`--engine snap`)**:
   * Runs SNAP `CreateStack` cross-correlation coregistration, multi-temporal speckle filtering, and Range-Doppler terrain correction with `Copernicus 30m Global DEM` and `BILINEAR_INTERPOLATION`.
 
 ### Stage 3: Despeckling, stacking & NUTS2 clipping (`s1_stack_clip.py`)
-* Applies vectorized multi-temporal Quegan speckle filtering across all dates in linear power domain (window size configurable via `--filter_window`, default `7`).
+* Applies halo-buffered vectorized multi-temporal Quegan speckle filtering across all dates in linear power domain (window size configurable via `--filter_window`, default `7`).
 * Preserves the **full native Sentinel-1 radar time series** across all acquired orbit passes (unlike Sentinel-2 which requires 14-DOY interpolation due to cloud cover).
-* Converts linear `Sigma0` into decibels (`dB = 10 * log10(Sigma0)`), clips to the official Eurostat GISCO NUTS2 national boundary in `EPSG:3857` at 10.0 m resolution, exports a tiled BigTIFF (`COMPRESS=DEFLATE`, `TILED=YES`, `BIGTIFF=YES`), and builds 6 pyramid overview levels (`[2, 4, 8, 16, 32, 64]`).
+* Converts linear `Sigma0` into decibels (`dB = 10 * log10(Sigma0)`), clips to the official Eurostat GISCO NUTS2 national boundary in `EPSG:3857` at 10.0 m resolution, exports a tiled BigTIFF (`COMPRESS=DEFLATE`, `PREDICTOR=3`, `NUM_THREADS=ALL_CPUS`, `TILED=YES`, `BIGTIFF=YES`), and builds 6 pyramid overview levels (`[2, 4, 8, 16, 32, 64]`).
 
 ---
 
