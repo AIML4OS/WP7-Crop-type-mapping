@@ -17,6 +17,11 @@ import glob
 import json
 import logging
 import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import pathlib
 import re
 import sys
@@ -137,37 +142,11 @@ def whittaker_smooth_series(
         out[:, valid_px] = Z1
         return out.reshape(orig_shape)
 
-    # GPU-accelerated per-pixel batched solve if CUDA is available, else vectorized CPU 2-pass
-    solved_on_gpu = False
-    try:
-        import torch
-        if torch.cuda.is_available():
-            device = torch.device('cuda:0')
-            Y_t = torch.as_tensor(Y_valid, device=device)
-            W_t = torch.where(torch.as_tensor(is_outlier, device=device), 0.05, 1.0)
-            DTD_t = torch.as_tensor(DTD, device=device).unsqueeze(0)
-
-            chunk_size = 500_000
-            Z_t = torch.empty_like(Y_t)
-            N = Y_valid.shape[1]
-            for start in range(0, N, chunk_size):
-                end = min(start + chunk_size, N)
-                W_c = W_t[:, start:end].T
-                A_c = torch.diag_embed(W_c) + lmbda * DTD_t
-                WY_c = (W_c * Y_t[:, start:end].T).unsqueeze(-1)
-                Z_c = torch.linalg.solve(A_c, WY_c).squeeze(-1).T
-                Z_t[:, start:end] = Z_c
-
-            Z_final = Z_t.cpu().numpy()
-            solved_on_gpu = True
-    except Exception:
-        solved_on_gpu = False
-
-    if not solved_on_gpu:
-        # Fast vectorized CPU 2-pass: replace outliers with baseline estimate and re-solve
-        Y_cleaned = Y_valid.copy()
-        Y_cleaned[is_outlier] = Z1[is_outlier]
-        Z_final = inv_A1 @ Y_cleaned
+    # Fast vectorized CPU 2-pass: replace outliers with baseline estimate and re-solve
+    # Pure NumPy implementation avoids PyTorch CUDA driver deadlocks in multi-threaded tile processing
+    Y_cleaned = Y_valid.copy()
+    Y_cleaned[is_outlier] = Z1[is_outlier]
+    Z_final = inv_A1 @ Y_cleaned
 
     out = Y.copy()
     out[:, valid_px] = Z_final
