@@ -17,3 +17,4 @@ scratch/SATMIROL/
 *.xlsx
 AGENTS.md
 .agents/
+.vscode/
